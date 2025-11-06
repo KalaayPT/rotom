@@ -75,16 +75,16 @@ struct Sounds {
 }
 #[derive(Debug)]
 struct ScriptFile {
-    scripts: Vec<ScriptCommand>,
-    function: Vec<ScriptCommand>,
-    actions: Vec<MovementCommand>,
+    scripts: HashMap<u16, ScriptCommand>,
+    function: HashMap<u16, ScriptCommand>,
+    actions: HashMap<u16, MovementCommand>,
 }
 impl ScriptFile {
     fn new() -> ScriptFile {
         ScriptFile {
-            scripts: Vec::new(),
-            function: Vec::new(),
-            actions: Vec::new(),
+            scripts: HashMap::new(),
+            function: HashMap::new(),
+            actions: HashMap::new(),
         }
     }
 }
@@ -125,16 +125,26 @@ fn main() {
     }
 }
 
-fn disassemble(args: CommandArgs) {
-    let db = read_json(&args.json_database);
+fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
+    let db = read_json(&args.json_database)?;
+    if args.script_directory.is_some() {
+        parse_directory(&args.script_directory.unwrap(), &db);
+    } else {
+        parse_script_file(&args.script_file.unwrap(), &db);
+    }
+    // let raw_script;
+    Ok(())
 }
 
 fn assemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
-    // println!("{}", args.json_database);
     let db = read_json(&args.json_database)?;
-    // println!("{db:?}");
     if args.script_directory.is_some() {
-        parse_directory(&args.script_directory.unwrap(), &db);
+        match parse_directory(&args.script_directory.unwrap(), &db) {
+            Ok(()) => {}
+            Err(e) => {
+                println!("{}", e);
+            }
+        };
     } else {
         parse_script_file(&args.script_file.unwrap(), &db);
     }
@@ -158,16 +168,16 @@ fn parse_directory(folder: &str, db: &ScriptDatabase) -> io::Result<()> {
     Ok(())
 }
 
-fn parse_script_file(file: &str, db: &ScriptDatabase) {
+fn parse_script_file(file: &str, db: &ScriptDatabase) -> Result<(), ParseError> {
     let mut script_file = ScriptFile::new();
     let byte_array: Vec<u8> = std::fs::read(file).unwrap();
     let jump_table_end = byte_array
         .windows(4)
         .position(|bytes| bytes[0..=1] == [0x13, 0xFD])
         .unwrap();
-    println!("{jump_table_end}");
+    // println!("{jump_table_end}");
     let jump_table = &byte_array[0..jump_table_end];
-    println!("jumptable: {jump_table:?}");
+    // println!("jumptable: {jump_table:?}");
     let mut script_addresses: Vec<u32> = jump_table
         .chunks_exact(4)
         .map(|chunks| u32::from_le_bytes([chunks[0], chunks[1], chunks[2], chunks[3]]))
@@ -179,10 +189,15 @@ fn parse_script_file(file: &str, db: &ScriptDatabase) {
     println!("script addresses: {script_addresses:x?}");
     // let script_contents = &byte_array[jump_table_end + 2..];
     // println!("{script_contents:x?}");
+    let mut script_no = 1;
     for script in script_addresses {
-        parse_script_function_bytes(&byte_array, script, &db, &mut script_file);
+        println!("Script {script_no}:");
+        parse_script_function_bytes(&byte_array, script, &db, &mut script_file, script_no)?;
+
+        script_no += 1;
     }
-    println!("{script_file:#?}");
+    // println!("{script_file:#?}");
+    Ok(())
 }
 
 fn parse_script_function_bytes(
@@ -190,19 +205,21 @@ fn parse_script_function_bytes(
     script_offset: u32,
     db: &ScriptDatabase,
     script_file: &mut ScriptFile,
+    script_no: u16,
 ) -> Result<(), ParseError> {
     let mut pc: usize = 0;
     let mut end_condition = false;
     let byte_array = &byte_array[script_offset as usize..];
     'read_command_bytes: while end_condition == false {
-        let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[1]]);
-        println!("command bytes: {command_bytes:x?}");
-        let byte_string = format!("0x{command_bytes:0>4x}");
-        println!("{byte_string}");
+        let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]);
+        // println!("command bytes: {command_bytes:x?}");
+        let byte_string = format!("0x{}", format!("{command_bytes:0>4x}").to_uppercase());
+        // println!("{byte_string}");
         let db_command = match db.scrcmd.get(&byte_string) {
             Some(scrcmd) => {
                 pc += 2;
-                println!("found command: {scrcmd:#?}");
+                // println!("pc: {pc}");
+                // println!("found command: {:#?}", scrcmd.name);
                 scrcmd
             }
             None => return Err(ParseError::NotACommand(command_bytes)),
@@ -211,31 +228,35 @@ fn parse_script_function_bytes(
 
         for parameter in &db_command.parameters {
             let parameter_size = *parameter as usize;
-            // current_parameters.push(u32::from_le_bytes(
-            //     byte_array[pc..pc + *parameter as usize].try_into().unwrap(),
-            // ));
-            parameter_values.push(match parameter_size {
-                1 => byte_array[0] as u32,
-                2 => u32::from_le_bytes([byte_array[0], byte_array[1], 0, 0]),
-                3 => u32::from_le_bytes([byte_array[0], byte_array[1], byte_array[2], 0]),
-                4 => {
-                    u32::from_le_bytes([byte_array[0], byte_array[1], byte_array[2], byte_array[4]])
+            // println!("parameter size: {parameter_size}");
+            let parameter_value = match parameter_size {
+                1 => byte_array[pc] as u32,
+                2 => u32::from_le_bytes([byte_array[pc], byte_array[pc + 1], 0, 0]),
+                3 => {
+                    u32::from_le_bytes([byte_array[pc], byte_array[pc + 1], byte_array[pc + 2], 0])
                 }
+                4 => u32::from_le_bytes([
+                    byte_array[pc],
+                    byte_array[pc + 1],
+                    byte_array[pc + 2],
+                    byte_array[pc + 3],
+                ]),
                 _ => unreachable!("parameter length >4 what"),
-            })
+            };
+            // println!("parameter value: {parameter_value}, Hex: 0x{parameter_value:x}");
+            parameter_values.push(parameter_value);
+            pc += parameter_size;
         }
-        if db_command.name == "End"
-            || db_command.name == "Return"
-            || db_command.name == "Jump"
-            || db_command.name == "JumpIf"
-        {
+        if db_command.name == "End" || db_command.name == "Return" || db_command.name == "Jump" {
             end_condition = true
         }
-        script_file.scripts.push(ScriptCommand {
+        let command = ScriptCommand {
             id: command_bytes,
             name: db_command.name.clone(),
             parameters: parameter_values,
-        });
+        };
+        println!("{} {:?}", command.name, command.parameters);
+        script_file.scripts.insert(script_no, command);
     }
     Ok(())
 }
