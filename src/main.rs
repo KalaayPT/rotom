@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 use std;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::io;
@@ -26,6 +27,7 @@ struct CommandArgs {
     #[arg(short = 'd', long, group = "script")]
     script_directory: Option<String>,
 }
+
 #[derive(Debug, Deserialize)]
 struct ScriptDatabase {
     movements: HashMap<String, Movements>,
@@ -73,18 +75,48 @@ struct Sounds {
     name: String,
     used_in: String,
 }
+
 #[derive(Debug)]
 struct ScriptFile {
-    scripts: HashMap<u16, ScriptCommand>,
-    function: HashMap<u16, ScriptCommand>,
-    actions: HashMap<u16, MovementCommand>,
+    containers: Vec<CommandContainer>,
 }
 impl ScriptFile {
     fn new() -> ScriptFile {
         ScriptFile {
-            scripts: HashMap::new(),
-            function: HashMap::new(),
-            actions: HashMap::new(),
+            containers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ContainerType {
+    Script,
+    Function,
+    Action,
+    Undefined,
+}
+#[derive(Debug)]
+struct ContainerReference {
+    id: u16,
+    offset: i32,
+}
+#[derive(Debug)]
+struct CommandContainer {
+    kind: ContainerType,
+    reference: ContainerReference,
+    commands: Vec<ScriptCommand>,
+    // called_by: Option<&'static CommandContainer>,
+    // calls: Option<&'static CommandContainer>,
+}
+impl CommandContainer {
+    fn new(kind: ContainerType, offset: i32, id: u16) -> CommandContainer {
+        CommandContainer {
+            kind: kind,
+            reference: ContainerReference {
+                id: id,
+                offset: offset,
+            },
+            commands: Vec::new(),
         }
     }
 }
@@ -92,13 +124,7 @@ impl ScriptFile {
 struct ScriptCommand {
     id: u16,
     name: String,
-    parameters: Vec<u32>,
-}
-#[derive(Debug)]
-struct MovementCommand {
-    id: u16,
-    name: String,
-    parameter: u16,
+    parameters: Vec<i32>,
 }
 #[derive(Debug)]
 pub enum ParseError {
@@ -130,9 +156,8 @@ fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
     if args.script_directory.is_some() {
         parse_directory(&args.script_directory.unwrap(), &db);
     } else {
-        parse_script_file(&args.script_file.unwrap(), &db);
+        parse_script_file_bin(&args.script_file.unwrap(), &db);
     }
-    // let raw_script;
     Ok(())
 }
 
@@ -146,7 +171,7 @@ fn assemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
             }
         };
     } else {
-        parse_script_file(&args.script_file.unwrap(), &db);
+        // parse_script_file_bin(&args.script_file.unwrap(), &db);
     }
     // let raw_script;
     Ok(())
@@ -163,12 +188,13 @@ fn parse_directory(folder: &str, db: &ScriptDatabase) -> io::Result<()> {
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
     for file in entries {
-        parse_script_file(file.to_str().expect(""), &db);
+        parse_script_file_bin(file.to_str().expect(""), &db);
     }
     Ok(())
 }
 
-fn parse_script_file(file: &str, db: &ScriptDatabase) -> Result<(), ParseError> {
+fn parse_script_file_bin(file: &str, db: &ScriptDatabase) -> Result<(), ParseError> {
+    println!("parsing file {}", file);
     let mut script_file = ScriptFile::new();
     let byte_array: Vec<u8> = std::fs::read(file).unwrap();
     let jump_table_end = byte_array
@@ -178,38 +204,78 @@ fn parse_script_file(file: &str, db: &ScriptDatabase) -> Result<(), ParseError> 
     // println!("{jump_table_end}");
     let jump_table = &byte_array[0..jump_table_end];
     // println!("jumptable: {jump_table:?}");
-    let mut script_addresses: Vec<u32> = jump_table
+    let mut script_addresses: Vec<i32> = jump_table
         .chunks_exact(4)
-        .map(|chunks| u32::from_le_bytes([chunks[0], chunks[1], chunks[2], chunks[3]]))
+        .map(|chunks| i32::from_le_bytes([chunks[0], chunks[1], chunks[2], chunks[3]]))
         .collect();
     // correct relative jumps to absolute addresses
     for i in 0..script_addresses.len() {
-        script_addresses[i] = script_addresses[i] + (i as u32 + 1) * 4;
+        script_addresses[i] = script_addresses[i] + (i as i32 + 1) * 4;
     }
     println!("script addresses: {script_addresses:x?}");
     // let script_contents = &byte_array[jump_table_end + 2..];
     // println!("{script_contents:x?}");
     let mut script_no = 1;
-    for script in script_addresses {
+    let mut function_offsets: Vec<i32> = Vec::new();
+    println!("parsing scripts..........");
+    for script_offset in &script_addresses {
         println!("Script {script_no}:");
-        parse_script_function_bytes(&byte_array, script, &db, &mut script_file, script_no)?;
+        let mut script = CommandContainer::new(ContainerType::Script, *script_offset, script_no);
+        let mut function_offsets_temp =
+            parse_script_function_bytes(&byte_array, *script_offset as usize, &db, &mut script)?;
+        function_offsets.append(&mut function_offsets_temp);
 
         script_no += 1;
+        script_file.containers.push(script);
     }
+
+    for script_offset in &script_addresses {
+        function_offsets.retain(|elem| *elem != *script_offset);
+    }
+    println!("functions found after parsing scripts: {function_offsets:x?}");
     // println!("{script_file:#?}");
+    let mut function_no = 1;
+    let mut i = 1;
+    println!("parsing functions..........");
+    while function_offsets.len() > 0 {
+        let mut function_offsets_temp = Vec::new();
+        for function_offset in &function_offsets {
+            println!("Function {function_no}:");
+            let mut function =
+                CommandContainer::new(ContainerType::Script, *function_offset, function_no);
+            function_offsets_temp.append(&mut parse_script_function_bytes(
+                &byte_array,
+                *function_offset as usize,
+                &db,
+                &mut function,
+            )?);
+            function_offsets_temp.dedup();
+
+            for function_offset in &function_offsets {
+                function_offsets_temp.retain(|elem| *elem != *function_offset);
+            }
+            for script_offset in &script_addresses {
+                function_offsets_temp.retain(|elem| *elem != *script_offset);
+            }
+
+            function_no += 1;
+            script_file.containers.push(function);
+        }
+        function_offsets = function_offsets_temp;
+        i += 1;
+        println!("functions left after pass {}: {function_offsets:x?}", i);
+    }
     Ok(())
 }
 
 fn parse_script_function_bytes(
     byte_array: &Vec<u8>,
-    script_offset: u32,
+    mut pc: usize,
     db: &ScriptDatabase,
-    script_file: &mut ScriptFile,
-    script_no: u16,
-) -> Result<(), ParseError> {
-    let mut pc: usize = 0;
+    current_command_container: &mut CommandContainer,
+) -> Result<Vec<i32>, ParseError> {
     let mut end_condition = false;
-    let byte_array = &byte_array[script_offset as usize..];
+    let mut function_offsets = Vec::new();
     'read_command_bytes: while end_condition == false {
         let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]);
         // println!("command bytes: {command_bytes:x?}");
@@ -230,12 +296,12 @@ fn parse_script_function_bytes(
             let parameter_size = *parameter as usize;
             // println!("parameter size: {parameter_size}");
             let parameter_value = match parameter_size {
-                1 => byte_array[pc] as u32,
-                2 => u32::from_le_bytes([byte_array[pc], byte_array[pc + 1], 0, 0]),
+                1 => byte_array[pc] as i32,
+                2 => i32::from_le_bytes([byte_array[pc], byte_array[pc + 1], 0, 0]),
                 3 => {
-                    u32::from_le_bytes([byte_array[pc], byte_array[pc + 1], byte_array[pc + 2], 0])
+                    i32::from_le_bytes([byte_array[pc], byte_array[pc + 1], byte_array[pc + 2], 0])
                 }
-                4 => u32::from_le_bytes([
+                4 => i32::from_le_bytes([
                     byte_array[pc],
                     byte_array[pc + 1],
                     byte_array[pc + 2],
@@ -247,16 +313,28 @@ fn parse_script_function_bytes(
             parameter_values.push(parameter_value);
             pc += parameter_size;
         }
-        if db_command.name == "End" || db_command.name == "Return" || db_command.name == "Jump" {
-            end_condition = true
-        }
         let command = ScriptCommand {
             id: command_bytes,
             name: db_command.name.clone(),
             parameters: parameter_values,
         };
+        if db_command.name == "End" || db_command.name == "Return" || db_command.name == "Jump" {
+            end_condition = true
+        }
+        if db_command.name == "Jump" || db_command.name == "Call" {
+            println!("found relative jump: {}", command.parameters[0] + pc as i32);
+            function_offsets.push(command.parameters[0] + pc as i32);
+        } else if db_command.name == "JumpIf"
+            || db_command.name == "CallIf"
+            || db_command.name == "JumpIfObjID"
+            || db_command.name == "JumpIfEventID"
+            || db_command.name == "JumpIfPlayerDir"
+        {
+            println!("found relative jump: {}", command.parameters[1] + pc as i32);
+            function_offsets.push(command.parameters[1] + pc as i32);
+        }
         println!("{} {:?}", command.name, command.parameters);
-        script_file.scripts.insert(script_no, command);
+        current_command_container.commands.push(command);
     }
-    Ok(())
+    Ok(function_offsets)
 }
