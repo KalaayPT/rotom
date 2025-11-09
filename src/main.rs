@@ -1,8 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 use std;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io;
 
@@ -86,39 +85,51 @@ impl ScriptFile {
             containers: Vec::new(),
         }
     }
+    fn contains_offset(&self, offset: i32) -> bool {
+        self.containers
+            .iter()
+            .any(|command| command.reference.offset == offset)
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ContainerType {
     Script,
     Function,
     Action,
-    Undefined,
 }
 #[derive(Debug)]
 struct ContainerReference {
-    id: u16,
+    id: u32,
     offset: i32,
 }
 #[derive(Debug)]
 struct CommandContainer {
     kind: ContainerType,
     reference: ContainerReference,
-    commands: Vec<ScriptCommand>,
+    commands: CommandList,
     // called_by: Option<&'static CommandContainer>,
     // calls: Option<&'static CommandContainer>,
 }
 impl CommandContainer {
-    fn new(kind: ContainerType, offset: i32, id: u16) -> CommandContainer {
+    fn new(kind: ContainerType, offset: i32, id: u32) -> CommandContainer {
         CommandContainer {
+            commands: match kind {
+                ContainerType::Script | ContainerType::Function => CommandList::Script(Vec::new()),
+                ContainerType::Action => CommandList::Movement(Vec::new()),
+            },
             kind: kind,
             reference: ContainerReference {
                 id: id,
                 offset: offset,
             },
-            commands: Vec::new(),
         }
     }
+}
+#[derive(Debug)]
+enum CommandList {
+    Script(Vec<ScriptCommand>),
+    Movement(Vec<Movement>),
 }
 #[derive(Debug)]
 struct ScriptCommand {
@@ -127,6 +138,12 @@ struct ScriptCommand {
     parameters: Vec<i32>,
 }
 #[derive(Debug)]
+struct Movement {
+    id: u16,
+    name: String,
+}
+
+#[derive(Debug)]
 pub enum ParseError {
     NotACommand(u16),
 }
@@ -134,6 +151,26 @@ impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotACommand(cmd) => write!(f, "failed to read command: {cmd:x}"),
+        }
+    }
+}
+struct ParserState {
+    script_no: u32,
+    func_no: u32,
+    action_no: u32,
+    script_offsets: HashSet<i32>,
+    function_offsets: HashSet<i32>,
+    action_offsets: HashSet<i32>,
+}
+impl ParserState {
+    fn new() -> ParserState {
+        ParserState {
+            script_no: 0,
+            func_no: 0,
+            action_no: 0,
+            script_offsets: HashSet::new(),
+            function_offsets: HashSet::new(),
+            action_offsets: HashSet::new(),
         }
     }
 }
@@ -195,6 +232,7 @@ fn parse_directory(folder: &str, db: &ScriptDatabase) -> io::Result<()> {
 
 fn parse_script_file_bin(file: &str, db: &ScriptDatabase) -> Result<(), ParseError> {
     println!("parsing file {}", file);
+    let mut parser = ParserState::new();
     let mut script_file = ScriptFile::new();
     let byte_array: Vec<u8> = std::fs::read(file).unwrap();
     let jump_table_end = byte_array
@@ -204,67 +242,79 @@ fn parse_script_file_bin(file: &str, db: &ScriptDatabase) -> Result<(), ParseErr
     // println!("{jump_table_end}");
     let jump_table = &byte_array[0..jump_table_end];
     // println!("jumptable: {jump_table:?}");
-    let mut script_addresses: Vec<i32> = jump_table
+    let script_addresses: HashSet<i32> = jump_table
         .chunks_exact(4)
-        .map(|chunks| i32::from_le_bytes([chunks[0], chunks[1], chunks[2], chunks[3]]))
+        .enumerate()
+        .map(|(i, chunks)| {
+            let rel_address = i32::from_le_bytes([chunks[0], chunks[1], chunks[2], chunks[3]]);
+            let abs_address = rel_address + (i as i32 + 1) * 4;
+            abs_address
+        })
         .collect();
-    // correct relative jumps to absolute addresses
-    for i in 0..script_addresses.len() {
-        script_addresses[i] = script_addresses[i] + (i as i32 + 1) * 4;
-    }
-    println!("script addresses: {script_addresses:x?}");
-    // let script_contents = &byte_array[jump_table_end + 2..];
+    parser.script_offsets = script_addresses;
+    println!("script addresses: {:x?}", parser.script_offsets);
     // println!("{script_contents:x?}");
-    let mut script_no = 1;
-    let mut function_offsets: Vec<i32> = Vec::new();
+    parser.script_no += 1;
     println!("parsing scripts..........");
-    for script_offset in &script_addresses {
-        println!("Script {script_no}:");
-        let mut script = CommandContainer::new(ContainerType::Script, *script_offset, script_no);
-        let mut function_offsets_temp =
-            parse_script_function_bytes(&byte_array, *script_offset as usize, &db, &mut script)?;
-        function_offsets.append(&mut function_offsets_temp);
+    for script_offset in parser.script_offsets.clone() {
+        println!("Script {}:", parser.script_no);
+        parse_script_function_bytes(
+            &byte_array,
+            script_offset as usize,
+            &db,
+            &mut script_file,
+            &mut parser,
+            ContainerType::Script,
+        )?;
 
-        script_no += 1;
-        script_file.containers.push(script);
+        parser.script_no += 1;
     }
-
-    for script_offset in &script_addresses {
-        function_offsets.retain(|elem| *elem != *script_offset);
-    }
-    println!("functions found after parsing scripts: {function_offsets:x?}");
+    println!(
+        "functions found after parsing scripts: {:x?}",
+        parser.function_offsets
+    );
     // println!("{script_file:#?}");
-    let mut function_no = 1;
+    parser.func_no += 1;
     let mut i = 1;
     println!("parsing functions..........");
-    while function_offsets.len() > 0 {
-        let mut function_offsets_temp = Vec::new();
-        for function_offset in &function_offsets {
-            println!("Function {function_no}:");
-            let mut function =
-                CommandContainer::new(ContainerType::Script, *function_offset, function_no);
-            function_offsets_temp.append(&mut parse_script_function_bytes(
+    while parser.function_offsets.len() > 0 {
+        for function_offset in parser.function_offsets.clone() {
+            println!("Function {}:", parser.func_no);
+            parse_script_function_bytes(
                 &byte_array,
-                *function_offset as usize,
+                function_offset as usize,
                 &db,
-                &mut function,
-            )?);
-            function_offsets_temp.dedup();
-
-            for function_offset in &function_offsets {
-                function_offsets_temp.retain(|elem| *elem != *function_offset);
-            }
-            for script_offset in &script_addresses {
-                function_offsets_temp.retain(|elem| *elem != *script_offset);
-            }
-
-            function_no += 1;
-            script_file.containers.push(function);
+                &mut script_file,
+                &mut parser,
+                ContainerType::Function,
+            )?;
+            parser.func_no += 1;
+            _ = parser.function_offsets.remove(&function_offset)
         }
-        function_offsets = function_offsets_temp;
         i += 1;
-        println!("functions left after pass {}: {function_offsets:x?}", i);
+        println!(
+            "functions left after pass {}: {:x?}",
+            i, parser.function_offsets
+        );
     }
+    println!("movements found: {:x?}", parser.action_offsets);
+    parser.action_no += 1;
+    while parser.action_offsets.len() > 0 {
+        for action_offset in parser.action_offsets.clone() {
+            println!("Action {}:", parser.action_no);
+            parse_action_bytes(
+                &byte_array,
+                action_offset as usize,
+                &db,
+                &mut script_file,
+                &mut parser,
+                ContainerType::Action,
+            )?;
+            parser.action_no += 1;
+            _ = parser.action_offsets.remove(&action_offset)
+        }
+    }
+
     Ok(())
 }
 
@@ -272,10 +322,13 @@ fn parse_script_function_bytes(
     byte_array: &Vec<u8>,
     mut pc: usize,
     db: &ScriptDatabase,
-    current_command_container: &mut CommandContainer,
-) -> Result<Vec<i32>, ParseError> {
+    file: &mut ScriptFile,
+    parser: &mut ParserState,
+    cont_type: ContainerType,
+) -> Result<(), ParseError> {
     let mut end_condition = false;
-    let mut function_offsets = Vec::new();
+    let mut current_command_container =
+        CommandContainer::new(cont_type.clone(), pc as i32, parser.func_no);
     'read_command_bytes: while end_condition == false {
         let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]);
         // println!("command bytes: {command_bytes:x?}");
@@ -284,14 +337,11 @@ fn parse_script_function_bytes(
         let db_command = match db.scrcmd.get(&byte_string) {
             Some(scrcmd) => {
                 pc += 2;
-                // println!("pc: {pc}");
-                // println!("found command: {:#?}", scrcmd.name);
                 scrcmd
             }
             None => return Err(ParseError::NotACommand(command_bytes)),
         };
         let mut parameter_values = Vec::new();
-
         for parameter in &db_command.parameters {
             let parameter_size = *parameter as usize;
             // println!("parameter size: {parameter_size}");
@@ -322,19 +372,77 @@ fn parse_script_function_bytes(
             end_condition = true
         }
         if db_command.name == "Jump" || db_command.name == "Call" {
-            println!("found relative jump: {}", command.parameters[0] + pc as i32);
-            function_offsets.push(command.parameters[0] + pc as i32);
+            let offset = command.parameters[0] + pc as i32;
+            println!("found relative jump: {}", offset);
+            if !file.contains_offset(offset) {
+                parser.function_offsets.insert(offset);
+            };
         } else if db_command.name == "JumpIf"
             || db_command.name == "CallIf"
             || db_command.name == "JumpIfObjID"
             || db_command.name == "JumpIfEventID"
             || db_command.name == "JumpIfPlayerDir"
         {
-            println!("found relative jump: {}", command.parameters[1] + pc as i32);
-            function_offsets.push(command.parameters[1] + pc as i32);
+            let offset = command.parameters[1] + pc as i32;
+            // println!("found relative jump: {}", offset);
+            if !file.contains_offset(offset) {
+                parser.function_offsets.insert(offset);
+            };
+        }
+        if db_command.name == "Movement" {
+            let offset = command.parameters[1] + pc as i32;
+            println!("found action: {}", offset);
+            if !file.contains_offset(offset) {
+                parser.action_offsets.insert(offset);
+            };
         }
         println!("{} {:?}", command.name, command.parameters);
-        current_command_container.commands.push(command);
+        match &mut current_command_container.commands {
+            CommandList::Script(list) => list.push(command),
+            _ => unreachable!(""),
+        }
     }
-    Ok(function_offsets)
+    file.containers.push(current_command_container);
+    Ok(())
+}
+
+fn parse_action_bytes(
+    byte_array: &Vec<u8>,
+    mut pc: usize,
+    db: &ScriptDatabase,
+    file: &mut ScriptFile,
+    parser: &mut ParserState,
+    cont_type: ContainerType,
+) -> Result<(), ParseError> {
+    let mut end_condition = false;
+    let mut current_command_container =
+        CommandContainer::new(cont_type.clone(), pc as i32, parser.func_no);
+    'read_command_bytes: while end_condition == false {
+        let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]);
+        // println!("command bytes: {command_bytes:x?}");
+        let byte_string = format!("0x{}", format!("{command_bytes:0>4x}").to_uppercase());
+        // println!("{byte_string}");
+        let db_command = match db.movements.get(&byte_string) {
+            Some(movement) => {
+                pc += 2;
+                movement
+            }
+            None => return Err(ParseError::NotACommand(command_bytes)),
+        };
+        let movement = Movement {
+            id: command_bytes,
+            name: db_command.name.clone(),
+        };
+        if db_command.name == "End" {
+            end_condition = true
+        }
+        println!("{}", movement.name);
+        match &mut current_command_container.commands {
+            CommandList::Movement(list) => list.push(movement),
+            _ => unreachable!(""),
+        }
+    }
+    file.containers.push(current_command_container);
+    // Ok((function_offsets, action_offsets))
+    Ok(())
 }
