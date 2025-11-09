@@ -4,6 +4,7 @@ use std;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A pokemon script assembler/disassembler", long_about = None)]
@@ -21,10 +22,8 @@ enum Commands {
 struct CommandArgs {
     #[arg(short, long)]
     json_database: String,
-    #[arg(short = 'f', long, group = "script")]
-    script_file: Option<String>,
-    #[arg(short = 'd', long, group = "script")]
-    script_directory: Option<String>,
+    #[arg(short, long, group = "script")]
+    script_file: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +161,7 @@ struct ParserState {
     script_offsets: HashSet<i32>,
     function_offsets: HashSet<i32>,
     action_offsets: HashSet<i32>,
+    output_string: String,
 }
 impl ParserState {
     fn new() -> ParserState {
@@ -172,6 +172,7 @@ impl ParserState {
             script_offsets: HashSet::new(),
             function_offsets: HashSet::new(),
             action_offsets: HashSet::new(),
+            output_string: String::new(),
         }
     }
 }
@@ -181,7 +182,7 @@ fn main() {
     println!("{args:?}");
     match args.command {
         Commands::Disassemble(args) => {
-            disassemble(args);
+            disassemble(args).unwrap();
         }
         Commands::Assemble(args) => {
             assemble(args).unwrap();
@@ -191,18 +192,18 @@ fn main() {
 
 fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
     let db = read_json(&args.json_database)?;
-    if args.script_directory.is_some() {
-        parse_directory(&args.script_directory.unwrap(), &db);
+    if args.script_file.is_dir() {
+        parse_directory(&args.script_file, &db).unwrap();
     } else {
-        parse_script_file_bin(&args.script_file.unwrap(), &db);
+        parse_script_file_bin(&args.script_file, &db).unwrap();
     }
     Ok(())
 }
 
 fn assemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
     let db = read_json(&args.json_database)?;
-    if args.script_directory.is_some() {
-        match parse_directory(&args.script_directory.unwrap(), &db) {
+    if args.script_file.exists() {
+        match parse_directory(&args.script_file, &db) {
             Ok(()) => {}
             Err(e) => {
                 println!("{}", e);
@@ -221,25 +222,31 @@ fn read_json(json_path: &str) -> Result<ScriptDatabase, Box<dyn Error>> {
     Ok(db)
 }
 
-fn parse_directory(folder: &str, db: &ScriptDatabase) -> io::Result<()> {
+fn parse_directory(folder: &PathBuf, db: &ScriptDatabase) -> io::Result<()> {
     let entries = std::fs::read_dir(folder)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
     for file in entries {
-        parse_script_file_bin(file.to_str().expect(""), &db);
+        parse_script_file_bin(&file, &db).unwrap();
     }
     Ok(())
 }
 
-fn parse_script_file_bin(file: &str, db: &ScriptDatabase) -> Result<(), ParseError> {
-    println!("parsing file {}", file);
+fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase) -> Result<(), ParseError> {
+    println!("parsing file {:?}", file);
     let mut parser = ParserState::new();
     let mut script_file = ScriptFile::new();
     let byte_array: Vec<u8> = std::fs::read(file).unwrap();
-    let jump_table_end = byte_array
+    let jump_table_end = match byte_array
         .windows(4)
         .position(|bytes| bytes[0..=1] == [0x13, 0xFD])
-        .unwrap();
+    {
+        Some(end) => end,
+        None => 0,
+    };
+    if jump_table_end == 0 {
+        return Ok(());
+    }
     // println!("{jump_table_end}");
     let jump_table = &byte_array[0..jump_table_end];
     // println!("jumptable: {jump_table:?}");
@@ -258,7 +265,7 @@ fn parse_script_file_bin(file: &str, db: &ScriptDatabase) -> Result<(), ParseErr
     parser.script_no += 1;
     println!("parsing scripts..........");
     for script_offset in parser.script_offsets.clone() {
-        println!("Script {}:", parser.script_no);
+        println!("\nScript {}:", parser.script_no);
         parse_script_function_bytes(
             &byte_array,
             script_offset as usize,
@@ -280,7 +287,7 @@ fn parse_script_file_bin(file: &str, db: &ScriptDatabase) -> Result<(), ParseErr
     println!("parsing functions..........");
     while parser.function_offsets.len() > 0 {
         for function_offset in parser.function_offsets.clone() {
-            println!("Function {}:", parser.func_no);
+            println!("\nFunction {}:", parser.func_no);
             parse_script_function_bytes(
                 &byte_array,
                 function_offset as usize,
@@ -302,7 +309,7 @@ fn parse_script_file_bin(file: &str, db: &ScriptDatabase) -> Result<(), ParseErr
     parser.action_no += 1;
     while parser.action_offsets.len() > 0 {
         for action_offset in parser.action_offsets.clone() {
-            println!("Action {}:", parser.action_no);
+            println!("\nAction {}:", parser.action_no);
             parse_action_bytes(
                 &byte_array,
                 action_offset as usize,
@@ -343,26 +350,33 @@ fn parse_script_function_bytes(
             None => return Err(ParseError::NotACommand(command_bytes)),
         };
         let mut parameter_values = Vec::new();
-        for parameter in &db_command.parameters {
-            let parameter_size = *parameter as usize;
-            // println!("parameter size: {parameter_size}");
-            let parameter_value = match parameter_size {
-                1 => byte_array[pc] as i32,
-                2 => i32::from_le_bytes([byte_array[pc], byte_array[pc + 1], 0, 0]),
-                3 => {
-                    i32::from_le_bytes([byte_array[pc], byte_array[pc + 1], byte_array[pc + 2], 0])
-                }
-                4 => i32::from_le_bytes([
-                    byte_array[pc],
-                    byte_array[pc + 1],
-                    byte_array[pc + 2],
-                    byte_array[pc + 3],
-                ]),
-                _ => unreachable!("parameter length >4 what"),
-            };
-            // println!("parameter value: {parameter_value}, Hex: 0x{parameter_value:x}");
-            parameter_values.push(parameter_value);
-            pc += parameter_size;
+        if db_command.parameters.first() == Some(&255) {
+            parse_conditional_parameters(&mut parameter_values, db_command, byte_array, &mut pc);
+        } else {
+            for parameter in &db_command.parameters {
+                let parameter_size = *parameter as usize;
+                // println!("parameter size: {parameter_size}");
+                let parameter_value = match parameter_size {
+                    1 => byte_array[pc] as i32,
+                    2 => i32::from_le_bytes([byte_array[pc], byte_array[pc + 1], 0, 0]),
+                    3 => i32::from_le_bytes([
+                        byte_array[pc],
+                        byte_array[pc + 1],
+                        byte_array[pc + 2],
+                        0,
+                    ]),
+                    4 => i32::from_le_bytes([
+                        byte_array[pc],
+                        byte_array[pc + 1],
+                        byte_array[pc + 2],
+                        byte_array[pc + 3],
+                    ]),
+                    _ => unreachable!("parameter length >4 what"),
+                };
+                // println!("parameter value: {parameter_value}, Hex: 0x{parameter_value:x}");
+                parameter_values.push(parameter_value);
+                pc += parameter_size;
+            }
         }
         let command = ScriptCommand {
             id: command_bytes,
@@ -407,6 +421,55 @@ fn parse_script_function_bytes(
     Ok(())
 }
 
+fn parse_conditional_parameters(
+    parameter_values: &mut Vec<i32>,
+    db_command: &ScrCmd,
+    byte_array: &Vec<u8>,
+    pc: &mut usize,
+) {
+    let mut paramcounter = 1;
+    let condition_param = &db_command.parameters[paramcounter];
+    println!("condition param: {condition_param}");
+    paramcounter += 1;
+    let mut conditional_paramlist = Vec::new();
+    conditional_paramlist.push(*condition_param);
+    'find_conditional_params: loop {
+        if &db_command.parameters[paramcounter] == &byte_array[*pc] {
+            println!("conditon found!");
+            println!("condition: {}", db_command.parameters[paramcounter]);
+            paramcounter += 2;
+            conditional_paramlist.append(
+                &mut db_command.parameters[paramcounter..paramcounter + {
+                    db_command.parameters[paramcounter - 1] as usize
+                }]
+                    .to_vec(),
+            );
+            println!("conditional paramlist: {conditional_paramlist:?}");
+            break 'find_conditional_params;
+        }
+        paramcounter += db_command.parameters[paramcounter + 1] as usize + 2;
+    }
+    for parameter in &conditional_paramlist {
+        let parameter_size = *parameter as usize;
+        // println!("parameter size: {parameter_size}");
+        let parameter_value = match parameter_size {
+            1 => byte_array[*pc] as i32,
+            2 => i32::from_le_bytes([byte_array[*pc], byte_array[*pc + 1], 0, 0]),
+            3 => i32::from_le_bytes([byte_array[*pc], byte_array[*pc + 1], byte_array[*pc + 2], 0]),
+            4 => i32::from_le_bytes([
+                byte_array[*pc],
+                byte_array[*pc + 1],
+                byte_array[*pc + 2],
+                byte_array[*pc + 3],
+            ]),
+            _ => unreachable!("parameter length >4 what"),
+        };
+        // println!("parameter value: {parameter_value}, Hex: 0x{parameter_value:x}");
+        parameter_values.push(parameter_value);
+        *pc += parameter_size;
+    }
+}
+
 fn parse_action_bytes(
     byte_array: &Vec<u8>,
     mut pc: usize,
@@ -428,7 +491,14 @@ fn parse_action_bytes(
                 pc += 2;
                 movement
             }
-            None => return Err(ParseError::NotACommand(command_bytes)),
+            None => {
+                pc += 2;
+                &Movements {
+                    name: byte_string,
+                    decomp_name: "".to_string(),
+                    description: "".to_string(),
+                }
+            }
         };
         let movement = Movement {
             id: command_bytes,
