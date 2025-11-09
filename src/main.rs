@@ -141,6 +141,7 @@ struct ScriptCommand {
 struct Movement {
     id: u16,
     name: String,
+    parameter: i32,
 }
 
 #[derive(Debug)]
@@ -432,17 +433,18 @@ fn parse_action_bytes(
         let movement = Movement {
             id: command_bytes,
             name: db_command.name.clone(),
+            parameter: i32::from_le_bytes([byte_array[pc], byte_array[pc + 1], 0, 0]),
         };
+        pc += 2;
         if db_command.name == "End" {
             end_condition = true
         }
-        println!("{}", movement.name);
+        println!("{} {}", movement.name, movement.parameter);
         match &mut current_command_container.commands {
             CommandList::Movement(list) => list.push(movement),
             _ => unreachable!(""),
         }
     }
     file.containers.push(current_command_container);
-    // Ok((function_offsets, action_offsets))
     Ok(())
 }
