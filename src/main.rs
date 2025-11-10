@@ -2,8 +2,11 @@ use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 use std;
 use std::collections::{HashMap, HashSet};
+use linked_hash_set::LinkedHashSet;
 use std::error::Error;
-use std::io;
+use std::fmt::format;
+use std::io::{self, Write};
+use std::ops::Deref;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -21,7 +24,7 @@ enum Commands {
 #[derive(Debug, Args)]
 struct CommandArgs {
     #[arg(short, long)]
-    json_database: String,
+    database: String,
     #[arg(short, long, group = "script")]
     script_file: PathBuf,
 }
@@ -73,6 +76,19 @@ struct Sounds {
     name: String,
     used_in: String,
 }
+#[derive(Debug, Deserialize)]
+struct Enums {
+    items: HashMap<String, String>,
+    moves: HashMap<String, String>,
+    pokemon: HashMap<String, String>,
+    trainers: HashMap<String, String>,
+}
+impl Enums {
+    fn new() -> Enums {
+        Enums { items: HashMap::new(), moves: HashMap::new(), pokemon: HashMap::new(), trainers: HashMap::new() }
+    }
+}
+
 
 #[derive(Debug)]
 struct ScriptFile {
@@ -158,9 +174,9 @@ struct ParserState {
     script_no: u32,
     func_no: u32,
     action_no: u32,
-    script_offsets: HashSet<i32>,
-    function_offsets: HashSet<i32>,
-    action_offsets: HashSet<i32>,
+    script_offsets: LinkedHashSet<i32>,
+    function_offsets: LinkedHashSet<i32>,
+    action_offsets: LinkedHashSet<i32>,
     output_string: String,
 }
 impl ParserState {
@@ -169,9 +185,9 @@ impl ParserState {
             script_no: 0,
             func_no: 0,
             action_no: 0,
-            script_offsets: HashSet::new(),
-            function_offsets: HashSet::new(),
-            action_offsets: HashSet::new(),
+            script_offsets: LinkedHashSet::new(),
+            function_offsets: LinkedHashSet::new(),
+            action_offsets: LinkedHashSet::new(),
             output_string: String::new(),
         }
     }
@@ -179,7 +195,7 @@ impl ParserState {
 
 fn main() {
     let args = Cli::parse();
-    println!("{args:?}");
+    // println!("{args:?}");
     match args.command {
         Commands::Disassemble(args) => {
             disassemble(args).unwrap();
@@ -191,49 +207,72 @@ fn main() {
 }
 
 fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
-    let db = read_json(&args.json_database)?;
+    let (db, enums) = read_json(&args.database)?;
+    println!("{enums:#?}");
     if args.script_file.is_dir() {
-        parse_directory(&args.script_file, &db).unwrap();
+        match parse_directory(&args.script_file, &db, &enums) {
+            Ok(()) => {
+                println!("scripts disassembled to plaintext successfully");
+            }
+            Err(e) => {
+                eprintln!("error during parsing: {e}");
+            }
+        };
     } else {
-        parse_script_file_bin(&args.script_file, &db).unwrap();
+        match parse_script_file_bin(&args.script_file, &db, &enums) {
+            Ok(()) => {
+                println!("script disassembled to plaintext successfully");
+            }
+            Err(e) => {
+                eprintln!("error during parsing: {e}");
+            }
+        };
     }
     Ok(())
 }
 
 fn assemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
-    let db = read_json(&args.json_database)?;
+    let (db, enums) = read_json(&args.database)?;
     if args.script_file.exists() {
-        match parse_directory(&args.script_file, &db) {
+        match parse_directory(&args.script_file, &db, &enums) {
             Ok(()) => {}
             Err(e) => {
                 println!("{}", e);
             }
         };
     } else {
-        // parse_script_file_bin(&args.script_file.unwrap(), &db);
+        parse_script_file_bin(&args.script_file, &db, &enums).unwrap();
     }
-    // let raw_script;
     Ok(())
 }
 
-fn read_json(json_path: &str) -> Result<ScriptDatabase, Box<dyn Error>> {
-    let raw_json = std::fs::read_to_string(json_path)?;
-    let db: ScriptDatabase = serde_json::from_str(&raw_json)?;
-    Ok(db)
+fn read_json(json_path: &str) -> Result<(ScriptDatabase, Enums), Box<dyn Error>> {
+    let db_json = std::fs::read_to_string(format!("{}\\scrcmd_database.json",json_path))?;
+    let items_json = std::fs::read_to_string(format!("{}\\items.json",json_path))?;
+    let pokemon_json = std::fs::read_to_string(format!("{}\\pokemon.json",json_path))?;
+    let trainers_json = std::fs::read_to_string(format!("{}\\trainers.json",json_path))?;
+    let moves_json = std::fs::read_to_string(format!("{}\\moves.json",json_path))?;
+    let db: ScriptDatabase = serde_json::from_str(&db_json)?;
+    let mut enums = Enums::new();
+    enums.trainers = serde_json::from_str(&trainers_json)?;
+    enums.items = serde_json::from_str(&items_json)?;
+    enums.pokemon = serde_json::from_str(&pokemon_json)?;
+    enums.moves = serde_json::from_str(&moves_json)?;
+    Ok((db, enums))
 }
 
-fn parse_directory(folder: &PathBuf, db: &ScriptDatabase) -> io::Result<()> {
+fn parse_directory(folder: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> io::Result<()> {
     let entries = std::fs::read_dir(folder)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
     for file in entries {
-        parse_script_file_bin(&file, &db).unwrap();
+        parse_script_file_bin(&file, &db, &enums).unwrap();
     }
     Ok(())
 }
 
-fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase) -> Result<(), ParseError> {
-    println!("parsing file {:?}", file);
+fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> Result<(), ParseError> {
+    // println!("{}", file.display());
     let mut parser = ParserState::new();
     let mut script_file = ScriptFile::new();
     let byte_array: Vec<u8> = std::fs::read(file).unwrap();
@@ -242,7 +281,12 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase) -> Result<(), Pars
         .position(|bytes| bytes[0..=1] == [0x13, 0xFD])
     {
         Some(end) => end,
-        None => 0,
+        None => {
+            // println!("levelscript or corrupted script detected");
+            // jumpt_table_end being 0 prevents rotom from parsing the file at all as it thinks
+            // there are no scripts
+            0
+        }
     };
     if jump_table_end == 0 {
         return Ok(());
@@ -250,7 +294,7 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase) -> Result<(), Pars
     // println!("{jump_table_end}");
     let jump_table = &byte_array[0..jump_table_end];
     // println!("jumptable: {jump_table:?}");
-    let script_addresses: HashSet<i32> = jump_table
+    let script_addresses: LinkedHashSet<i32> = jump_table
         .chunks_exact(4)
         .enumerate()
         .map(|(i, chunks)| {
@@ -260,12 +304,8 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase) -> Result<(), Pars
         })
         .collect();
     parser.script_offsets = script_addresses;
-    println!("script addresses: {:x?}", parser.script_offsets);
-    // println!("{script_contents:x?}");
     parser.script_no += 1;
-    println!("parsing scripts..........");
     for script_offset in parser.script_offsets.clone() {
-        println!("\nScript {}:", parser.script_no);
         parse_script_function_bytes(
             &byte_array,
             script_offset as usize,
@@ -277,17 +317,13 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase) -> Result<(), Pars
 
         parser.script_no += 1;
     }
-    println!(
-        "functions found after parsing scripts: {:x?}",
-        parser.function_offsets
-    );
-    // println!("{script_file:#?}");
+    // println!(
+    //     "functions found after parsing scripts: {:x?}",
+    //     parser.function_offsets
+    // );
     parser.func_no += 1;
-    let mut i = 1;
-    println!("parsing functions..........");
     while parser.function_offsets.len() > 0 {
         for function_offset in parser.function_offsets.clone() {
-            println!("\nFunction {}:", parser.func_no);
             parse_script_function_bytes(
                 &byte_array,
                 function_offset as usize,
@@ -299,17 +335,11 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase) -> Result<(), Pars
             parser.func_no += 1;
             _ = parser.function_offsets.remove(&function_offset)
         }
-        i += 1;
-        println!(
-            "functions left after pass {}: {:x?}",
-            i, parser.function_offsets
-        );
     }
-    println!("movements found: {:x?}", parser.action_offsets);
+    // println!("movements found: {:x?}", parser.action_offsets);
     parser.action_no += 1;
     while parser.action_offsets.len() > 0 {
         for action_offset in parser.action_offsets.clone() {
-            println!("\nAction {}:", parser.action_no);
             parse_action_bytes(
                 &byte_array,
                 action_offset as usize,
@@ -322,7 +352,175 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase) -> Result<(), Pars
             _ = parser.action_offsets.remove(&action_offset)
         }
     }
+    // println!("{script_file:#?}");
+    write_plaintext(file, &mut parser, &script_file, db);
+    Ok(())
+}
 
+fn write_plaintext(
+    file: &PathBuf,
+    parser: &mut ParserState,
+    script_file: &ScriptFile,
+    db: &ScriptDatabase,
+) -> Result<(), ParseError> {
+    let output_filename = format!("{}.script", file.file_name().unwrap().display());
+    let output_dir = file
+        .ancestors()
+        .nth(3)
+        .unwrap()
+        .join("expanded")
+        .join("scripts");
+    if !output_dir.exists() {
+        std::fs::create_dir_all(&output_dir).expect("couldn't create expanded/scripts directory");
+    }
+    for container in &script_file.containers {
+        parser.output_string.push_str(
+            match &container.kind {
+                ContainerType::Script => {
+                    format!("\n\nScript {}:", container.reference.id.clone())
+                }
+                ContainerType::Function => {
+                    format!("\n\nFunction {}:", container.reference.id.clone())
+                }
+                ContainerType::Action => {
+                    format!("\n\nAction {}:", container.reference.id.clone())
+                }
+            }
+            .as_str(),
+        );
+
+        match &container.commands {
+            CommandList::Script(commands) => {
+                for command in commands {
+                    let byte_string =
+                        format!("0x{}", format!("{:0>4x}", command.id).to_uppercase());
+                    let db_command = match db.scrcmd.get(&byte_string) {
+                        Some(scrcmd) => scrcmd,
+                        _ => unreachable!(""),
+                    };
+                    if command.name == "Jump" || command.name == "End" || command.name == "Return" {
+                        parser
+                            .output_string
+                            .push_str(format!("\n{} ", command.name).as_str());
+                    } else {
+                        parser
+                            .output_string
+                            .push_str(format!("\n\t{} ", command.name).as_str());
+                    }
+                    for (i, parameter) in command.parameters.iter().enumerate() {
+                        let mut formatted_parameter = String::new();
+                        // println!(
+                        //     "i: {}, command parameters: {:?} db_command parameter types: {:?}",
+                        //     i, command.parameters, db_command.parameter_types
+                        // );
+                        if !db_command.parameter_types.is_empty() {
+                            formatted_parameter = match db_command.parameter_types[i] {
+                                ScriptParameter::Function => {
+                                    match script_file
+                                        .containers
+                                        .iter()
+                                        .find(|command| command.reference.offset == *parameter)
+                                        .map(|cmd| cmd)
+                                        .expect("finding function/script failed: no container with given offset found")
+                                        .kind {
+                                            ContainerType::Script => {format!(
+                                        "Script#{}",
+                                        script_file
+                                            .containers
+                                            .iter()
+                                            .find(|command| command.reference.offset == *parameter)
+                                            .map(|command| command.reference.id)
+                                            .expect(
+                                                format!(
+                                                    "function offset not found: {}",
+                                                    *parameter
+                                                )
+                                                .as_str()
+                                            )
+                                    )
+},
+                                            ContainerType::Function => {format!(
+                                        "Function#{}",
+                                        script_file
+                                            .containers
+                                            .iter()
+                                            .find(|command| command.reference.offset == *parameter)
+                                            .map(|command| command.reference.id)
+                                            .expect(
+                                                format!(
+                                                    "function offset not found: {}",
+                                                    *parameter
+                                                )
+                                                .as_str()
+                                            )
+                                    )
+},
+                                            ContainerType::Action => unreachable!("")
+                                        }
+                                                                    }
+                                ScriptParameter::Action => {
+                                    format!(
+                                        "Action#{}",
+                                        script_file
+                                            .containers
+                                            .iter()
+                                            .find(|command| command.reference.offset == *parameter)
+                                            .map(|command| command.reference.id)
+                                            .expect(
+                                                format!(
+                                                    "function offset not found: {}\ncommand: {:?}",
+                                                    *parameter,
+                                                    command
+                                                )
+                                                .as_str()
+                                            )
+                                    )
+                                },
+                                ScriptParameter::Variable => format!("0x{}", format!("{:x}", parameter).to_uppercase()),
+                                ScriptParameter::Integer => format!("{parameter}"),
+                                ScriptParameter::ComparisonOperator =>  {   
+                                    let byte_string =
+                                    format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
+                                    let mut formatted = String::new();
+                                    if let Some(val) = db.comparisonOperators.get(&byte_string) {
+                                        formatted = val.clone();
+
+                                    } 
+                                    formatted
+                                },
+                                ScriptParameter::Sound => {
+                                    format!()
+                                }
+                                _ => {
+                                    let str;
+                                    if *parameter >= 4000 { 
+                                        str = format!("0x{}", format!("{:x}", parameter).to_uppercase());
+                                    } else { 
+                                        str = format!("{}",parameter);}
+                                    str
+                                }
+                            };
+                        }
+                        parser
+                            .output_string
+                            .push_str(&format!("{} ", formatted_parameter));
+                    }
+                }
+            }
+            CommandList::Movement(commands) => {
+                for command in commands {
+                    parser
+                        .output_string
+                        .push_str(format!("\n\t{} {}", command.name, command.parameter).as_str());
+                }
+            }
+        };
+    }
+    let mut f = std::fs::File::create(output_dir.join(output_filename))
+        .expect("failed to create output script file");
+    f.write_all(parser.output_string.as_bytes())
+        .expect("failed to write script text to file");
+    // println!("{}", parser.output_string);
     Ok(())
 }
 
@@ -335,13 +533,16 @@ fn parse_script_function_bytes(
     cont_type: ContainerType,
 ) -> Result<(), ParseError> {
     let mut end_condition = false;
+    let container_id = match cont_type {
+        ContainerType::Script => parser.script_no,
+        ContainerType::Function => parser.func_no,
+        _ => unreachable!("actions cant be passed to parse_script_function_bytes"),
+    };
     let mut current_command_container =
-        CommandContainer::new(cont_type.clone(), pc as i32, parser.func_no);
+        CommandContainer::new(cont_type.clone(), pc as i32, container_id);
     'read_command_bytes: while end_condition == false {
         let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]);
-        // println!("command bytes: {command_bytes:x?}");
         let byte_string = format!("0x{}", format!("{command_bytes:0>4x}").to_uppercase());
-        // println!("{byte_string}");
         let db_command = match db.scrcmd.get(&byte_string) {
             Some(scrcmd) => {
                 pc += 2;
@@ -378,7 +579,7 @@ fn parse_script_function_bytes(
                 pc += parameter_size;
             }
         }
-        let command = ScriptCommand {
+        let mut command = ScriptCommand {
             id: command_bytes,
             name: db_command.name.clone(),
             parameters: parameter_values,
@@ -388,7 +589,7 @@ fn parse_script_function_bytes(
         }
         if db_command.name == "Jump" || db_command.name == "Call" {
             let offset = command.parameters[0] + pc as i32;
-            println!("found relative jump: {}", offset);
+            command.parameters[0] = offset;
             if !file.contains_offset(offset) {
                 parser.function_offsets.insert(offset);
             };
@@ -399,19 +600,19 @@ fn parse_script_function_bytes(
             || db_command.name == "JumpIfPlayerDir"
         {
             let offset = command.parameters[1] + pc as i32;
-            // println!("found relative jump: {}", offset);
+            command.parameters[1] = offset;
             if !file.contains_offset(offset) {
                 parser.function_offsets.insert(offset);
             };
         }
         if db_command.name == "Movement" {
             let offset = command.parameters[1] + pc as i32;
-            println!("found action: {}", offset);
+            command.parameters[1] = offset;
             if !file.contains_offset(offset) {
                 parser.action_offsets.insert(offset);
             };
         }
-        println!("{} {:?}", command.name, command.parameters);
+        // println!("{} {:?}", command.name, command.parameters);
         match &mut current_command_container.commands {
             CommandList::Script(list) => list.push(command),
             _ => unreachable!(""),
@@ -429,14 +630,14 @@ fn parse_conditional_parameters(
 ) {
     let mut paramcounter = 1;
     let condition_param = &db_command.parameters[paramcounter];
-    println!("condition param: {condition_param}");
+    // println!("condition param: {condition_param}");
     paramcounter += 1;
     let mut conditional_paramlist = Vec::new();
     conditional_paramlist.push(*condition_param);
     'find_conditional_params: loop {
         if &db_command.parameters[paramcounter] == &byte_array[*pc] {
-            println!("conditon found!");
-            println!("condition: {}", db_command.parameters[paramcounter]);
+            // println!("conditon found!");
+            // println!("condition: {}", db_command.parameters[paramcounter]);
             paramcounter += 2;
             conditional_paramlist.append(
                 &mut db_command.parameters[paramcounter..paramcounter + {
@@ -444,7 +645,7 @@ fn parse_conditional_parameters(
                 }]
                     .to_vec(),
             );
-            println!("conditional paramlist: {conditional_paramlist:?}");
+            // println!("conditional paramlist: {conditional_paramlist:?}");
             break 'find_conditional_params;
         }
         paramcounter += db_command.parameters[paramcounter + 1] as usize + 2;
@@ -480,7 +681,7 @@ fn parse_action_bytes(
 ) -> Result<(), ParseError> {
     let mut end_condition = false;
     let mut current_command_container =
-        CommandContainer::new(cont_type.clone(), pc as i32, parser.func_no);
+        CommandContainer::new(cont_type.clone(), pc as i32, parser.action_no);
     'read_command_bytes: while end_condition == false {
         let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]);
         // println!("command bytes: {command_bytes:x?}");
@@ -509,7 +710,6 @@ fn parse_action_bytes(
         if db_command.name == "End" {
             end_condition = true
         }
-        println!("{} {}", movement.name, movement.parameter);
         match &mut current_command_container.commands {
             CommandList::Movement(list) => list.push(movement),
             _ => unreachable!(""),
