@@ -7,7 +7,7 @@ use linked_hash_set::LinkedHashSet;
 use std::error::Error;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use regex::Regex;
+use regex::{Match, Regex};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A pokemon script assembler/disassembler", long_about = None)]
@@ -119,7 +119,7 @@ enum ContainerType {
 }
 #[derive(Debug)]
 struct ContainerReference {
-    id: u32,
+    id: Vec<u32>,
     offset: i32,
 }
 #[derive(Debug)]
@@ -139,7 +139,7 @@ impl CommandContainer {
             },
             kind: kind,
             reference: ContainerReference {
-                id: id,
+                id: vec![id],
                 offset: offset,
             },
         }
@@ -196,7 +196,7 @@ struct ParserState {
     script_no: u32,
     func_no: u32,
     action_no: u32,
-    script_offsets: LinkedHashSet<i32>,
+    script_offsets: Vec<i32>,
     function_offsets: LinkedHashSet<i32>,
     action_offsets: LinkedHashSet<i32>,
     output_string: String,
@@ -207,7 +207,7 @@ impl ParserState {
             script_no: 0,
             func_no: 0,
             action_no: 0,
-            script_offsets: LinkedHashSet::new(),
+            script_offsets: Vec::new(),
             function_offsets: LinkedHashSet::new(),
             action_offsets: LinkedHashSet::new(),
             output_string: String::new(),
@@ -300,11 +300,22 @@ fn parse_directory(folder: &PathBuf, db: &ScriptDatabase, enums: &Enums, directi
 }
 
 fn parse_plaintext_file(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> Result<(), ParseError> {
+    println!("file: {}", file.display());
     let mut script_file = ScriptFile::new();
     let mut parser = ParserState::new();
     let text = std::fs::read_to_string(file).unwrap();
     let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:").unwrap();
-    let start_indices: Vec<usize> = regex.find_iter(&text).map(|m| m.start()).collect();
+    let matches: Vec<Match> = regex.find_iter(&text).collect();
+    let mut start_indices: Vec<usize> = Vec::new();
+    start_indices.push(matches[0].start());
+    for i in 1..matches.len() {
+            let prev_match = &matches[i - 1];
+            let current_match = &matches[i];
+            let text_between = &text[prev_match.end()..current_match.start()];
+            if !text_between.trim().is_empty() {
+                start_indices.push(current_match.start());
+            }
+        }
     let mut end_indices: Vec<usize> = start_indices.iter().skip(1).copied().collect();
     end_indices.push(text.len());
     // println!("{:?}", start_indices);
@@ -318,8 +329,18 @@ fn parse_plaintext_file(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> R
         // println!("{container}");
         parse_plaintext_container(&container, &db, &enums, &mut parser, &mut script_file);
     }    
-    // print!("{script_file:#?}");
+    print!("{script_file:#?}");
+    // write_binary();
     Ok(())
+}
+
+fn write_binary(
+    file: &PathBuf,
+    parser: &mut ParserState,
+    script_file: &ScriptFile,
+    db: &ScriptDatabase,
+){
+
 }
 
 fn parse_plaintext_container(container_str: &str, db: &ScriptDatabase, enums: &Enums, parser: &mut ParserState, script_file: &mut ScriptFile){
@@ -329,18 +350,18 @@ fn parse_plaintext_container(container_str: &str, db: &ScriptDatabase, enums: &E
         "Script" => {
             parser.script_no += 1;
             current_command_container.kind = ContainerType::Script;
-            current_command_container.reference.id = parser.script_no;
+            current_command_container.reference.id.push(parser.script_no);
         },
         "Function" => {
             parser.func_no += 1;
             current_command_container.kind = ContainerType::Function;
-            current_command_container.reference.id = parser.func_no;
+            current_command_container.reference.id.push(parser.func_no);
 
         },
         "Action" => {
             parser.action_no += 1;
             current_command_container.kind = ContainerType::Action;
-            current_command_container.reference.id = parser.action_no;
+            current_command_container.reference.id.push(parser.action_no);
             current_command_container.commands = CommandList::Movement(Vec::new())
         },
         _ => unreachable!("")
@@ -348,12 +369,12 @@ fn parse_plaintext_container(container_str: &str, db: &ScriptDatabase, enums: &E
     for (i, line) in container_str.lines().skip(1).enumerate() {
         parse_command_str(line, &mut current_command_container, &db, i, &enums);
     }
-    println!("{current_command_container:#?}");
+    // println!("{current_command_container:#?}");
     script_file.containers.push(current_command_container);
 }
 
 fn parse_command_str(command: &str, current_command_container: &mut CommandContainer, db: &ScriptDatabase, line_index: usize, enums: &Enums) -> Result<(), ParseError>{
-        // println!("{command}");
+    println!("{command}");
     if matches!(current_command_container.kind, ContainerType::Action) {
         parse_movement_str(&command, current_command_container, &db, &line_index)?;
         return Ok(());
@@ -370,7 +391,11 @@ fn parse_command_str(command: &str, current_command_container: &mut CommandConta
         },
         None => return Err(ParseError::NotACommand(format!("{}", command_elements[0]), format!("{line_index}")))
     }
-    for (i, _parameter ) in db_command.parameters.iter().enumerate() {
+    let mut db_parameters = db_command.parameters.clone();
+    if db_command.parameters.first() == Some(&255) {
+        db_parameters = get_parameters_by_condition(&command_elements, db_command)?;
+    }
+    for (i, _parameter ) in db_parameters.iter().enumerate() {
         if command_elements.len() == 1 {
             continue;
         }
@@ -381,7 +406,7 @@ fn parse_command_str(command: &str, current_command_container: &mut CommandConta
                     Some((byte, _sound)) => {
                         current_command.parameters.push(byte.parse().unwrap());
                     },
-                    None => panic!("")
+                    None => return Err(ParseError::NotACommand(format!("{}", command_elements[i+1]), format!("{}", line_index)))
                 }
             },
             ScriptParameter::Variable => {
@@ -399,7 +424,7 @@ fn parse_command_str(command: &str, current_command_container: &mut CommandConta
                     Some((byte, _string)) => current_command.parameters.push(
                     i32::from_str_radix(byte.trim_start_matches("0x"), 16).unwrap()
                     ),
-                    None => panic!("")
+                    None => unreachable!()
                 }
             },
             ScriptParameter::Function => {
@@ -436,14 +461,65 @@ fn parse_command_str(command: &str, current_command_container: &mut CommandConta
                     },  
                 }
             },
+            ScriptParameter::Pokemon => {
+                match enums.pokemon.iter().find(|(_byte, string)| *string == command_elements[i+1]) {
+                    Some((byte, _string)) => current_command.parameters.push(byte.parse().unwrap()),
+                    None => {
+                        if command_elements[i+1].parse::<i32>().is_err() {
+                            current_command.parameters.push(i32::from_str_radix(command_elements[i+1].trim_start_matches("0x"), 16).unwrap())
+                        } else {
+                            current_command.parameters.push(command_elements[i+1].parse().unwrap());
+                        }
+                    },  
+                }
+            },
+            ScriptParameter::Move => {
+                match enums.moves.iter().find(|(_byte, string)| *string == command_elements[i+1]) {
+                    Some((byte, _string)) => current_command.parameters.push(byte.parse().unwrap()),
+                    None => {
+                        if command_elements[i+1].parse::<i32>().is_err() {
+                            current_command.parameters.push(i32::from_str_radix(command_elements[i+1].trim_start_matches("0x"), 16).unwrap())
+                        } else {
+                            current_command.parameters.push(command_elements[i+1].parse().unwrap());
+                        }
+                    },  
+                }
+            },
             ScriptParameter::Overworld => {
-                current_command.parameters.push(command_elements[i+1].trim_start_matches("Overworld.").parse().unwrap());
+                if command_elements[i+1] == "Player" {
+                    current_command.parameters.push(255);
+                } else if command_elements[i+1].starts_with("0x") {
+                    current_command.parameters.push(i32::from_str_radix(command_elements[i+1].trim_start_matches("0x"), 16).unwrap())
+                } else {
+                    current_command.parameters.push(command_elements[i+1].trim_start_matches("Overworld.").parse().unwrap()); 
+                }
+            },
+            ScriptParameter::OwMovementType => {
+                if command_elements[i+1].starts_with("0x") {
+                    current_command.parameters.push(i32::from_str_radix(command_elements[i+1].trim_start_matches("0x"), 16).unwrap())
+                } else {
+                    current_command.parameters.push(command_elements[i+1].trim_start_matches("Move.").parse().unwrap()); 
+                }
             },
             ScriptParameter::Action => {
                 let (first, _last) = command_elements[i+1].split_at(7);
                 match first {
                     "Action#" => current_command.parameters.push(command_elements[i+1].trim_start_matches("Action#").parse().unwrap()),
                     _ => unreachable!()
+                }
+            },
+            ScriptParameter::OwMovementDirection => {
+                if command_elements[i+1].starts_with("0x") {
+                    current_command.parameters.push(i32::from_str_radix(command_elements[i+1].trim_start_matches("0x"), 16).unwrap())
+                } else if command_elements[i+1].parse::<i32>().is_err() {
+                    match db.overworldDirections.iter().find(|(_byte, string)| *string == command_elements[i+1]){
+                        Some((byte, _string)) => current_command.parameters.push(
+                            i32::from_str_radix(byte.trim_start_matches("0x"), 16).unwrap()
+                        ),
+                        None => unreachable!()
+                    }
+                } else {
+                    current_command.parameters.push(command_elements[i+1].parse().unwrap());
                 }
             },
             _ => {
@@ -456,6 +532,29 @@ fn parse_command_str(command: &str, current_command_container: &mut CommandConta
         commandlist.push(current_command);
     }
     Ok(())
+}
+
+fn get_parameters_by_condition(command_elements: &Vec<&str>, db_command: &ScrCmd) -> Result<Vec<u8>, ParseError>{
+    let mut corrected_parameters: Vec<u8> = vec![2];
+    // println!("condition marker: {} condition parameter: {}", db_command.parameters[0], db_command.parameters[1]);
+    let mut paramcounter = 2;
+    let condition_param = command_elements[1];
+    loop {
+        if db_command.parameters[paramcounter] == condition_param.parse::<u8>().unwrap() {
+            if db_command.parameters[paramcounter+1] > 0 {
+                for i in 0..db_command.parameters[paramcounter+1] {
+                    corrected_parameters.push(db_command.parameters[paramcounter+2+i as usize])
+                }
+            }
+                        // corrected_parameters.append(&mut db_command.parameters[paramcounter..paramcounter + {
+            //         db_command.parameters[paramcounter - 1] as usize
+            //     }].to_vec());
+            break
+        }
+        paramcounter += db_command.parameters[paramcounter +1] as usize + 2;
+    }
+    // println!("{:?}", corrected_parameters);
+    Ok(corrected_parameters)
 }
 
 fn parse_movement_str(command: &str, current_command_container: &mut CommandContainer, db: &ScriptDatabase, line_index: &usize) -> Result<(), ParseError>{
@@ -481,6 +580,7 @@ fn parse_movement_str(command: &str, current_command_container: &mut CommandCont
     Ok(())
 }
 
+
 fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> Result<(), ParseError> {
     // println!("{}", file.display());
     let mut parser = ParserState::new();
@@ -501,18 +601,19 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> 
     if jump_table_end == 0 {
         return Ok(());
     }
-    // println!("{jump_table_end}");
     let jump_table = &byte_array[0..jump_table_end];
-    // println!("jumptable: {jump_table:?}");
-    let script_addresses: LinkedHashSet<i32> = jump_table
+    let mut script_addresses: Vec<i32> = Vec::new();
+    for address in jump_table
         .chunks_exact(4)
         .enumerate()
         .map(|(i, chunks)| {
             let rel_address = i32::from_le_bytes([chunks[0], chunks[1], chunks[2], chunks[3]]);
             let abs_address = rel_address + (i as i32 + 1) * 4;
             abs_address
-        })
-        .collect();
+        }) {
+        script_addresses.push(address);
+    }
+    
     parser.script_offsets = script_addresses;
     parser.script_no += 1;
     for script_offset in parser.script_offsets.clone() {
@@ -582,13 +683,31 @@ fn write_plaintext(
         parser.output_string.push_str(
             match &container.kind {
                 ContainerType::Script => {
-                    format!("\n\nScript {}:", container.reference.id.clone())
+                    let mut str = String::new();
+                    str.push_str("\n\n");                    
+                    for id in &container.reference.id {
+                        str.push_str(format!("Script {}:\n", id).as_str())
+                    }
+                    str = str.trim_end_matches("\n").to_string();
+                    str
                 }
                 ContainerType::Function => {
-                    format!("\n\nFunction {}:", container.reference.id.clone())
+                    let mut str = String::new();
+                    str.push_str("\n\n");                    
+                    for id in &container.reference.id {
+                        str.push_str(format!("Function {}:\n", id).as_str())
+                    }
+                    str = str.trim_end_matches("\n").to_string();
+                    str
                 }
                 ContainerType::Action => {
-                    format!("\n\nAction {}:", container.reference.id.clone())
+                    let mut str = String::new();
+                    str.push_str("\n\n");                    
+                    for id in &container.reference.id {
+                        str.push_str(format!("Action {}:\n", id).as_str())
+                    }
+                    str = str.trim_end_matches("\n").to_string();
+                    str
                 }
             }
             .as_str(),
@@ -615,8 +734,8 @@ fn write_plaintext(
                     for (i, parameter) in command.parameters.iter().enumerate() {
                         let mut formatted_parameter = String::new();
                         // println!(
-                        //     "i: {}, command parameters: {:?} db_command parameter types: {:?}",
-                        //     i, command.parameters, db_command.parameter_types
+                        //     "i: {} name: {} command parameters: {:?} db_command parameter types: {:?}, parameter: {}",
+                        //     i, command.name, command.parameters, db_command.parameter_types, parameter
                         // );
                         if !db_command.parameter_types.is_empty() {
                             formatted_parameter = match db_command.parameter_types[i] {
@@ -628,13 +747,14 @@ fn write_plaintext(
                                         .map(|cmd| cmd)
                                         .expect("finding function/script failed: no container with given offset found")
                                         .kind {
-                                            ContainerType::Script => {format!(
-                                        "Script#{}",
-                                        script_file
+                                            ContainerType::Script => {
+                                                format!(
+                                            "Script#{}",
+                                            script_file
                                             .containers
                                             .iter()
                                             .find(|command| command.reference.offset == *parameter)
-                                            .map(|command| command.reference.id)
+                                            .map(|command| command.reference.id.first().unwrap())
                                             .expect(
                                                 format!(
                                                     "function offset not found: {}",
@@ -642,15 +762,15 @@ fn write_plaintext(
                                                 )
                                                 .as_str()
                                             )
-                                    )
-},
+                                            )
+                                        },
                                             ContainerType::Function => {format!(
                                         "Function#{}",
                                         script_file
                                             .containers
                                             .iter()
                                             .find(|command| command.reference.offset == *parameter)
-                                            .map(|command| command.reference.id)
+                                            .map(|command| command.reference.id.first().unwrap())
                                             .expect(
                                                 format!(
                                                     "function offset not found: {}",
@@ -659,7 +779,7 @@ fn write_plaintext(
                                                 .as_str()
                                             )
                                     )
-},
+                                },
                                             ContainerType::Action => unreachable!("")
                                         }
                                                                     }
@@ -670,7 +790,7 @@ fn write_plaintext(
                                             .containers
                                             .iter()
                                             .find(|command| command.reference.offset == *parameter)
-                                            .map(|command| command.reference.id)
+                                            .map(|command| command.reference.id.first().unwrap())
                                             .expect(
                                                 format!(
                                                     "function offset not found: {}\ncommand: {:?}",
@@ -693,22 +813,70 @@ fn write_plaintext(
                                     } 
                                     formatted
                                 },
+                                ScriptParameter::OwMovementDirection =>  {   
+                                    if parameter < &4 {
+                                        let byte_string =
+                                        format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
+                                        let mut formatted = String::new();
+                                        if let Some(val) = db.overworldDirections.get(&byte_string) {
+                                            formatted = val.clone();
+                                        } 
+                                        formatted
+                                    } else if parameter >= &0x4000 {
+                                        format!("0x{parameter:x}")
+                                    } else {
+                                        format!("{}", parameter)
+                                    }
+                                },
                                 ScriptParameter::Sound => {
                                     match db.sounds.get(format!("{}",parameter).as_str()) {
                                         Some(sound) => sound.name.clone(),
                                         None => format!("{parameter}")
                                     } 
                                 },
-                                ScriptParameter::Overworld => format!("Overworld.{}", parameter),
+                                ScriptParameter::Overworld => {
+                                    if parameter == &255 {
+                                        format!("Player")
+                                    } else if parameter > &0x4000 {
+                                        format!("0x{parameter:x}")
+                                    } else {
+                                        format!("Overworld.{}", parameter)
+                                    }
+                                },
+                                ScriptParameter::OwMovementType => {
+                                    if parameter > &0x4000 {
+                                        format!("0x{parameter:x}")
+                                    } else {
+                                        format!("Move.{}", parameter)
+                                    }
+                                },
                                 ScriptParameter::Trainer => {
                                     match enums.trainers.get(format!("{}", parameter).as_str()) {
                                         Some(trainer) => format!("{trainer}"),
                                         None => format!("{parameter}")
                                     }
                                 },
+                                ScriptParameter::Item => {
+                                    match enums.items.get(format!("{}", parameter).as_str()) {
+                                        Some(item) => format!("{item}"),
+                                        None => format!("{parameter}")
+                                    }
+                                },
+                                ScriptParameter::Pokemon => {
+                                    match enums.pokemon.get(format!("{}", parameter).as_str()) {
+                                        Some(pokemon) => format!("{pokemon}"),
+                                        None => format!("{parameter}")
+                                    }
+                                },
+                                ScriptParameter::Move => {
+                                    match enums.moves.get(format!("{}", parameter).as_str()) {
+                                        Some(moves) => format!("{moves}"),
+                                        None => format!("{parameter}")
+                                    }
+                                },
                                 _ => {
                                     let str;
-                                    if *parameter >= 4000 { 
+                                    if *parameter >= 0x4000 { 
                                         str = format!("0x{}", format!("{:x}", parameter).to_uppercase());
                                     } else { 
                                         str = format!("{parameter}");}
@@ -760,6 +928,17 @@ fn parse_script_function_bytes(
     };
     let mut current_command_container =
         CommandContainer::new(cont_type.clone(), pc as i32, container_id);
+    match file.containers.iter_mut().find(|container| container.reference.offset == pc as i32 ) {
+        Some(container) => {
+            container.reference.id.push(container_id);
+            // println!("{container:#?}");
+            return Ok(())
+        },
+        None => {
+            // continue with command container construction
+            // println!("no match found for pc: {pc}");
+        }
+    }
     'read_command_bytes: while end_condition == false {
         let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]);
         let byte_string = format!("0x{}", format!("{command_bytes:0>4x}").to_uppercase());
@@ -854,7 +1033,7 @@ fn parse_conditional_parameters(
     paramcounter += 1;
     let mut conditional_paramlist = Vec::new();
     conditional_paramlist.push(*condition_param);
-    'find_conditional_params: loop {
+    loop {
         if &db_command.parameters[paramcounter] == &byte_array[*pc] {
             // println!("conditon found!");
             // println!("condition: {}", db_command.parameters[paramcounter]);
@@ -866,7 +1045,7 @@ fn parse_conditional_parameters(
                     .to_vec(),
             );
             // println!("conditional paramlist: {conditional_paramlist:?}");
-            break 'find_conditional_params;
+            break
         }
         paramcounter += db_command.parameters[paramcounter + 1] as usize + 2;
     }
