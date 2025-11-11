@@ -24,7 +24,7 @@ enum Commands {
 #[derive(Debug, Args)]
 struct CommandArgs {
     #[arg(short, long)]
-    database: String,
+    database: PathBuf,
     #[arg(short, long, group = "script")]
     script_file: PathBuf,
 }
@@ -230,7 +230,6 @@ fn main() {
 
 fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
     let (db, enums) = read_jsons(&args.database)?;
-    // println!("{enums:#?}");
     let directive = Directive::Disassemble;
     if args.script_file.is_dir() {
         match parse_directory(&args.script_file, &db, &enums, &directive) {
@@ -265,17 +264,23 @@ fn assemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
             }
         };
     } else {
-        parse_plaintext_file(&args.script_file, &db, &enums).unwrap();
+        match parse_plaintext_file(&args.script_file, &db, &enums) {
+            Ok(()) => {}
+            Err(e) => {
+                println!("{}", e);
+            }
+        };
     }
     Ok(())
 }
 
-fn read_jsons(json_path: &str) -> Result<(ScriptDatabase, Enums), Box<dyn Error>> {
-    let db_json = std::fs::read_to_string(format!("{}\\scrcmd_database.json",json_path))?;
-    let items_json = std::fs::read_to_string(format!("{}\\items.json",json_path))?;
-    let pokemon_json = std::fs::read_to_string(format!("{}\\pokemon.json",json_path))?;
-    let trainers_json = std::fs::read_to_string(format!("{}\\trainers.json",json_path))?;
-    let moves_json = std::fs::read_to_string(format!("{}\\moves.json",json_path))?;
+fn read_jsons(json_path: &PathBuf) -> Result<(ScriptDatabase, Enums), Box<dyn Error>> {
+    // println!("{}", format!("{}\\scrcmd_database.json",json_path));
+    let db_json = std::fs::read_to_string(json_path.join("scrcmd_database.json"))?;
+    let items_json = std::fs::read_to_string(json_path.join("items.json"))?;
+    let pokemon_json = std::fs::read_to_string(json_path.join("pokemon.json"))?;
+    let trainers_json = std::fs::read_to_string(json_path.join("trainers.json"))?;
+    let moves_json = std::fs::read_to_string(json_path.join("moves.json"))?;
     let db: ScriptDatabase = serde_json::from_str(&db_json)?;
     let mut enums = Enums::new();
     enums.trainers = serde_json::from_str(&trainers_json)?;
