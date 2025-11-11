@@ -258,16 +258,20 @@ fn assemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
     let directive = Directive::Assemble;
     if args.script_file.is_dir() {
         match parse_directory(&args.script_file, &db, &enums, &directive) {
-            Ok(()) => {}
+            Ok(()) => {
+                println!("scripts assembled to binary successfully");
+            }
             Err(e) => {
-                println!("{}", e);
+                eprintln!("error during parsing: {e}");
             }
         };
     } else {
         match parse_plaintext_file(&args.script_file, &db, &enums) {
-            Ok(()) => {}
+            Ok(()) => {
+                println!("script assembled to binary successfully");
+            }
             Err(e) => {
-                println!("{}", e);
+                eprintln!("error during parsing: {e}");
             }
         };
     }
@@ -305,7 +309,7 @@ fn parse_directory(folder: &PathBuf, db: &ScriptDatabase, enums: &Enums, directi
 }
 
 fn parse_plaintext_file(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> Result<(), ParseError> {
-    println!("file: {}", file.display());
+    // println!("file: {}", file.display());
     let mut script_file = ScriptFile::new();
     let mut parser = ParserState::new();
     let text = std::fs::read_to_string(file).unwrap();
@@ -334,7 +338,7 @@ fn parse_plaintext_file(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> R
         // println!("{container}");
         parse_plaintext_container(&container, &db, &enums, &mut parser, &mut script_file);
     }    
-    print!("{script_file:#?}");
+    // print!("{script_file:#?}");
     // write_binary();
     Ok(())
 }
@@ -379,7 +383,7 @@ fn parse_plaintext_container(container_str: &str, db: &ScriptDatabase, enums: &E
 }
 
 fn parse_command_str(command: &str, current_command_container: &mut CommandContainer, db: &ScriptDatabase, line_index: usize, enums: &Enums) -> Result<(), ParseError>{
-    println!("{command}");
+    // println!("{command}");
     if matches!(current_command_container.kind, ContainerType::Action) {
         parse_movement_str(&command, current_command_container, &db, &line_index)?;
         return Ok(());
