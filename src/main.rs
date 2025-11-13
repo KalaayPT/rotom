@@ -2,12 +2,14 @@ use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 use std;
 use std::collections::HashMap ;
-use std::fmt::format;
+use std::thread::current;
 use linked_hash_set::LinkedHashSet;
 use std::error::Error;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use regex::{Match, Regex};
+use rayon::prelude::*;
+use std::mem::size_of_val;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A pokemon script assembler/disassembler", long_about = None)]
@@ -131,7 +133,7 @@ struct CommandContainer {
     // calls: Option<&'static CommandContainer>,
 }
 impl CommandContainer {
-    fn new(kind: ContainerType, offset: i32, id: u32) -> CommandContainer {
+    fn new(kind: ContainerType, offset: i32) -> CommandContainer {
         CommandContainer {
             commands: match kind {
                 ContainerType::Script | ContainerType::Function => CommandList::Script(Vec::new()),
@@ -139,7 +141,7 @@ impl CommandContainer {
             },
             kind: kind,
             reference: ContainerReference {
-                id: vec![id],
+                id: Vec::new(),
                 offset: offset,
             },
         }
@@ -169,7 +171,7 @@ impl ScriptCommand {
 struct Movement {
     id: u16,
     name: String,
-    parameter: i32,
+    parameter: u16,
 }
 impl Movement {
     fn new() -> Movement {
@@ -200,6 +202,9 @@ struct ParserState {
     function_offsets: LinkedHashSet<i32>,
     action_offsets: LinkedHashSet<i32>,
     output_string: String,
+    relocation_table: Vec<(usize, i32, ContainerType)>,
+    symbol_table: HashMap<i32, usize>,
+    symbol_table_movements: HashMap<i32, usize>
 }
 impl ParserState {
     fn new() -> ParserState {
@@ -211,6 +216,9 @@ impl ParserState {
             function_offsets: LinkedHashSet::new(),
             action_offsets: LinkedHashSet::new(),
             output_string: String::new(),
+            relocation_table: Vec::new(),
+            symbol_table: HashMap::new(),
+            symbol_table_movements: HashMap::new(),
         }
     }
 }
@@ -229,12 +237,13 @@ fn main() {
 }
 
 fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
+    let start = std::time::Instant::now();
     let (db, enums) = read_jsons(&args.database)?;
     let directive = Directive::Disassemble;
     if args.script_file.is_dir() {
         match parse_directory(&args.script_file, &db, &enums, &directive) {
             Ok(()) => {
-                println!("scripts disassembled to plaintext successfully");
+                println!("scripts disassembled to plaintext successfully in {} ms", start.elapsed().as_millis());
             }
             Err(e) => {
                 eprintln!("error during parsing: {e}");
@@ -243,7 +252,7 @@ fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
     } else {
         match parse_script_file_bin(&args.script_file, &db, &enums) {
             Ok(()) => {
-                println!("script disassembled to plaintext successfully");
+                println!("script disassembled to plaintext successfully in {} ms", start.elapsed().as_millis());
             }
             Err(e) => {
                 eprintln!("error during parsing: {e}");
@@ -254,21 +263,23 @@ fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn assemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
+    let start = std::time::Instant::now();
     let (db, enums) = read_jsons(&args.database)?;
     let directive = Directive::Assemble;
     if args.script_file.is_dir() {
         match parse_directory(&args.script_file, &db, &enums, &directive) {
             Ok(()) => {
-                println!("scripts assembled to binary successfully");
+                println!("scripts assembled to binary successfully in {} ms", start.elapsed().as_millis());
             }
             Err(e) => {
                 eprintln!("error during parsing: {e}");
             }
         };
     } else {
-        match parse_plaintext_file(&args.script_file, &db, &enums) {
+        let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:").unwrap();
+        match parse_plaintext_file(&args.script_file, &db, &enums, &regex) {
             Ok(()) => {
-                println!("script assembled to binary successfully");
+                println!("script assembled to binary successfully in {} ms", start.elapsed().as_millis());
             }
             Err(e) => {
                 eprintln!("error during parsing: {e}");
@@ -299,24 +310,34 @@ fn parse_directory(folder: &PathBuf, db: &ScriptDatabase, enums: &Enums, directi
     let entries = std::fs::read_dir(folder)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
-    for file in entries {
+    entries.par_iter().for_each(|file|        
+    // for file in entries {
         match directive {
-            Directive::Assemble => parse_plaintext_file(&file, &db, &enums).unwrap(),
-            Directive::Disassemble => parse_script_file_bin(&file, &db, &enums).unwrap()
+            Directive::Assemble => {
+                let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:").unwrap();
+                parse_plaintext_file(&file, &db, &enums, &regex).unwrap()
+            },
+            Directive::Disassemble => {
+                if let Err(e) = parse_script_file_bin(&file, &db, &enums){
+                    println!("Error encountered during parsing: {e}");
+                }
+            }
         }
-    }
+    // }
+    );
     Ok(())
 }
 
-fn parse_plaintext_file(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> Result<(), ParseError> {
+fn parse_plaintext_file(file: &PathBuf, db: &ScriptDatabase, enums: &Enums, regex: &Regex) -> Result<(), ParseError> {
     // println!("file: {}", file.display());
     let mut script_file = ScriptFile::new();
     let mut parser = ParserState::new();
     let text = std::fs::read_to_string(file).unwrap();
-    let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:").unwrap();
     let matches: Vec<Match> = regex.find_iter(&text).collect();
     let mut start_indices: Vec<usize> = Vec::new();
-    start_indices.push(matches[0].start());
+    if !matches.is_empty() {
+        start_indices.push(matches[0].start());
+    }
     for i in 1..matches.len() {
             let prev_match = &matches[i - 1];
             let current_match = &matches[i];
@@ -338,28 +359,182 @@ fn parse_plaintext_file(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> R
         // println!("{container}");
         parse_plaintext_container(&container, &db, &enums, &mut parser, &mut script_file);
     }    
-    // print!("{script_file:#?}");
-    // write_binary();
+    print!("{script_file:#?}");
+    // println!("ScriptFile size: {}", size_of_val(&script_file));
+    write_binary(file, &mut parser, &mut script_file, db);
     Ok(())
 }
 
 fn write_binary(
     file: &PathBuf,
     parser: &mut ParserState,
-    script_file: &ScriptFile,
+    script_file: &mut ScriptFile,
     db: &ScriptDatabase,
-){
+) -> Result<(), ParseError>{
+    // println!("{:#?}", script_file);
+    let mut pc: usize = 0;
+    let mut byte_array: Vec<u8> = Vec::with_capacity(512*512);
+    // initialize jump table
+    let jump_table_entries = script_file.containers
+        .iter()
+        .filter(|container| matches!(container.kind, ContainerType::Script))
+        .map(|container| container.reference.id.len())
+        .sum();
+    let mut jump_table: Vec<i32> = vec![0;jump_table_entries];
+    println!("{:?}\n entries: {}", jump_table, jump_table_entries);
+    byte_array.extend(jump_table.iter().flat_map(|chunk| chunk.to_le_bytes()));
+    byte_array.extend([0x13,0xfd]);
+    pc += &jump_table.len() * 4 + 2;
+    // println!("first script offset: {pc}");
+    for container in &mut script_file.containers {
+        container.reference.offset = pc as i32;
+        match container.kind {
+            ContainerType::Script => {
+                for id in &container.reference.id {
+                    parser.symbol_table.insert(*id as i32 * -1, pc);
+                }
+            },
+            ContainerType::Function => {
+                for id in &container.reference.id {
+                    parser.symbol_table.insert(*id as i32, pc);
+                }
+            },
+            ContainerType::Action => {
+                parser.symbol_table_movements.insert(container.reference.id[0] as i32, pc);
+            }
+        }
+        if let CommandList::Script(command_list)= &container.commands {
+            // println!("added offset for {:?} {}: {}", container.kind, container.reference.id.first().unwrap(), container.reference.offset);
+            for command_to_write in command_list {
+                let (command_byte, db_command) = db.scrcmd.iter().find(|(byte, command)| command.name == command_to_write.name ).unwrap();
+                byte_array.append(&mut u16::from_str_radix(command_byte.trim_start_matches("0x"), 16).unwrap().to_le_bytes().to_vec());
+                pc += 2;
+                byte_array.extend(
+                    command_to_write.parameters
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, param)|
+                        {
+                        if matches!(db_command.parameter_types[i], ScriptParameter::Function) {
+                            // println!("pc: {pc}");
+                            parser.relocation_table.push((pc, command_to_write.parameters[i], ContainerType::Function));
+                        } else if matches!(db_command.parameter_types[i], ScriptParameter::Action) {
+                            // println!("pc: {pc}");
+                            parser.relocation_table.push((pc, command_to_write.parameters[i], ContainerType::Action));
+                        }    
+                        let mut db_parameters = db_command.parameters.clone();
+                        if db_command.parameters.first() == Some(&255) {
+                            db_parameters = get_parameters_by_condition(
+                                command_to_write.parameters[0] as u8, db_command
+                                ).unwrap();
+                        }
+                        let param_bytes_vec = match db_parameters[i] {
+                            1 => {
+                                pc += 1;
+                                {*param as u8}.to_le_bytes().to_vec()},
+                            2 => {
+                                pc += 2;
+                                {*param as u16}.to_le_bytes().to_vec()},
+                            4 => {
+                                pc += 4;
+                                {*param as u32}.to_le_bytes().to_vec()},
+                            _ => unreachable!("illegal param was: {}", db_command.parameters[i])
+                        };
+                        param_bytes_vec
+                    })
+                    );
+            }
+        } else if let CommandList::Movement(command_list)= &container.commands {
+            // println!("added offset for movement {}: {}", container.reference.id.first().unwrap(), container.reference.offset);
+            for command_to_write in command_list {
+                let (command_byte, db_command) = db.movements.iter().find(|(byte, command)| command.name == command_to_write.name ).unwrap();
+                byte_array.append(&mut u16::from_str_radix(command_byte.trim_start_matches("0x"), 16).unwrap().to_le_bytes().to_vec());
+                pc += 2;
+                byte_array.extend(command_to_write.parameter.to_le_bytes());
+                pc += 2;
+            }
+        }
+    }
+    for i in 0..jump_table_entries {
+        parser.relocation_table.push(({i*4},
+                match script_file.containers.iter().find(|container| container.reference.id.contains(&{i as u32 + 1})) {
+                    Some(_container) => -{i as i32 + 1},
+                    None => unreachable!()
+                }
+        ,ContainerType::Script));
+    }
+    // println!("relocation table: {:#x?}", parser.relocation_table);
+    println!("symbol table: {:#x?}\nsymbol table movements: {:#x?}", parser.symbol_table, parser.symbol_table_movements);
 
+    linker(&mut byte_array, parser);
+    while byte_array.len() % 2 != 0 {
+        byte_array.push(0);
+    }
+    
+    let output_filename = format!("{}.bin", file.file_name().unwrap().display().to_string().trim_end_matches(".script"));
+    let output_dir = file
+        .ancestors()
+        .nth(3)
+        .unwrap()
+        .join("unpacked")
+        .join("testscripts"); //TODO: 
+    std::fs::create_dir_all(&output_dir).expect("couldn't create unpacked/scripts directory"); //TODO:
+    let mut f = std::fs::File::create(output_dir.join(output_filename))
+        .expect("failed to create output script file");
+    f.write_all(&byte_array)
+        .expect("failed to write script binary to file");
+    Ok(())
+}
+
+fn linker(byte_array: &mut Vec<u8>, parser: &ParserState){
+    for (entry, container, kind) in &parser.relocation_table {
+        let chunk = &mut byte_array[*entry..*entry+4];
+        // println!("{:x?}",chunk);
+        match kind {
+            ContainerType::Script | ContainerType::Function => {
+                // println!("container: {container:x}");
+                let container_ref = {*parser.symbol_table.get(container).unwrap() as i32 - *entry as i32 - 4}.to_le_bytes();
+                // println!("bytes: {container_ref:?}");
+                chunk.copy_from_slice(&container_ref);
+            }
+            ContainerType::Action => {
+                let container_ref = {*parser.symbol_table_movements.get(container).unwrap() as i32 - *entry as i32 - 4}.to_le_bytes();
+                chunk.copy_from_slice(&container_ref);
+            }
+        }
+    }
 }
 
 fn parse_plaintext_container(container_str: &str, db: &ScriptDatabase, enums: &Enums, parser: &mut ParserState, script_file: &mut ScriptFile){
-    let header_line = container_str.lines().next().unwrap();
-    let mut current_command_container = CommandContainer::new(ContainerType::Script, 0, 0);
-    match header_line.split_whitespace().next().unwrap() {
+    let mut current_command_container = CommandContainer::new(ContainerType::Script, 0);
+    let mut end_condition = false;
+    let mut i = 0;
+    while !end_condition {
+        if let Some(container_line) = container_str.lines().nth(i) {
+            end_condition = parse_container_header(container_line, db, &mut current_command_container, parser);
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    println!("{}",parser.script_no);
+    for (i, line) in container_str.lines().skip(1).enumerate() {
+        parse_command_str(line, &mut current_command_container, &db, i, &enums);
+    }
+    // println!("{current_command_container:#?}");
+    script_file.containers.push(current_command_container);
+}
+
+fn parse_container_header(container_line: &str, db: &ScriptDatabase, current_command_container: &mut CommandContainer, parser: &mut ParserState) -> bool {
+
+    println!("header line: {container_line}");
+    match container_line.split_whitespace().next().unwrap() {
         "Script" => {
-            parser.script_no += 1;
+            // parser.script_no += 1;
             current_command_container.kind = ContainerType::Script;
-            current_command_container.reference.id.push(parser.script_no);
+            current_command_container.reference.id.push(
+                container_line.split_whitespace().nth(1).unwrap().trim_end_matches(":").parse().unwrap()
+            );
         },
         "Function" => {
             parser.func_no += 1;
@@ -373,13 +548,9 @@ fn parse_plaintext_container(container_str: &str, db: &ScriptDatabase, enums: &E
             current_command_container.reference.id.push(parser.action_no);
             current_command_container.commands = CommandList::Movement(Vec::new())
         },
-        _ => unreachable!("")
+        _ => return true
     };
-    for (i, line) in container_str.lines().skip(1).enumerate() {
-        parse_command_str(line, &mut current_command_container, &db, i, &enums);
-    }
-    // println!("{current_command_container:#?}");
-    script_file.containers.push(current_command_container);
+    false
 }
 
 fn parse_command_str(command: &str, current_command_container: &mut CommandContainer, db: &ScriptDatabase, line_index: usize, enums: &Enums) -> Result<(), ParseError>{
@@ -402,7 +573,7 @@ fn parse_command_str(command: &str, current_command_container: &mut CommandConta
     }
     let mut db_parameters = db_command.parameters.clone();
     if db_command.parameters.first() == Some(&255) {
-        db_parameters = get_parameters_by_condition(&command_elements, db_command)?;
+        db_parameters = get_parameters_by_condition(command_elements[1].parse().unwrap(), db_command)?;
     }
     for (i, _parameter ) in db_parameters.iter().enumerate() {
         if command_elements.len() == 1 {
@@ -543,13 +714,13 @@ fn parse_command_str(command: &str, current_command_container: &mut CommandConta
     Ok(())
 }
 
-fn get_parameters_by_condition(command_elements: &Vec<&str>, db_command: &ScrCmd) -> Result<Vec<u8>, ParseError>{
+fn get_parameters_by_condition(condition_param: u8, db_command: &ScrCmd) -> Result<Vec<u8>, ParseError>{
     let mut corrected_parameters: Vec<u8> = vec![2];
     // println!("condition marker: {} condition parameter: {}", db_command.parameters[0], db_command.parameters[1]);
     let mut paramcounter = 2;
-    let condition_param = command_elements[1];
+    // let condition_param = command_elements[1];
     loop {
-        if db_command.parameters[paramcounter] == condition_param.parse::<u8>().unwrap() {
+        if db_command.parameters[paramcounter] == condition_param {
             if db_command.parameters[paramcounter+1] > 0 {
                 for i in 0..db_command.parameters[paramcounter+1] {
                     corrected_parameters.push(db_command.parameters[paramcounter+2+i as usize])
@@ -569,14 +740,14 @@ fn get_parameters_by_condition(command_elements: &Vec<&str>, db_command: &ScrCmd
 fn parse_movement_str(command: &str, current_command_container: &mut CommandContainer, db: &ScriptDatabase, line_index: &usize) -> Result<(), ParseError>{
 
     let mut current_command = Movement::new();    
-    let db_command: &Movements;
+    // let db_command: &Movements;
     let command_elements: Vec<&str> = command.split_whitespace().collect(); 
     match db.movements.iter().find(|(_byte_code,command)| command.name == command_elements[0]) {
         Some((byte_code, movement)) => {
             current_command.name = movement.name.clone();
             // println!("{byte_code}");
             current_command.id = u16::from_str_radix(&byte_code.trim_start_matches("0x"), 16).unwrap();
-            db_command = movement;
+            // db_command = movement;
         },
         None => return Err(ParseError::NotACommand(format!("{}", command_elements[0]), format!("{line_index}")))
     }
@@ -591,7 +762,7 @@ fn parse_movement_str(command: &str, current_command_container: &mut CommandCont
 
 
 fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> Result<(), ParseError> {
-    // println!("{}", file.display());
+    println!("{}", file.display());
     let mut parser = ParserState::new();
     let mut script_file = ScriptFile::new();
     let byte_array: Vec<u8> = std::fs::read(file).unwrap();
@@ -637,6 +808,9 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> 
 
         parser.script_no += 1;
     }
+    for offset in &parser.script_offsets {
+        parser.function_offsets.remove(offset);
+    }
     parser.func_no += 1;
     while parser.function_offsets.len() > 0 {
         for function_offset in parser.function_offsets.clone() {
@@ -667,6 +841,7 @@ fn parse_script_file_bin(file: &PathBuf, db: &ScriptDatabase, enums: &Enums) -> 
             _ = parser.action_offsets.remove(&action_offset)
         }
     }
+    // println!("{:#?}", script_file);
     write_plaintext(file, &mut parser, &script_file, db, enums)?;
     Ok(())
 }
@@ -936,12 +1111,17 @@ fn parse_script_function_bytes(
         _ => unreachable!("actions cant be passed to parse_script_function_bytes"),
     };
     let mut current_command_container =
-        CommandContainer::new(cont_type.clone(), pc as i32, container_id);
+        CommandContainer::new(cont_type.clone(), pc as i32);
+    current_command_container.reference.id.push(container_id);
+    // println!("current container {container_id}, offset {}", pc);
     match file.containers.iter_mut().find(|container| container.reference.offset == pc as i32 ) {
         Some(container) => {
             container.reference.id.push(container_id);
+            // println!("pushed id {} at offset {}", container_id, container.reference.offset);
             // println!("{container:#?}");
-            return Ok(())
+            if matches!(current_command_container.kind, ContainerType::Script) {
+                return Ok(())
+            }
         },
         None => {
             // continue with command container construction
@@ -999,6 +1179,7 @@ fn parse_script_function_bytes(
             let offset = command.parameters[0] + pc as i32;
             command.parameters[0] = offset;
             if !file.contains_offset(offset) {
+                // println!("inserted function offset {offset}");
                 parser.function_offsets.insert(offset);
             };
         } else if db_command.name == "JumpIf"
@@ -1010,6 +1191,7 @@ fn parse_script_function_bytes(
             let offset = command.parameters[1] + pc as i32;
             command.parameters[1] = offset;
             if !file.contains_offset(offset) {
+                // println!("inserted function offset {offset}");
                 parser.function_offsets.insert(offset);
             };
         }
@@ -1026,6 +1208,7 @@ fn parse_script_function_bytes(
             _ => unreachable!(""),
         }
     }
+    // println!("{:#?}", current_command_container);   
     file.containers.push(current_command_container);
     Ok(())
 }
@@ -1089,7 +1272,8 @@ fn parse_action_bytes(
 ) -> Result<(), ParseError> {
     let mut end_condition = false;
     let mut current_command_container =
-        CommandContainer::new(cont_type.clone(), pc as i32, parser.action_no);
+        CommandContainer::new(cont_type.clone(), pc as i32);
+    current_command_container.reference.id.push(parser.action_no);
     'read_command_bytes: while end_condition == false {
         let command_bytes: u16 = u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]);
         // println!("command bytes: {command_bytes:x?}");
@@ -1112,7 +1296,7 @@ fn parse_action_bytes(
         let movement = Movement {
             id: command_bytes,
             name: db_command.name.clone(),
-            parameter: i32::from_le_bytes([byte_array[pc], byte_array[pc + 1], 0, 0]),
+            parameter: u16::from_le_bytes([byte_array[pc], byte_array[pc + 1]]),
         };
         pc += 2;
         if db_command.name == "End" {
