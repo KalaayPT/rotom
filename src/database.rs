@@ -9,6 +9,7 @@ pub struct ScriptDatabase {
     pub specialOverworlds: HashMap<String, String>,
     pub overworldDirections: HashMap<String, String>,
     pub scrcmd: HashMap<String, ScrCmd>,
+    pub lvlscrcmd: HashMap<String, LvlScrCmd>,
     pub sounds: HashMap<String, Sounds>,
 }
 #[derive(Debug, Deserialize)]
@@ -26,6 +27,15 @@ pub struct ScrCmd {
     pub parameter_values: Vec<String>,
     pub description: String,
 }
+#[derive(Debug, Deserialize)]
+pub struct LvlScrCmd {
+    pub length: String,
+    pub value: u8,
+    pub parameters: Vec<u8>,
+    pub parameter_tapes: Vec<String>,
+    pub description: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub enum ScriptParameter {
     Integer,
