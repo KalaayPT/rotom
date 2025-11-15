@@ -1,9 +1,10 @@
 [package]
-name = "Rotom"
+name = "rotom"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chrono = "0.4.42"
 clap = { version = "4.5.51", features = ["derive"] }
 linked_hash_set = "0.1.6"
 rayon = "1.11.0"
