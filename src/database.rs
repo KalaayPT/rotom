@@ -1,5 +1,6 @@
+use anyhow::Result;
 use serde::Deserialize;
-use std::{collections::HashMap, error::Error, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 #[derive(Debug, Deserialize)]
 pub struct ScriptDatabase {
@@ -29,10 +30,10 @@ pub struct ScrCmd {
 }
 #[derive(Debug, Deserialize)]
 pub struct LvlScrCmd {
-    pub length: String,
-    pub value: u8,
+    pub length: Option<String>,
+    pub value: Option<u8>,
     pub parameters: Vec<u8>,
-    pub parameter_tapes: Vec<String>,
+    pub parameter_types: Vec<String>,
     pub description: String,
 }
 
@@ -77,7 +78,7 @@ impl Enums {
     }
 }
 
-pub fn read_jsons(json_path: &PathBuf) -> Result<(ScriptDatabase, Enums), Box<dyn Error>> {
+pub fn read_jsons(json_path: &PathBuf) -> Result<(ScriptDatabase, Enums)> {
     // println!("{}", format!("{}\\scrcmd_database.json",json_path));
     let db_json = std::fs::read_to_string(json_path.join("scrcmd_database.json"))?;
     let items_json = std::fs::read_to_string(json_path.join("items.json"))?;

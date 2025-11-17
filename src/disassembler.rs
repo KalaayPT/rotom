@@ -1,46 +1,44 @@
-use std::{error::Error, io::Write, path::PathBuf};
+use std::{collections::HashMap, io::Write, path::PathBuf};
+
+use anyhow::{Context, Result, anyhow};
+use chrono::{DateTime, Local};
 
 use crate::{
-    CommandArgs, Directive,
-    cache::write_cache,
-    database::{Enums, Movements, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons},
-    levelscript::{is_levelscript, parse_levelscript},
-    parse_directory,
-    parser::{
+    CommandArgs, Directive, ParseResult, cache::{BuildStatus, Cache, FileCache, read_cache, write_cache}, database::{Enums, Movements, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons}, helpers::format_container_header, levelscript::{is_levelscript, parse_levelscript}, parse_directory, parser::{
         CommandContainer, CommandList, ContainerType, Movement, ParseError, ParserState,
         ScriptCommand, ScriptFile,
-    },
+    }
 };
 
-pub fn disassemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
+pub fn disassemble(args: CommandArgs) -> Result<()> {
     let start = std::time::Instant::now();
     let (db, enums) = read_jsons(&args.database)?;
+    let mut cachemap: HashMap<String, FileCache> = HashMap::new();
+    let cache = read_cache(&args.script_file)?;
     if args.script_file.is_dir() {
-        match parse_directory(&args.script_file, &db, &enums, Directive::Disassemble) {
-            Ok(()) => {
-                println!(
-                    "scripts disassembled to plaintext successfully in {} ms",
-                    start.elapsed().as_millis()
-                );
-            }
-            Err(e) => {
-                eprintln!("error during parsing: {e}");
-            }
-        };
+        parse_directory(&args.script_file, &db, &enums, &cache, Directive::Disassemble, &mut cachemap)?
     } else {
-        match parse_script_file_bin(&args.script_file, &db, &enums) {
-            Ok(()) => {
-                println!(
-                    "script disassembled to plaintext successfully in {} ms",
-                    start.elapsed().as_millis()
-                );
-            }
+        match parse_script_file_bin(&args.script_file, &db, &enums, &cache) {
+            Ok(parseresult) => {
+                cachemap.insert(parseresult.file_name, parseresult.cache_entry);
+            },
             Err(e) => {
-                eprintln!("error during parsing: {e}");
+                cachemap.insert(args.script_file.file_name()
+                            .ok_or(anyhow!("couldnt asses file name"))?
+                            .to_str()
+                            .ok_or(anyhow!("couldnt convert file name to string"))?
+                            .to_string(), 
+                    FileCache { 
+                        status: crate::cache::BuildStatus::Error, 
+                        build_time: Local::now(), 
+                        // hash: String::new(), 
+                        error_message: Some(format!("{e}")) 
+                    });
             }
         };
     }
-    write_cache(&args.script_file, db.game_version);
+    write_cache(&args.script_file, db.game_version, cachemap)?;
+    println!("success: {} ms", start.elapsed().as_millis());
     Ok(())
 }
 
@@ -48,11 +46,38 @@ pub fn parse_script_file_bin(
     file: &PathBuf,
     db: &ScriptDatabase,
     enums: &Enums,
-) -> Result<(), ParseError> {
+    cache: &Cache
+) -> Result<ParseResult> {
     // println!("{}", file.display());
+    let file_name = file
+        .file_name()
+        .ok_or(anyhow!("couldnt assess file name"))?
+        .to_str()
+        .ok_or(anyhow!("couldnt convert path to string"))?
+        .to_string();
+    let mut file_cache = FileCache::new();
+    let cached_file = cache.files.get(&file_name).ok_or(anyhow!("cache for file not found: {}", file_name))?;
+    let last_modified: DateTime<Local> = std::fs::metadata(
+        format!("{}.script", 
+            file
+            .ancestors()
+            .nth(3)
+            .unwrap()
+            .join("expanded")
+            .join("scripts")
+            .join(&file_name)
+            .display()
+            )
+        ).context("no plaintext file found")?.modified()?.into();
+    // println!("{last_modified:?}");
+    if last_modified <= cached_file.build_time {
+        file_cache.status = BuildStatus::Skipped;
+        // println!("build skipped: {}", file_name);
+        return Ok(ParseResult { file_name, cache_entry: file_cache })
+    }
     let mut parser = ParserState::new();
     let mut script_file = ScriptFile::new();
-    let byte_array: Vec<u8> = std::fs::read(file).unwrap();
+    let byte_array: Vec<u8> = std::fs::read(file)?;
     let jump_table_end = match byte_array
         .windows(4)
         .position(|bytes| bytes[0..=1] == [0x13, 0xFD])
@@ -67,9 +92,9 @@ pub fn parse_script_file_bin(
     };
     if jump_table_end == 0 {
         if is_levelscript(&byte_array) {
-            parse_levelscript(&byte_array, db, &mut parser);
+            parse_levelscript(&byte_array, db, &mut parser, &mut file_cache);
         }
-        return Ok(());
+        return Ok(ParseResult { file_name, cache_entry: file_cache });
     }
     let jump_table = &byte_array[0..jump_table_end];
     let mut script_addresses: Vec<i32> = Vec::new();
@@ -129,8 +154,9 @@ pub fn parse_script_file_bin(
         }
     }
     // println!("{:#?}", script_file);
-    write_plaintext(file, &mut parser, &script_file, db, enums)?;
-    Ok(())
+    write_plaintext(file, &mut parser, &script_file, db, enums, &mut file_cache)?;
+    
+    Ok(ParseResult { file_name, cache_entry: file_cache })
 }
 
 fn parse_script_function_bytes(
@@ -140,7 +166,7 @@ fn parse_script_function_bytes(
     file: &mut ScriptFile,
     parser: &mut ParserState,
     cont_type: ContainerType,
-) -> Result<(), ParseError> {
+) -> Result<()> {
     let mut end_condition = false;
     let container_id = match cont_type {
         ContainerType::Script => parser.script_no,
@@ -180,7 +206,7 @@ fn parse_script_function_bytes(
                 return Err(ParseError::NotACommand(
                     format!("{command_bytes}"),
                     pc as u32,
-                ));
+                ).into());
             }
         };
         let mut parameter_values = Vec::new();
@@ -312,7 +338,7 @@ fn parse_action_bytes(
     file: &mut ScriptFile,
     parser: &mut ParserState,
     cont_type: ContainerType,
-) -> Result<(), ParseError> {
+) -> Result<()> {
     let mut end_condition = false;
     let mut current_command_container = CommandContainer::new(cont_type.clone(), pc as i32);
     current_command_container
@@ -361,13 +387,14 @@ fn write_plaintext(
     parser: &mut ParserState,
     script_file: &ScriptFile,
     db: &ScriptDatabase,
-    enums: &Enums
-) -> Result<(), ParseError> {
-    let output_filename = format!("{}.script", file.file_name().unwrap().display());
+    enums: &Enums,
+    file_cache: &mut FileCache
+) -> Result<()> {
+    let output_filename = format!("{}.script", file.file_name().ok_or(anyhow!("couldnt assess file name"))?.display());
     let output_dir = file
         .ancestors()
         .nth(3)
-        .unwrap()
+        .ok_or(anyhow!("couldnt find ROM root"))?
         .join("expanded")
         .join("scripts");
     if !output_dir.exists() {
@@ -375,38 +402,8 @@ fn write_plaintext(
     }
     for container in &script_file.containers {
         parser.output_string.push_str(
-            match &container.kind {
-                ContainerType::Script => {
-                    let mut str = String::new();
-                    str.push_str("\n\n");                    
-                    for id in &container.reference.id {
-                        str.push_str(format!("Script {}:\n", id).as_str())
-                    }
-                    str = str.trim_end_matches("\n").to_string();
-                    str
-                }
-                ContainerType::Function => {
-                    let mut str = String::new();
-                    str.push_str("\n\n");                    
-                    for id in &container.reference.id {
-                        str.push_str(format!("Function {}:\n", id).as_str())
-                    }
-                    str = str.trim_end_matches("\n").to_string();
-                    str
-                }
-                ContainerType::Action => {
-                    let mut str = String::new();
-                    str.push_str("\n\n");                    
-                    for id in &container.reference.id {
-                        str.push_str(format!("Action {}:\n", id).as_str())
-                    }
-                    str = str.trim_end_matches("\n").to_string();
-                    str
-                }
-            }
-            .as_str(),
+           format_container_header(&container).as_str()
         );
-
         match &container.commands {
             CommandList::Script(commands) => {
                 for command in commands {
@@ -427,10 +424,6 @@ fn write_plaintext(
                     }
                     for (i, parameter) in command.parameters.iter().enumerate() {
                         let mut formatted_parameter = String::new();
-                        // println!(
-                        //     "i: {} name: {} command parameters: {:?} db_command parameter types: {:?}, parameter: {}",
-                        //     i, command.name, command.parameters, db_command.parameter_types, parameter
-                        // );
                         if !db_command.parameter_types.is_empty() {
                             formatted_parameter = match db_command.parameter_types[i] {
                                 ScriptParameter::Function => {
@@ -598,10 +591,17 @@ fn write_plaintext(
             }
         };
     }
-    let mut f = std::fs::File::create(output_dir.join(output_filename))
+    let output_path = output_dir.join(&output_filename);
+    let mut f = std::fs::File::create(&output_path)
         .expect("failed to create output script file");
     f.write_all(parser.output_string.as_bytes())
         .expect("failed to write script text to file");
+    file_cache.status = BuildStatus::Success;
+    file_cache.build_time = Local::now();
+    // file_cache.hash = get_hash(&output_dir.join(output_filename))?
+    //     .iter()
+    //     .map(|byte| format!("{byte:02x}"))
+    //     .collect();
     // println!("{}", parser.output_string);
     Ok(())
 }

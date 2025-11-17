@@ -1,10 +1,12 @@
-use std::{error::Error, io::Write, path::PathBuf};
+use std::{collections::HashMap, io::Write, path::PathBuf};
 
+use anyhow::{Result, anyhow};
+use chrono::Local;
 use regex::{Match, Regex};
 
 use crate::{
-    CommandArgs, Directive,
-    cache::write_cache,
+    CommandArgs, Directive, ParseResult,
+    cache::{BuildStatus, FileCache, read_cache, write_cache},
     database::{Enums, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons},
     helpers::parse_number_str,
     parse_directory,
@@ -14,36 +16,52 @@ use crate::{
     },
 };
 
-pub fn assemble(args: CommandArgs) -> Result<(), Box<dyn Error>> {
+pub fn assemble(args: CommandArgs) -> Result<()> {
     let start = std::time::Instant::now();
+    let mut cachemap: HashMap<String, FileCache> = HashMap::new();
     let (db, enums) = read_jsons(&args.database)?;
+    let cache = read_cache(&args.script_file)?;
     if args.script_file.is_dir() {
-        match parse_directory(&args.script_file, &db, &enums, Directive::Assemble) {
-            Ok(()) => {
-                println!(
-                    "Scripts assembled to binary successfully in {} ms",
-                    start.elapsed().as_millis()
-                );
-            }
-            Err(e) => {
-                eprintln!("Error during parsing: {e}");
-            }
-        };
+        parse_directory(
+            &args.script_file,
+            &db,
+            &enums,
+            &cache,
+            Directive::Assemble,
+            &mut cachemap,
+        )?
     } else {
-        let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:").unwrap();
-        match parse_plaintext_file(&args.script_file, &db, &enums, &regex) {
-            Ok(()) => {
-                println!(
-                    "Script assembled to binary successfully in {} ms",
-                    start.elapsed().as_millis()
-                );
+        let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:")?;
+        let result = parse_plaintext_file(&args.script_file, &db, &enums, &regex);
+        match result {
+            Ok(parse_result) => {
+                cachemap.insert(parse_result.file_name, parse_result.cache_entry);
             }
             Err(e) => {
-                eprintln!("Error during parsing: {e}");
+                eprintln!("Error processing {}: {}", args.script_file.display(), e);
+                let name = args
+                    .script_file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                cachemap.insert(
+                    name,
+                    FileCache {
+                        status: crate::cache::BuildStatus::Error,
+                        // hash: get_hash(&args.script_file)?
+                        //     .iter()
+                        //     .map(|byte| format!("{byte:02x}"))
+                        //     .collect(),
+                        error_message: Some(e.to_string()),
+                        build_time: Local::now(),
+                    },
+                );
             }
-        };
+        }
     }
-    write_cache(&args.script_file, db.game_version);
+    write_cache(&args.script_file, db.game_version, cachemap)?;
+    println!("success: {} ms", start.elapsed().as_millis());
     Ok(())
 }
 
@@ -52,11 +70,34 @@ pub fn parse_plaintext_file(
     db: &ScriptDatabase,
     enums: &Enums,
     regex: &Regex,
-) -> Result<(), ParseError> {
+) -> Result<ParseResult> {
     // println!("file: {}", file.display());
+    let file_name = file
+        .file_name()
+        .ok_or(anyhow!("couldnt asses file name"))?
+        .to_str()
+        .ok_or(anyhow!("couldnt convert file name to string"))?
+        .to_string();
+    let mut file_cache = FileCache::new();
     let mut script_file = ScriptFile::new();
     let mut parser = ParserState::new();
-    let text = std::fs::read_to_string(file).unwrap();
+    let text = std::fs::read_to_string(file)?;
+    for container in find_command_containers(&text, regex) {
+        // println!("{container}");
+        parse_plaintext_container(&container, &db, &enums, &mut parser, &mut script_file)?;
+    }
+    // print!("{script_file:#?}");
+    write_binary(file, &mut parser, &mut script_file, db, &mut file_cache)?;
+    Ok(ParseResult {
+        file_name,
+        cache_entry: file_cache,
+    })
+}
+
+fn find_command_containers<'a>(
+    text: &'a str,
+    regex: &'a Regex,
+) -> impl Iterator<Item = &'a str> + 'a {
     let matches: Vec<Match> = regex.find_iter(&text).collect();
     let mut start_indices: Vec<usize> = Vec::new();
     if !matches.is_empty() {
@@ -73,20 +114,10 @@ pub fn parse_plaintext_file(
     let mut end_indices: Vec<usize> = start_indices.iter().skip(1).copied().collect();
     end_indices.push(text.len());
     // println!("{:?}", start_indices);
-    let command_containers: Vec<&str> = start_indices
-        .iter()
+    start_indices
+        .into_iter()
         .zip(end_indices)
-        .map(|(&start, end)| text[start..end].trim())
-        .collect();
-
-    for container in &command_containers {
-        // println!("{container}");
-        parse_plaintext_container(&container, &db, &enums, &mut parser, &mut script_file)?;
-    }
-    // print!("{script_file:#?}");
-    // println!("ScriptFile size: {}", size_of_val(&script_file));
-    write_binary(file, &mut parser, &mut script_file, db)?;
-    Ok(())
+        .map(move |(start, end)| text[start..end].trim())
 }
 
 fn write_binary(
@@ -94,7 +125,8 @@ fn write_binary(
     parser: &mut ParserState,
     script_file: &mut ScriptFile,
     db: &ScriptDatabase,
-) -> Result<(), ParseError> {
+    file_cache: &mut FileCache,
+) -> Result<()> {
     // println!("{:#?}", script_file);
     let mut pc: usize = 0;
     let mut byte_array: Vec<u8> = Vec::with_capacity(256 * 256);
@@ -135,9 +167,9 @@ fn write_binary(
                     .scrcmd
                     .iter()
                     .find(|(_byte, command)| command.name == command_to_write.name)
-                    .unwrap();
+                    .ok_or(anyhow!("command not found!"))?;
                 byte_array.append(
-                    &mut { parse_number_str(command_byte) as u16 }
+                    &mut { parse_number_str(command_byte)? as u16 }
                         .to_le_bytes()
                         .to_vec(),
                 );
@@ -187,12 +219,15 @@ fn write_binary(
         } else if let CommandList::Movement(command_list) = &container.commands {
             // println!("added offset for movement {}: {}", container.reference.id.first().unwrap(), container.reference.offset);
             for command_to_write in command_list {
-                let (command_byte, _db_command) = db
+                if let Some((command_byte, _db_command)) = db
                     .movements
                     .iter()
                     .find(|(_byte, command)| command.name == command_to_write.name)
-                    .unwrap();
-                byte_array.extend({ parse_number_str(command_byte) }.to_le_bytes());
+                {
+                    byte_array.extend(parse_number_str(command_byte)?.to_le_bytes());
+                } else {
+                    byte_array.extend(parse_number_str(&command_to_write.name)?.to_le_bytes());
+                };
                 pc += 2;
                 byte_array.extend(command_to_write.parameter.to_le_bytes());
                 pc += 2;
@@ -216,7 +251,7 @@ fn write_binary(
     // println!("relocation table: {:#x?}", parser.relocation_table);
     // println!("symbol table: {:#x?}\nsymbol table movements: {:#x?}", parser.symbol_table, parser.symbol_table_movements);
 
-    linker(&mut byte_array, parser);
+    linker(&mut byte_array, parser)?;
     while byte_array.len() % 2 != 0 {
         byte_array.push(0);
     }
@@ -224,7 +259,7 @@ fn write_binary(
     let output_filename = format!(
         "{}",
         file.file_name()
-            .unwrap()
+            .ok_or(anyhow!("couldnt assess file name"))?
             .display()
             .to_string()
             .trim_end_matches(".script")
@@ -232,33 +267,50 @@ fn write_binary(
     let output_dir = file
         .ancestors()
         .nth(3)
-        .unwrap()
+        .ok_or(anyhow!("couldnt find ROM root"))?
         .join("unpacked")
         .join("testscripts"); //TODO: 
     std::fs::create_dir_all(&output_dir).expect("couldn't create unpacked/scripts directory"); //TODO:
-    let mut f = std::fs::File::create(output_dir.join(output_filename))
+    let mut f = std::fs::File::create(output_dir.join(&output_filename))
         .expect("failed to create output script file");
     f.write_all(&byte_array)
         .expect("failed to write script binary to file");
+    file_cache.status = BuildStatus::Success;
+    file_cache.build_time = Local::now();
+    // file_cache.hash = get_hash(&output_dir.join(output_filename))?
+    //     .iter()
+    //     .map(|byte| format!("{byte:02x}"))
+    //     .collect();
     Ok(())
 }
 
-fn linker(byte_array: &mut Vec<u8>, parser: &ParserState) {
+fn linker(byte_array: &mut Vec<u8>, parser: &ParserState) -> Result<()> {
     for (entry, container, kind) in &parser.relocation_table {
         let chunk = &mut byte_array[*entry..*entry + 4];
         // println!("{:x?}",chunk);
         match kind {
             ContainerType::Script | ContainerType::Function => {
                 // println!("container: {container:x}");
-                let container_ref =
-                    { *parser.symbol_table.get(container).unwrap() as i32 - *entry as i32 - 4 }
-                        .to_le_bytes();
+                let container_ref = {
+                    *parser
+                        .symbol_table
+                        .get(container)
+                        .ok_or(anyhow!("couldnt find container with given offset"))?
+                        as i32
+                        - *entry as i32
+                        - 4
+                }
+                .to_le_bytes();
                 // println!("bytes: {container_ref:?}");
                 chunk.copy_from_slice(&container_ref);
             }
             ContainerType::Action => {
                 let container_ref = {
-                    *parser.symbol_table_movements.get(container).unwrap() as i32
+                    *parser
+                        .symbol_table_movements
+                        .get(container)
+                        .ok_or(anyhow!("couldnt find container with given offset"))?
+                        as i32
                         - *entry as i32
                         - 4
                 }
@@ -267,6 +319,7 @@ fn linker(byte_array: &mut Vec<u8>, parser: &ParserState) {
             }
         }
     }
+    Ok(())
 }
 
 fn parse_plaintext_container(
@@ -275,21 +328,22 @@ fn parse_plaintext_container(
     enums: &Enums,
     parser: &mut ParserState,
     script_file: &mut ScriptFile,
-) -> Result<(), ParseError> {
+) -> Result<()> {
     let mut current_command_container = CommandContainer::new(ContainerType::Script, 0);
     let mut end_condition = false;
-    let mut i = 0;
+    let mut header_index = 0;
     while !end_condition {
-        if let Some(container_line) = container_str.lines().nth(i) {
+        if let Some(container_line) = container_str.lines().nth(header_index) {
+            // println!("{container_line}");
             end_condition =
-                parse_container_header(container_line, &mut current_command_container, parser);
-            i += 1;
+                parse_container_header(container_line, &mut current_command_container, parser)?;
+            header_index += 1;
         } else {
             break;
         }
     }
     // println!("{}",parser.script_no);
-    for (i, line) in container_str.lines().skip(1).enumerate() {
+    for (i, line) in container_str.lines().skip(header_index - 1).enumerate() {
         parse_command_str(line, &mut current_command_container, &db, i, &enums)?;
     }
     // println!("{current_command_container:#?}");
@@ -301,7 +355,7 @@ fn parse_container_header(
     container_line: &str,
     current_command_container: &mut CommandContainer,
     parser: &mut ParserState,
-) -> bool {
+) -> Result<bool> {
     // println!("header line: {container_line}");
     match container_line.split_whitespace().next().unwrap() {
         "Script" => {
@@ -311,10 +365,9 @@ fn parse_container_header(
                 container_line
                     .split_whitespace()
                     .nth(1)
-                    .unwrap()
+                    .ok_or(anyhow!("container number not found"))?
                     .trim_end_matches(":")
-                    .parse()
-                    .unwrap(),
+                    .parse()?,
             );
         }
         "Function" => {
@@ -331,9 +384,9 @@ fn parse_container_header(
                 .push(parser.action_no);
             current_command_container.commands = CommandList::Movement(Vec::new())
         }
-        _ => return true,
+        _ => return Ok(true),
     };
-    false
+    Ok(false)
 }
 
 fn parse_command_str(
@@ -342,7 +395,7 @@ fn parse_command_str(
     db: &ScriptDatabase,
     line_index: usize,
     enums: &Enums,
-) -> Result<(), ParseError> {
+) -> Result<()> {
     // println!("{command}");
     if matches!(current_command_container.kind, ContainerType::Action) {
         parse_movement_str(&command, current_command_container, &db, &line_index)?;
@@ -359,20 +412,20 @@ fn parse_command_str(
         Some((byte_code, scrcmd)) => {
             current_command.name = scrcmd.name.clone();
             // println!("{byte_code}");
-            current_command.id = parse_number_str(&byte_code) as u16;
+            current_command.id = parse_number_str(&byte_code)? as u16;
             db_command = scrcmd;
         }
         None => {
             return Err(ParseError::NotACommand(
                 format!("{}", command_elements[0]),
                 line_index as u32,
-            ));
+            )
+            .into());
         }
     }
     let mut db_parameters = db_command.parameters.clone();
     if db_command.parameters.first() == Some(&255) {
-        db_parameters =
-            get_parameters_by_condition(command_elements[1].parse().unwrap(), db_command)?;
+        db_parameters = get_parameters_by_condition(command_elements[1].parse()?, db_command)?;
     }
     // println!("line {line_index}: {command}");
     if command_elements.len() > db_parameters.len() + 1 {
@@ -381,7 +434,8 @@ fn parse_command_str(
             command_elements.len() - 1,
             line_index as u32,
             command.to_string(),
-        ));
+        )
+        .into());
     }
     for (i, _parameter) in db_parameters.iter().enumerate() {
         if command_elements.len() == 1 {
@@ -396,28 +450,27 @@ fn parse_command_str(
                     .find(|(_byte, sound)| sound.name == command_elements[i + 1])
                 {
                     Some((byte, _sound)) => {
-                        current_command.parameters.push(byte.parse().unwrap());
+                        current_command.parameters.push(byte.parse()?);
                     }
                     None => {
-                        return Err(ParseError::NotACommand(
-                            format!("{}", command_elements[i + 1]),
-                            line_index as u32,
-                        ));
+                        current_command
+                            .parameters
+                            .push(parse_number_str(command_elements[i + 1])?);
                     }
                 }
             }
             ScriptParameter::Variable | ScriptParameter::Flex => current_command
                 .parameters
-                .push(parse_number_str(command_elements[i + 1])),
+                .push(parse_number_str(command_elements[i + 1])?),
             ScriptParameter::ComparisonOperator => {
                 match db
                     .comparisonOperators
                     .iter()
                     .find(|(_byte, string)| *string == command_elements[i + 1])
                 {
-                    Some((_byte, _string)) => current_command
-                        .parameters
-                        .push(parse_number_str(command_elements[i + 1])),
+                    Some((byte, _string)) => {
+                        current_command.parameters.push(parse_number_str(byte)?)
+                    }
                     None => unreachable!(),
                 }
             }
@@ -429,14 +482,12 @@ fn parse_command_str(
                     "Func" => current_command.parameters.push(
                         command_elements[i + 1]
                             .trim_start_matches("Function#")
-                            .parse()
-                            .unwrap(),
+                            .parse()?,
                     ),
                     "Scri" => current_command.parameters.push(
                         -command_elements[i + 1]
                             .trim_start_matches("Script#")
-                            .parse::<i32>()
-                            .unwrap(),
+                            .parse::<i32>()?,
                     ),
                     _ => unreachable!(),
                 }
@@ -447,10 +498,10 @@ fn parse_command_str(
                     .iter()
                     .find(|(_byte, string)| *string == command_elements[i + 1])
                 {
-                    Some((byte, _string)) => current_command.parameters.push(byte.parse().unwrap()),
+                    Some((byte, _string)) => current_command.parameters.push(byte.parse()?),
                     None => current_command
                         .parameters
-                        .push(parse_number_str(command_elements[i + 1])),
+                        .push(parse_number_str(command_elements[i + 1])?),
                 }
             }
             ScriptParameter::Trainer => {
@@ -459,10 +510,10 @@ fn parse_command_str(
                     .iter()
                     .find(|(_byte, string)| *string == command_elements[i + 1])
                 {
-                    Some((byte, _string)) => current_command.parameters.push(byte.parse().unwrap()),
+                    Some((byte, _string)) => current_command.parameters.push(byte.parse()?),
                     None => current_command
                         .parameters
-                        .push(parse_number_str(command_elements[i + 1])),
+                        .push(parse_number_str(command_elements[i + 1])?),
                 }
             }
             ScriptParameter::Pokemon => {
@@ -471,10 +522,10 @@ fn parse_command_str(
                     .iter()
                     .find(|(_byte, string)| *string == command_elements[i + 1])
                 {
-                    Some((byte, _string)) => current_command.parameters.push(byte.parse().unwrap()),
+                    Some((byte, _string)) => current_command.parameters.push(byte.parse()?),
                     None => current_command
                         .parameters
-                        .push(parse_number_str(command_elements[i + 1])),
+                        .push(parse_number_str(command_elements[i + 1])?),
                 }
             }
             ScriptParameter::Move => {
@@ -483,10 +534,10 @@ fn parse_command_str(
                     .iter()
                     .find(|(_byte, string)| *string == command_elements[i + 1])
                 {
-                    Some((byte, _string)) => current_command.parameters.push(byte.parse().unwrap()),
+                    Some((byte, _string)) => current_command.parameters.push(byte.parse()?),
                     None => current_command
                         .parameters
-                        .push(parse_number_str(command_elements[i + 1])),
+                        .push(parse_number_str(command_elements[i + 1])?),
                 }
             }
             ScriptParameter::Overworld => {
@@ -495,13 +546,12 @@ fn parse_command_str(
                 } else if command_elements[i + 1].starts_with("0x") {
                     current_command
                         .parameters
-                        .push(parse_number_str(command_elements[i + 1]))
+                        .push(parse_number_str(command_elements[i + 1])?)
                 } else {
                     current_command.parameters.push(
                         command_elements[i + 1]
                             .trim_start_matches("Overworld.")
-                            .parse()
-                            .unwrap(),
+                            .parse()?,
                     );
                 }
             }
@@ -509,13 +559,12 @@ fn parse_command_str(
                 if command_elements[i + 1].starts_with("0x") {
                     current_command
                         .parameters
-                        .push(parse_number_str(command_elements[i + 1]))
+                        .push(parse_number_str(command_elements[i + 1])?)
                 } else {
                     current_command.parameters.push(
                         command_elements[i + 1]
                             .trim_start_matches("Move.")
-                            .parse()
-                            .unwrap(),
+                            .parse()?,
                     );
                 }
             }
@@ -525,8 +574,7 @@ fn parse_command_str(
                     "Action#" => current_command.parameters.push(
                         command_elements[i + 1]
                             .trim_start_matches("Action#")
-                            .parse()
-                            .unwrap(),
+                            .parse()?,
                     ),
                     _ => unreachable!(),
                 }
@@ -535,7 +583,7 @@ fn parse_command_str(
                 if command_elements[i + 1].starts_with("0x") {
                     current_command
                         .parameters
-                        .push(parse_number_str(command_elements[i + 1]))
+                        .push(parse_number_str(command_elements[i + 1])?)
                 } else {
                     match db
                         .overworldDirections
@@ -544,14 +592,14 @@ fn parse_command_str(
                     {
                         Some((byte, _string)) => current_command
                             .parameters
-                            .push(i32::from_str_radix(byte.trim_start_matches("0x"), 16).unwrap()),
+                            .push(i32::from_str_radix(byte.trim_start_matches("0x"), 16)?),
                         None => unreachable!(),
                     }
                 }
             }
             _ => current_command
                 .parameters
-                .push(parse_number_str(command_elements[i + 1])),
+                .push(parse_number_str(command_elements[i + 1])?),
         }
     }
     // println!("command: {current_command:#?}");
@@ -561,10 +609,7 @@ fn parse_command_str(
     Ok(())
 }
 
-fn get_parameters_by_condition(
-    condition_param: u8,
-    db_command: &ScrCmd,
-) -> Result<Vec<u8>, ParseError> {
+fn get_parameters_by_condition(condition_param: u8, db_command: &ScrCmd) -> Result<Vec<u8>> {
     let mut corrected_parameters: Vec<u8> = vec![2];
     // println!("condition marker: {} condition parameter: {}", db_command.parameters[0], db_command.parameters[1]);
     let mut paramcounter = 2;
@@ -589,7 +634,7 @@ fn parse_movement_str(
     current_command_container: &mut CommandContainer,
     db: &ScriptDatabase,
     line_index: &usize,
-) -> Result<(), ParseError> {
+) -> Result<()> {
     let mut current_command = Movement::new();
     // let db_command: &Movements;
     let command_elements: Vec<&str> = command.split_whitespace().collect();
@@ -601,18 +646,15 @@ fn parse_movement_str(
         Some((byte_code, movement)) => {
             current_command.name = movement.name.clone();
             // println!("{byte_code}");
-            current_command.id = parse_number_str(&byte_code) as u16;
-            // db_command = movement;
+            current_command.id = parse_number_str(&byte_code)? as u16;
         }
         None => {
-            return Err(ParseError::NotACommand(
-                format!("{}", command_elements[0]),
-                *line_index as u32,
-            ));
+            current_command.name = command_elements[0].to_string();
+            current_command.id = parse_number_str(command_elements[1])? as u16;
         }
     }
     if command_elements.len() == 2 {
-        current_command.parameter = command_elements[1].parse().unwrap();
+        current_command.parameter = command_elements[1].parse()?;
     }
     if let CommandList::Movement(commandlist) = &mut current_command_container.commands {
         commandlist.push(current_command);

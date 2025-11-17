@@ -94,6 +94,7 @@ pub enum ParseError {
     InvalidParameter(usize, u32, String),
     TooManyParameters(usize, usize, u32, String),
 }
+impl std::error::Error for ParseError {}
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
