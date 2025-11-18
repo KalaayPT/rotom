@@ -6,9 +6,12 @@ use std::{collections::HashMap, path::PathBuf};
 pub struct ScriptDatabase {
     pub game_version: String,
     pub movements: HashMap<String, Movements>,
-    pub comparisonOperators: HashMap<String, String>,
-    pub specialOverworlds: HashMap<String, String>,
-    pub overworldDirections: HashMap<String, String>,
+    #[serde(rename = "comparisonOperators")]
+    pub comparison_operators: HashMap<String, String>,
+    #[serde(rename = "specialOverworlds")]
+    pub special_overworlds: HashMap<String, String>,
+    #[serde(rename = "overworldDirections")]
+    pub overworld_directions: HashMap<String, String>,
     pub scrcmd: HashMap<String, ScrCmd>,
     pub lvlscrcmd: HashMap<String, LvlScrCmd>,
     pub sounds: HashMap<String, Sounds>,

@@ -1,39 +1,62 @@
 use std::{collections::HashMap, io::Write, path::PathBuf};
 
-use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Local};
+use anyhow::{Result, anyhow};
+use chrono::Local;
 
 use crate::{
-    CommandArgs, Directive, ParseResult, cache::{BuildStatus, Cache, FileCache, read_cache, write_cache}, database::{Enums, Movements, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons}, helpers::format_container_header, levelscript::{is_levelscript, parse_levelscript}, parse_directory, parser::{
-        CommandContainer, CommandList, ContainerType, Movement, ParseError, ParserState,
+    CommandArgs, Directive, ParseResult,
+    cache::{BuildStatus, Cache, FileCache, read_cache, write_cache},
+    database::{Movements, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons},
+    helpers::{format_container_header, format_parameter_enum, get_output_dir, number_to_str},
+    levelscript::{is_levelscript, parse_levelscript_bin},
+    parse_directory,
+    parser::{
+        CONDITIONAL_PARAM_MARKER, CommandContainer, CommandList, ContainerType,
+        JUMP_TABLE_END_MARKER, LevelScriptCommand, Movement, ParseContext, ParseError, ParserState,
         ScriptCommand, ScriptFile,
-    }
+    },
 };
 
 pub fn disassemble(args: CommandArgs) -> Result<()> {
     let start = std::time::Instant::now();
     let (db, enums) = read_jsons(&args.database)?;
     let mut cachemap: HashMap<String, FileCache> = HashMap::new();
-    let cache = read_cache(&args.script_file)?;
+    let cache = match read_cache(&args.script_file) {
+        Ok(cache) => cache,
+        Err(_) => Cache::new(),
+    };
+    let ctx = ParseContext {
+        db: &db,
+        enums: &enums,
+    };
     if args.script_file.is_dir() {
-        parse_directory(&args.script_file, &db, &enums, &cache, Directive::Disassemble, &mut cachemap)?
+        parse_directory(
+            &args.script_file,
+            &cache,
+            Directive::Disassemble,
+            &mut cachemap,
+            &ctx,
+        )?
     } else {
-        match parse_script_file_bin(&args.script_file, &db, &enums, &cache) {
+        match parse_script_file_bin(&args.script_file, &cache, &ctx) {
             Ok(parseresult) => {
                 cachemap.insert(parseresult.file_name, parseresult.cache_entry);
-            },
+            }
             Err(e) => {
-                cachemap.insert(args.script_file.file_name()
-                            .ok_or(anyhow!("couldnt asses file name"))?
-                            .to_str()
-                            .ok_or(anyhow!("couldnt convert file name to string"))?
-                            .to_string(), 
-                    FileCache { 
-                        status: crate::cache::BuildStatus::Error, 
-                        build_time: Local::now(), 
-                        // hash: String::new(), 
-                        error_message: Some(format!("{e}")) 
-                    });
+                cachemap.insert(
+                    args.script_file
+                        .file_name()
+                        .ok_or(anyhow!("couldnt asses file name"))?
+                        .to_str()
+                        .ok_or(anyhow!("couldnt convert file name to string"))?
+                        .to_string(),
+                    FileCache {
+                        status: BuildStatus::PartialDisassembly,
+                        build_time: Local::now(),
+                        // hash: String::new(),
+                        error_message: Some(format!("{e}")),
+                    },
+                );
             }
         };
     }
@@ -44,9 +67,8 @@ pub fn disassemble(args: CommandArgs) -> Result<()> {
 
 pub fn parse_script_file_bin(
     file: &PathBuf,
-    db: &ScriptDatabase,
-    enums: &Enums,
-    cache: &Cache
+    cache: &Cache,
+    ctx: &ParseContext,
 ) -> Result<ParseResult> {
     // println!("{}", file.display());
     let file_name = file
@@ -55,32 +77,36 @@ pub fn parse_script_file_bin(
         .to_str()
         .ok_or(anyhow!("couldnt convert path to string"))?
         .to_string();
+    // println!("uuuhhh");
     let mut file_cache = FileCache::new();
-    let cached_file = cache.files.get(&file_name).ok_or(anyhow!("cache for file not found: {}", file_name))?;
-    let last_modified: DateTime<Local> = std::fs::metadata(
-        format!("{}.script", 
-            file
-            .ancestors()
-            .nth(3)
-            .unwrap()
-            .join("expanded")
-            .join("scripts")
+    let cached_file = cache.files.get(&file_name);
+    let mut last_modified = Local::now();
+    if let Ok(file) = std::fs::metadata(format!(
+        "{}.script",
+        get_output_dir(file, Directive::Disassemble)?
             .join(&file_name)
             .display()
-            )
-        ).context("no plaintext file found")?.modified()?.into();
-    // println!("{last_modified:?}");
-    if last_modified <= cached_file.build_time {
-        file_cache.status = BuildStatus::Skipped;
-        // println!("build skipped: {}", file_name);
-        return Ok(ParseResult { file_name, cache_entry: file_cache })
+    )) {
+        last_modified = file.modified()?.into();
     }
+    // println!("{last_modified:?}");
+    if let Some(cached_file) = cached_file {
+        if last_modified <= cached_file.build_time {
+            file_cache.status = BuildStatus::Skipped;
+            // println!("build skipped: {}", file_name);
+            return Ok(ParseResult {
+                file_name,
+                cache_entry: file_cache,
+            });
+        }
+    }
+    // println!("{}", file.display());
     let mut parser = ParserState::new();
     let mut script_file = ScriptFile::new();
     let byte_array: Vec<u8> = std::fs::read(file)?;
     let jump_table_end = match byte_array
         .windows(4)
-        .position(|bytes| bytes[0..=1] == [0x13, 0xFD])
+        .position(|bytes| bytes[0..=1] == JUMP_TABLE_END_MARKER)
     {
         Some(end) => end,
         None => {
@@ -92,9 +118,19 @@ pub fn parse_script_file_bin(
     };
     if jump_table_end == 0 {
         if is_levelscript(&byte_array) {
-            parse_levelscript(&byte_array, db, &mut parser, &mut file_cache);
+            parse_levelscript_bin(
+                file,
+                &byte_array,
+                &mut parser,
+                &mut file_cache,
+                &mut script_file,
+                &ctx,
+            )?;
         }
-        return Ok(ParseResult { file_name, cache_entry: file_cache });
+        return Ok(ParseResult {
+            file_name,
+            cache_entry: file_cache,
+        });
     }
     let jump_table = &byte_array[0..jump_table_end];
     let mut script_addresses: Vec<i32> = Vec::new();
@@ -112,7 +148,7 @@ pub fn parse_script_file_bin(
         parse_script_function_bytes(
             &byte_array,
             script_offset as usize,
-            &db,
+            &ctx.db,
             &mut script_file,
             &mut parser,
             ContainerType::Script,
@@ -129,7 +165,7 @@ pub fn parse_script_file_bin(
             parse_script_function_bytes(
                 &byte_array,
                 function_offset as usize,
-                &db,
+                &ctx.db,
                 &mut script_file,
                 &mut parser,
                 ContainerType::Function,
@@ -144,7 +180,7 @@ pub fn parse_script_file_bin(
             parse_action_bytes(
                 &byte_array,
                 action_offset as usize,
-                &db,
+                ctx.db,
                 &mut script_file,
                 &mut parser,
                 ContainerType::Action,
@@ -154,9 +190,12 @@ pub fn parse_script_file_bin(
         }
     }
     // println!("{:#?}", script_file);
-    write_plaintext(file, &mut parser, &script_file, db, enums, &mut file_cache)?;
-    
-    Ok(ParseResult { file_name, cache_entry: file_cache })
+    write_plaintext(file, &mut parser, &script_file, &mut file_cache, &ctx)?;
+
+    Ok(ParseResult {
+        file_name,
+        cache_entry: file_cache,
+    })
 }
 
 fn parse_script_function_bytes(
@@ -203,14 +242,11 @@ fn parse_script_function_bytes(
                 scrcmd
             }
             None => {
-                return Err(ParseError::NotACommand(
-                    format!("{command_bytes}"),
-                    pc as u32,
-                ).into());
+                return Err(ParseError::NotACommand(format!("{command_bytes}"), pc as u32).into());
             }
         };
         let mut parameter_values = Vec::new();
-        if db_command.parameters.first() == Some(&255) {
+        if db_command.parameters.first() == Some(&CONDITIONAL_PARAM_MARKER) {
             parse_conditional_parameters(&mut parameter_values, db_command, byte_array, &mut pc);
         } else {
             for parameter in &db_command.parameters {
@@ -382,52 +418,71 @@ fn parse_action_bytes(
     Ok(())
 }
 
-fn write_plaintext(
+pub fn write_plaintext(
     file: &PathBuf,
     parser: &mut ParserState,
     script_file: &ScriptFile,
-    db: &ScriptDatabase,
-    enums: &Enums,
-    file_cache: &mut FileCache
+    file_cache: &mut FileCache,
+    ctx: &ParseContext,
 ) -> Result<()> {
-    let output_filename = format!("{}.script", file.file_name().ok_or(anyhow!("couldnt assess file name"))?.display());
-    let output_dir = file
-        .ancestors()
-        .nth(3)
-        .ok_or(anyhow!("couldnt find ROM root"))?
-        .join("expanded")
-        .join("scripts");
+    let output_filename = format!(
+        "{}.script",
+        file.file_name()
+            .ok_or(anyhow!("couldnt assess file name"))?
+            .display()
+    );
+    let output_dir = get_output_dir(file, Directive::Disassemble)?;
     if !output_dir.exists() {
         std::fs::create_dir_all(&output_dir).expect("couldn't create expanded/scripts directory");
     }
     for container in &script_file.containers {
-        parser.output_string.push_str(
-           format_container_header(&container).as_str()
-        );
+        parser
+            .output_string
+            .push_str(format_container_header(&container).as_str());
         match &container.commands {
             CommandList::Script(commands) => {
-                for command in commands {
-                    let byte_string =
-                        format!("0x{}", format!("{:0>4x}", command.id).to_uppercase());
-                    let db_command = match db.scrcmd.get(&byte_string) {
-                        Some(scrcmd) => scrcmd,
-                        _ => unreachable!(""),
-                    };
-                    if command.name == "Jump" || command.name == "End" || command.name == "Return" {
-                        parser
-                            .output_string
-                            .push_str(format!("\n{} ", command.name).as_str());
-                    } else {
-                        parser
-                            .output_string
-                            .push_str(format!("\n\t{} ", command.name).as_str());
-                    }
-                    for (i, parameter) in command.parameters.iter().enumerate() {
-                        let mut formatted_parameter = String::new();
-                        if !db_command.parameter_types.is_empty() {
-                            formatted_parameter = match db_command.parameter_types[i] {
-                                ScriptParameter::Function => {
-                                    match script_file
+                plaintext_script_commands(commands, parser, script_file, &ctx)
+            }
+            CommandList::Movement(commands) => plaintext_movement_commands(commands, parser),
+            CommandList::Levelscript(commands) => plaintext_levelscript_commands(commands, parser),
+        }?;
+    }
+    let output_path = output_dir.join(&output_filename);
+    let mut f = std::fs::File::create(&output_path).expect("failed to create output script file");
+    f.write_all(parser.output_string.as_bytes())
+        .expect("failed to write script text to file");
+    file_cache.status = BuildStatus::Success;
+    file_cache.build_time = Local::now();
+    Ok(())
+}
+
+fn plaintext_script_commands(
+    commands: &Vec<ScriptCommand>,
+    parser: &mut ParserState,
+    script_file: &ScriptFile,
+    ctx: &ParseContext,
+) -> Result<()> {
+    for command in commands {
+        let byte_string = format!("0x{}", format!("{:0>4x}", command.id).to_uppercase());
+        let db_command = match ctx.db.scrcmd.get(&byte_string) {
+            Some(scrcmd) => scrcmd,
+            _ => unreachable!(""),
+        };
+        if command.name == "Jump" || command.name == "End" || command.name == "Return" {
+            parser
+                .output_string
+                .push_str(format!("\n{} ", command.name).as_str());
+        } else {
+            parser
+                .output_string
+                .push_str(format!("\n\t{} ", command.name).as_str());
+        }
+        for (i, parameter) in command.parameters.iter().enumerate() {
+            let mut formatted_parameter = String::new();
+            if !db_command.parameter_types.is_empty() {
+                formatted_parameter = match db_command.parameter_types[i] {
+                    ScriptParameter::Function => {
+                        match script_file
                                         .containers
                                         .iter()
                                         .find(|command| command.reference.offset == *parameter)
@@ -467,141 +522,184 @@ fn write_plaintext(
                                             )
                                     )
                                 },
-                                            ContainerType::Action => unreachable!("")
+                                            ContainerType::Action | ContainerType::LevelScript => unreachable!("")
                                         }
-                                                                    }
-                                ScriptParameter::Action => {
+                    }
+                    ScriptParameter::Action => {
+                        format!(
+                            "Action#{}",
+                            script_file
+                                .containers
+                                .iter()
+                                .find(|command| command.reference.offset == *parameter)
+                                .map(|command| command.reference.id.first().unwrap())
+                                .expect(
                                     format!(
-                                        "Action#{}",
-                                        script_file
-                                            .containers
-                                            .iter()
-                                            .find(|command| command.reference.offset == *parameter)
-                                            .map(|command| command.reference.id.first().unwrap())
-                                            .expect(
-                                                format!(
-                                                    "function offset not found: {}\ncommand: {:?}",
-                                                    *parameter,
-                                                    command
-                                                )
-                                                .as_str()
-                                            )
+                                        "function offset not found: {}\ncommand: {:?}",
+                                        *parameter, command
                                     )
-                                },
-                                ScriptParameter::Variable => format!("0x{}", format!("{:x}", parameter).to_uppercase()),
-                                ScriptParameter::Integer => format!("{parameter}"),
-                                ScriptParameter::ComparisonOperator =>  {   
-                                    let byte_string =
-                                    format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
-                                    let mut formatted = String::new();
-                                    if let Some(val) = db.comparisonOperators.get(&byte_string) {
-                                        formatted = val.clone();
-
-                                    } 
-                                    formatted
-                                },
-                                ScriptParameter::OwMovementDirection =>  {   
-                                    if parameter < &4 {
-                                        let byte_string =
-                                        format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
-                                        let mut formatted = String::new();
-                                        if let Some(val) = db.overworldDirections.get(&byte_string) {
-                                            formatted = val.clone();
-                                        } 
-                                        formatted
-                                    } else if parameter >= &0x4000 {
-                                        format!("0x{parameter:x}")
-                                    } else {
-                                        format!("{}", parameter)
-                                    }
-                                },
-                                ScriptParameter::Sound => {
-                                    match db.sounds.get(format!("{}",parameter).as_str()) {
-                                        Some(sound) => sound.name.clone(),
-                                        None => format!("{parameter}")
-                                    } 
-                                },
-                                ScriptParameter::Overworld => {
-                                    if parameter == &255 {
-                                        format!("Player")
-                                    } else if parameter > &0x4000 {
-                                        format!("0x{parameter:x}")
-                                    } else {
-                                        format!("Overworld.{}", parameter)
-                                    }
-                                },
-                                ScriptParameter::OwMovementType => {
-                                    if parameter > &0x4000 {
-                                        format!("0x{parameter:x}")
-                                    } else {
-                                        format!("Move.{}", parameter)
-                                    }
-                                },
-                                ScriptParameter::Trainer => {
-                                    match enums.trainers.get(format!("{}", parameter).as_str()) {
-                                        Some(trainer) => format!("{trainer}"),
-                                        None => format!("{parameter}")
-                                    }
-                                },
-                                ScriptParameter::Item => {
-                                    match enums.items.get(format!("{}", parameter).as_str()) {
-                                        Some(item) => format!("{item}"),
-                                        None => format!("{parameter}")
-                                    }
-                                },
-                                ScriptParameter::Pokemon => {
-                                    match enums.pokemon.get(format!("{}", parameter).as_str()) {
-                                        Some(pokemon) => format!("{pokemon}"),
-                                        None => format!("{parameter}")
-                                    }
-                                },
-                                ScriptParameter::Move => {
-                                    match enums.moves.get(format!("{}", parameter).as_str()) {
-                                        Some(moves) => format!("{moves}"),
-                                        None => format!("{parameter}")
-                                    }
-                                },
-                                _ => {
-                                    let str;
-                                    if *parameter >= 0x4000 { 
-                                        str = format!("0x{}", format!("{:x}", parameter).to_uppercase());
-                                    } else { 
-                                        str = format!("{parameter}");}
-                                    str
-                                }
-                            };
+                                    .as_str()
+                                )
+                        )
+                    }
+                    ScriptParameter::Variable => {
+                        format!("0x{}", format!("{:x}", parameter).to_uppercase())
+                    }
+                    ScriptParameter::Integer => format!("{parameter}"),
+                    ScriptParameter::ComparisonOperator => {
+                        format_parameter_enum(&ctx.db.comparison_operators, *parameter)
+                        // let byte_string =
+                        //     format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
+                        // let mut formatted = String::new();
+                        // if let Some(val) = ctx.db.comparison_operators.get(&byte_string) {
+                        //     formatted = val.clone();
+                        // }
+                        // formatted
+                    }
+                    ScriptParameter::OwMovementDirection => {
+                        format_parameter_enum(&ctx.db.overworld_directions, *parameter)
+                        // if parameter < &4 {
+                        //     let byte_string =
+                        //         format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
+                        //     let mut formatted = String::new();
+                        //     if let Some(val) = ctx.db.overworld_directions.get(&byte_string) {
+                        //         formatted = val.clone();
+                        //     }
+                        //     formatted
+                        // } else {
+                        //     number_to_str(parameter)
+                        // }
+                    }
+                    ScriptParameter::Sound => {
+                        match ctx.db.sounds.get(format!("{}", parameter).as_str()) {
+                            Some(sound) => sound.name.clone(),
+                            None => number_to_str(parameter),
                         }
-                        parser
-                            .output_string
-                            .push_str(&format!("{} ", formatted_parameter));
+                    }
+                    ScriptParameter::Overworld => {
+                        format_parameter_enum(&ctx.db.special_overworlds, *parameter)
+                        // match ctx
+                        //     .db
+                        //     .special_overworlds
+                        //     .get(format!("{}", parameter).as_str())
+                        // {
+                        //     Some(item) => format!("{item}"),
+                        //     None => number_to_str(parameter),
+                        // }
+                    }
+                    ScriptParameter::OwMovementType => {
+                        format_parameter_enum(&ctx.db.overworld_directions, *parameter)
+                        // if parameter < &4 {
+                        //     let byte_string =
+                        //         format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
+                        //     let mut formatted = String::new();
+                        //     if let Some(val) = ctx.db.overworld_directions.get(&byte_string) {
+                        //         formatted = val.clone();
+                        //     }
+                        //     formatted
+                        // } else {
+                        //     number_to_str(parameter)
+                        // }
+                    }
+                    ScriptParameter::Trainer => {
+                        format_parameter_enum(&ctx.enums.trainers, *parameter)
+                        // match ctx.enums.trainers.get(format!("{}", parameter).as_str()) {
+                        //     Some(trainer) => format!("{trainer}"),
+                        //     None => number_to_str(parameter),
+                        // }
+                    }
+                    ScriptParameter::Item => {
+                        format_parameter_enum(&ctx.enums.items, *parameter)
+                        // match ctx.enums.items.get(format!("{}", parameter).as_str()) {
+                        //     Some(item) => format!("{item}"),
+                        //     None => number_to_str(parameter),
+                        // }
+                    }
+                    ScriptParameter::Pokemon => {
+                        format_parameter_enum(&ctx.enums.pokemon, *parameter)
+                        // match ctx.enums.pokemon.get(format!("{}", parameter).as_str()) {
+                        //     Some(pokemon) => format!("{pokemon}"),
+                        //     None => number_to_str(parameter),
+                        // }
+                    }
+                    ScriptParameter::Move => {
+                        format_parameter_enum(&ctx.enums.moves, *parameter)
+                        // match ctx.enums.moves.get(format!("{}", parameter).as_str()) {
+                        //     Some(moves) => format!("{moves}"),
+                        //     None => number_to_str(parameter),
+                        // }
+                    }
+                    _ => number_to_str(parameter),
+                };
+            }
+            parser
+                .output_string
+                .push_str(&format!("{} ", formatted_parameter));
+        }
+    }
+    Ok(())
+}
+
+fn plaintext_movement_commands(commands: &Vec<Movement>, parser: &mut ParserState) -> Result<()> {
+    for command in commands {
+        if command.name == "End" {
+            parser
+                .output_string
+                .push_str(format!("\n{}", command.name).as_str());
+        } else {
+            parser
+                .output_string
+                .push_str(format!("\n\t{} {}", command.name, command.parameter).as_str());
+        }
+    }
+    Ok(())
+}
+
+fn plaintext_levelscript_commands(
+    commands: &Vec<LevelScriptCommand>,
+    parser: &mut ParserState,
+) -> Result<()> {
+    for command in commands {
+        match command.name.as_ref() {
+            "InitScriptEntry_OnTransition"
+            | "InitScriptEntry_OnLoad"
+            | "InitScriptEntry_OnResume" => {
+                parser.output_string.push_str(
+                    format!(
+                        "\n\t{} {}",
+                        command.name,
+                        command.parameter.clone().unwrap().first().unwrap()
+                    )
+                    .as_str(),
+                );
+            }
+            "InitScriptEntry_OnFrameTable" => {
+                parser
+                    .output_string
+                    .push_str(format!("\n\t{} {}", command.name, "InitScriptFrameTable").as_str());
+            }
+            "InitScriptFrameTableEnd" | "InitScriptEntryEnd" => {
+                parser
+                    .output_string
+                    .push_str(format!("\n{}", command.name).as_str());
+            }
+            "InitScriptEnd" => {
+                parser
+                    .output_string
+                    .push_str(format!("\n\n{}", command.name).as_str());
+            }
+            "InitScriptGoToIfEqual" => {
+                parser
+                    .output_string
+                    .push_str(&format!("\n\t{}", command.name));
+                if let Some(parameters) = &command.parameter {
+                    for parameter in parameters {
+                        parser.output_string.push_str(&format!(" {}", parameter));
                     }
                 }
             }
-            CommandList::Movement(commands) => {
-                for command in commands {
-                    if command.name == "End" {
-                    parser
-                        .output_string
-                        .push_str(format!("\n{}", command.name).as_str());
-                    } else {
-                    parser
-                        .output_string
-                        .push_str(format!("\n\t{} {}", command.name, command.parameter).as_str());}
-                }
-            }
-        };
+            _ => unreachable!(),
+        }
     }
-    let output_path = output_dir.join(&output_filename);
-    let mut f = std::fs::File::create(&output_path)
-        .expect("failed to create output script file");
-    f.write_all(parser.output_string.as_bytes())
-        .expect("failed to write script text to file");
-    file_cache.status = BuildStatus::Success;
-    file_cache.build_time = Local::now();
-    // file_cache.hash = get_hash(&output_dir.join(output_filename))?
-    //     .iter()
-    //     .map(|byte| format!("{byte:02x}"))
-    //     .collect();
-    // println!("{}", parser.output_string);
     Ok(())
 }

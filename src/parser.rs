@@ -1,6 +1,12 @@
 use linked_hash_set::LinkedHashSet;
 use std::collections::HashMap;
 
+use crate::database::{Enums, ScriptDatabase};
+
+pub const CONDITIONAL_PARAM_MARKER: u8 = 255;
+pub const SPECIAL_OVERWORLD_PLAYER: i32 = 255;
+pub const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
+
 #[derive(Debug)]
 pub struct ScriptFile {
     pub containers: Vec<CommandContainer>,
@@ -23,6 +29,7 @@ pub enum ContainerType {
     Script,
     Function,
     Action,
+    LevelScript,
 }
 #[derive(Debug)]
 pub struct ContainerReference {
@@ -43,6 +50,7 @@ impl CommandContainer {
             commands: match kind {
                 ContainerType::Script | ContainerType::Function => CommandList::Script(Vec::new()),
                 ContainerType::Action => CommandList::Movement(Vec::new()),
+                ContainerType::LevelScript => CommandList::Levelscript(Vec::new()),
             },
             kind: kind,
             reference: ContainerReference {
@@ -56,6 +64,7 @@ impl CommandContainer {
 pub enum CommandList {
     Script(Vec<ScriptCommand>),
     Movement(Vec<Movement>),
+    Levelscript(Vec<LevelScriptCommand>),
 }
 #[derive(Debug)]
 pub struct ScriptCommand {
@@ -84,6 +93,19 @@ impl Movement {
             id: 0,
             name: String::new(),
             parameter: 0,
+        }
+    }
+}
+#[derive(Debug)]
+pub struct LevelScriptCommand {
+    pub name: String,
+    pub parameter: Option<Vec<i32>>,
+}
+impl LevelScriptCommand {
+    pub fn new() -> LevelScriptCommand {
+        LevelScriptCommand {
+            name: String::new(),
+            parameter: None,
         }
     }
 }
@@ -140,4 +162,8 @@ impl ParserState {
             symbol_table_movements: HashMap::new(),
         }
     }
+}
+pub struct ParseContext<'a> {
+    pub db: &'a ScriptDatabase,
+    pub enums: &'a Enums,
 }

@@ -12,7 +12,7 @@ use crate::assembler::{assemble, parse_plaintext_file};
 use crate::cache::{BuildStatus, Cache, FileCache};
 use crate::database::{Enums, ScriptDatabase};
 use crate::disassembler::{disassemble, parse_script_file_bin};
-use crate::helpers::get_hash;
+use crate::parser::ParseContext;
 
 mod assembler;
 mod cache;
@@ -61,11 +61,10 @@ fn main() -> Result<()> {
 
 fn parse_directory(
     folder: &PathBuf,
-    db: &ScriptDatabase,
-    enums: &Enums,
     cache: &Cache,
     directive: Directive,
     cachemap: &mut HashMap<String, FileCache>,
+    ctx: &ParseContext,
 ) -> Result<()> {
     let entries = std::fs::read_dir(folder)?
         .map(|res| res.map(|e| e.path()))
@@ -76,8 +75,8 @@ fn parse_directory(
             let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:").unwrap();
 
             let result = match directive {
-                Directive::Assemble => parse_plaintext_file(&file, &db, &enums, &regex),
-                Directive::Disassemble => parse_script_file_bin(&file, &db, &enums, cache),
+                Directive::Assemble => parse_plaintext_file(&file, &regex, &ctx),
+                Directive::Disassemble => parse_script_file_bin(&file, cache, &ctx),
             };
             (file.clone(), result)
         })
@@ -95,18 +94,28 @@ fn parse_directory(
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown")
                     .to_string();
-                cachemap.insert(
-                    name,
-                    FileCache {
-                        status: BuildStatus::Error,
-                        // hash: get_hash(&file)?
-                        //     .iter()
-                        //     .map(|byte| format!("{byte:02x}"))
-                        //     .collect(),
-                        error_message: Some(e.to_string()),
-                        build_time: Local::now(),
-                    },
-                );
+                match directive {
+                    Directive::Assemble => {
+                        cachemap.insert(
+                            name,
+                            FileCache {
+                                status: BuildStatus::AssembleError,
+                                error_message: Some(e.to_string()),
+                                build_time: Local::now(),
+                            },
+                        );
+                    }
+                    Directive::Disassemble => {
+                        cachemap.insert(
+                            name,
+                            FileCache {
+                                status: BuildStatus::PartialDisassembly,
+                                error_message: Some(e.to_string()),
+                                build_time: Local::now(),
+                            },
+                        );
+                    }
+                }
             }
         }
     }
