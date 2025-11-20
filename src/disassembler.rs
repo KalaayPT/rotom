@@ -1,13 +1,15 @@
 use std::{collections::HashMap, io::Write, path::PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use chrono::Local;
 
 use crate::{
     CommandArgs, Directive, ParseResult,
     cache::{BuildStatus, Cache, FileCache, read_cache, write_cache},
     database::{Movements, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons},
-    helpers::{format_container_header, format_parameter_enum, get_output_dir, number_to_str},
+    helpers::{
+        PathExt, format_container_header, format_parameter_enum, get_output_dir, number_to_str,
+    },
     levelscript::{is_levelscript, parse_levelscript_bin},
     parse_directory,
     parser::{
@@ -71,35 +73,14 @@ pub fn parse_script_file_bin(
     ctx: &ParseContext,
 ) -> Result<ParseResult> {
     // println!("{}", file.display());
-    let file_name = file
-        .file_name()
-        .ok_or(anyhow!("couldnt assess file name"))?
-        .to_str()
-        .ok_or(anyhow!("couldnt convert path to string"))?
-        .to_string();
-    // println!("uuuhhh");
+    let file_name = file.name_to_str()?;
     let mut file_cache = FileCache::new();
-    let cached_file = cache.files.get(&file_name);
-    let mut last_modified = Local::now();
-    if let Ok(file) = std::fs::metadata(format!(
-        "{}.script",
-        get_output_dir(file, Directive::Disassemble)?
-            .join(&file_name)
-            .display()
-    )) {
-        last_modified = file.modified()?.into();
-    }
-    // println!("{last_modified:?}");
-    if let Some(cached_file) = cached_file {
-        if last_modified <= cached_file.build_time {
-            file_cache.status = BuildStatus::Skipped;
-            // println!("build skipped: {}", file_name);
-            return Ok(ParseResult {
-                file_name,
-                cache_entry: file_cache,
-            });
-        }
-    }
+    if cache.needs_rebuild(file, &mut file_cache)? {
+        return Ok(ParseResult {
+            file_name,
+            cache_entry: file_cache,
+        });
+    };
     // println!("{}", file.display());
     let mut parser = ParserState::new();
     let mut script_file = ScriptFile::new();
@@ -109,12 +90,7 @@ pub fn parse_script_file_bin(
         .position(|bytes| bytes[0..=1] == JUMP_TABLE_END_MARKER)
     {
         Some(end) => end,
-        None => {
-            // println!("levelscript or corrupted script detected");
-            // jumpt_table_end being 0 prevents rotom from parsing the file at all as it thinks
-            // there are no scripts
-            0
-        }
+        None => 0,
     };
     if jump_table_end == 0 {
         if is_levelscript(&byte_array) {
@@ -222,8 +198,6 @@ fn parse_script_function_bytes(
     {
         Some(container) => {
             container.reference.id.push(container_id);
-            // println!("pushed id {} at offset {}", container_id, container.reference.offset);
-            // println!("{container:#?}");
             if matches!(current_command_container.kind, ContainerType::Script) {
                 return Ok(());
             }
@@ -425,12 +399,7 @@ pub fn write_plaintext(
     file_cache: &mut FileCache,
     ctx: &ParseContext,
 ) -> Result<()> {
-    let output_filename = format!(
-        "{}.script",
-        file.file_name()
-            .ok_or(anyhow!("couldnt assess file name"))?
-            .display()
-    );
+    let output_filename = format!("{}.script", file.name_to_str()?);
     let output_dir = get_output_dir(file, Directive::Disassemble)?;
     if !output_dir.exists() {
         std::fs::create_dir_all(&output_dir).expect("couldn't create expanded/scripts directory");
@@ -486,8 +455,7 @@ fn plaintext_script_commands(
                                         .containers
                                         .iter()
                                         .find(|command| command.reference.offset == *parameter)
-                                        .map(|cmd| cmd)
-                                        .expect("finding function/script failed: no container with given offset found")
+                                        .context("finding function/script failed: no container with given offset found")?
                                         .kind {
                                             ContainerType::Script => {
                                                 format!(
@@ -548,27 +516,9 @@ fn plaintext_script_commands(
                     ScriptParameter::Integer => format!("{parameter}"),
                     ScriptParameter::ComparisonOperator => {
                         format_parameter_enum(&ctx.db.comparison_operators, *parameter)
-                        // let byte_string =
-                        //     format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
-                        // let mut formatted = String::new();
-                        // if let Some(val) = ctx.db.comparison_operators.get(&byte_string) {
-                        //     formatted = val.clone();
-                        // }
-                        // formatted
                     }
                     ScriptParameter::OwMovementDirection => {
                         format_parameter_enum(&ctx.db.overworld_directions, *parameter)
-                        // if parameter < &4 {
-                        //     let byte_string =
-                        //         format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
-                        //     let mut formatted = String::new();
-                        //     if let Some(val) = ctx.db.overworld_directions.get(&byte_string) {
-                        //         formatted = val.clone();
-                        //     }
-                        //     formatted
-                        // } else {
-                        //     number_to_str(parameter)
-                        // }
                     }
                     ScriptParameter::Sound => {
                         match ctx.db.sounds.get(format!("{}", parameter).as_str()) {
@@ -578,57 +528,18 @@ fn plaintext_script_commands(
                     }
                     ScriptParameter::Overworld => {
                         format_parameter_enum(&ctx.db.special_overworlds, *parameter)
-                        // match ctx
-                        //     .db
-                        //     .special_overworlds
-                        //     .get(format!("{}", parameter).as_str())
-                        // {
-                        //     Some(item) => format!("{item}"),
-                        //     None => number_to_str(parameter),
-                        // }
                     }
                     ScriptParameter::OwMovementType => {
                         format_parameter_enum(&ctx.db.overworld_directions, *parameter)
-                        // if parameter < &4 {
-                        //     let byte_string =
-                        //         format!("0x{}", format!("{:0>4x}", parameter).to_uppercase());
-                        //     let mut formatted = String::new();
-                        //     if let Some(val) = ctx.db.overworld_directions.get(&byte_string) {
-                        //         formatted = val.clone();
-                        //     }
-                        //     formatted
-                        // } else {
-                        //     number_to_str(parameter)
-                        // }
                     }
                     ScriptParameter::Trainer => {
                         format_parameter_enum(&ctx.enums.trainers, *parameter)
-                        // match ctx.enums.trainers.get(format!("{}", parameter).as_str()) {
-                        //     Some(trainer) => format!("{trainer}"),
-                        //     None => number_to_str(parameter),
-                        // }
                     }
-                    ScriptParameter::Item => {
-                        format_parameter_enum(&ctx.enums.items, *parameter)
-                        // match ctx.enums.items.get(format!("{}", parameter).as_str()) {
-                        //     Some(item) => format!("{item}"),
-                        //     None => number_to_str(parameter),
-                        // }
-                    }
+                    ScriptParameter::Item => format_parameter_enum(&ctx.enums.items, *parameter),
                     ScriptParameter::Pokemon => {
                         format_parameter_enum(&ctx.enums.pokemon, *parameter)
-                        // match ctx.enums.pokemon.get(format!("{}", parameter).as_str()) {
-                        //     Some(pokemon) => format!("{pokemon}"),
-                        //     None => number_to_str(parameter),
-                        // }
                     }
-                    ScriptParameter::Move => {
-                        format_parameter_enum(&ctx.enums.moves, *parameter)
-                        // match ctx.enums.moves.get(format!("{}", parameter).as_str()) {
-                        //     Some(moves) => format!("{moves}"),
-                        //     None => number_to_str(parameter),
-                        // }
-                    }
+                    ScriptParameter::Move => format_parameter_enum(&ctx.enums.moves, *parameter),
                     _ => number_to_str(parameter),
                 };
             }

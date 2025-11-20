@@ -4,11 +4,11 @@ use anyhow::Result;
 
 use crate::{
     cache::FileCache,
-    database::{Enums, ScriptDatabase},
+    database::ScriptDatabase,
     disassembler::write_plaintext,
     parser::{
-        CommandContainer, CommandList, ContainerReference, ContainerType, LevelScriptCommand,
-        ParseContext, ParserState, ScriptFile,
+        CommandContainer, CommandList, ContainerType, LevelScriptCommand, ParseContext,
+        ParserState, ScriptFile,
     },
 };
 

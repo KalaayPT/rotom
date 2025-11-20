@@ -12,6 +12,7 @@ use crate::assembler::{assemble, parse_plaintext_file};
 use crate::cache::{BuildStatus, Cache, FileCache};
 use crate::database::{Enums, ScriptDatabase};
 use crate::disassembler::{disassemble, parse_script_file_bin};
+use crate::helpers::PathExt;
 use crate::parser::ParseContext;
 
 mod assembler;
@@ -89,11 +90,7 @@ fn parse_directory(
 
             Err(e) => {
                 eprintln!("Error processing {}: {}", file.display(), e);
-                let name = file
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
+                let name = file.name_to_str()?;
                 match directive {
                     Directive::Assemble => {
                         cachemap.insert(

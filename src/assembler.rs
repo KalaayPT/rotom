@@ -8,7 +8,7 @@ use crate::{
     CommandArgs, Directive, ParseResult,
     cache::{BuildStatus, Cache, FileCache, read_cache, write_cache},
     database::{Enums, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons},
-    helpers::{get_output_dir, number_from_str},
+    helpers::{PathExt, get_output_dir, number_from_str},
     parse_directory,
     parser::{
         CONDITIONAL_PARAM_MARKER, CommandContainer, CommandList, ContainerType, Movement,
@@ -45,12 +45,7 @@ pub fn assemble(args: CommandArgs) -> Result<()> {
             }
             Err(e) => {
                 eprintln!("Error processing {}: {}", args.script_file.display(), e);
-                let name = args
-                    .script_file
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
+                let name = args.script_file.name_to_str()?;
                 cachemap.insert(
                     name,
                     FileCache {
@@ -73,12 +68,7 @@ pub fn parse_plaintext_file(
     ctx: &ParseContext,
 ) -> Result<ParseResult> {
     // println!("file: {}", file.display());
-    let file_name = file
-        .file_name()
-        .ok_or(anyhow!("couldnt asses file name"))?
-        .to_str()
-        .ok_or(anyhow!("couldnt convert file name to string"))?
-        .to_string();
+    let file_name = file.name_to_str()?;
     let mut file_cache = FileCache::new();
     let mut script_file = ScriptFile::new();
     let mut parser = ParserState::new();
@@ -257,14 +247,7 @@ fn write_binary(
         byte_array.push(0);
     }
 
-    let output_filename = format!(
-        "{}",
-        file.file_name()
-            .ok_or(anyhow!("couldnt assess file name"))?
-            .display()
-            .to_string()
-            .trim_end_matches(".script")
-    );
+    let output_filename = format!("{}", file.name_to_str()?);
     let output_dir = get_output_dir(file, Directive::Assemble)?; //TODO: 
     std::fs::create_dir_all(&output_dir)
         .with_context(|| format!("Failed to create folder: {}", output_dir.display()))?;

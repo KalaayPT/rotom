@@ -1,10 +1,9 @@
 use linked_hash_set::LinkedHashSet;
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::database::{Enums, ScriptDatabase};
 
 pub const CONDITIONAL_PARAM_MARKER: u8 = 255;
-pub const SPECIAL_OVERWORLD_PLAYER: i32 = 255;
 pub const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
 
 #[derive(Debug)]
@@ -167,3 +166,4 @@ pub struct ParseContext<'a> {
     pub db: &'a ScriptDatabase,
     pub enums: &'a Enums,
 }
+

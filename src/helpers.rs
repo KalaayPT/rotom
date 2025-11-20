@@ -9,6 +9,20 @@ use crate::{
     parser::{CommandContainer, ContainerType},
 };
 
+pub trait PathExt {
+    fn name_to_str(&self) -> Result<String>;
+}
+impl PathExt for PathBuf {
+    fn name_to_str(&self) -> Result<String> {
+        Ok(self
+            .file_name()
+            .context("filename couldnt be assessed")?
+            .to_str()
+            .context("filename has invalid utf-8")?
+            .to_string())
+    }
+}
+
 pub fn number_from_str(s: &str) -> Result<i32> {
     if s.starts_with("0x") {
         i32::from_str_radix(s.trim_start_matches("0x"), 16)
