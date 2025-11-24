@@ -542,7 +542,7 @@ fn plaintext_script_commands(
                     ScriptParameter::Move => format_parameter_enum(&ctx.enums.moves, *parameter),
                     _ => number_to_str(parameter),
                 };
-            }
+            };
             parser
                 .output_string
                 .push_str(&format!("{} ", formatted_parameter));

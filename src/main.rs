@@ -10,10 +10,11 @@ use std::path::PathBuf;
 
 use crate::assembler::{assemble, parse_plaintext_file};
 use crate::cache::{BuildStatus, Cache, FileCache};
-use crate::database::{Enums, ScriptDatabase};
 use crate::disassembler::{disassemble, parse_script_file_bin};
 use crate::helpers::PathExt;
+use crate::lexer::Lexer;
 use crate::parser::ParseContext;
+use crate::token::TokenType;
 
 mod assembler;
 mod cache;
@@ -21,7 +22,9 @@ mod database;
 mod disassembler;
 mod helpers;
 mod levelscript;
+mod lexer;
 mod parser;
+mod token;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A pokemon script assembler/disassembler", long_about = None)]
@@ -51,14 +54,33 @@ pub struct ParseResult {
     pub cache_entry: FileCache,
 }
 
-fn main() -> Result<()> {
-    let args = Cli::parse();
-    // println!("{args:?}");
-    match args.command {
-        Commands::Disassemble(args) => disassemble(args),
-        Commands::Assemble(args) => assemble(args),
+fn main() {
+    let input = r"
+    public function Test #123
+        if x == 0 then
+            End 
+        endif 
+    End";
+
+    let mut lexer = Lexer::new(input);
+
+    loop {
+        let token = lexer.next_token();
+        println!("{:?}", token);
+        if token.kind == TokenType::EOF {
+            break;
+        }
     }
 }
+
+// fn main() -> Result<()> {
+//     let args = Cli::parse();
+//     // println!("{args:?}");
+//     match args.command {
+//         Commands::Disassemble(args) => disassemble(args),
+//         Commands::Assemble(args) => assemble(args),
+//     }
+// }
 
 fn parse_directory(
     folder: &PathBuf,

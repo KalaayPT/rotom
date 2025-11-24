@@ -7,7 +7,7 @@ use regex::{Match, Regex};
 use crate::{
     CommandArgs, Directive, ParseResult,
     cache::{BuildStatus, Cache, FileCache, read_cache, write_cache},
-    database::{Enums, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons},
+    database::{ScrCmd, ScriptDatabase, ScriptParameter, read_jsons},
     helpers::{PathExt, get_output_dir, number_from_str},
     parse_directory,
     parser::{
