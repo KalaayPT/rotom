@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::Local;
 
 use crate::{
-    CommandArgs, Directive, ParseResult,
+    CommandArgs, Directive,
     cache::{BuildStatus, Cache, FileCache, read_cache, write_cache},
     database::{Movements, ScrCmd, ScriptDatabase, ScriptParameter, read_jsons},
     helpers::{
@@ -13,9 +13,9 @@ use crate::{
     levelscript::{is_levelscript, parse_levelscript_bin},
     parse_directory,
     parser::{
-        CONDITIONAL_PARAM_MARKER, CommandContainer, CommandList, ContainerType,
-        JUMP_TABLE_END_MARKER, LevelScriptCommand, Movement, ParseContext, ParseError, ParserState,
-        ScriptCommand, ScriptFile,
+        _ScriptFile, CONDITIONAL_PARAM_MARKER, CommandContainer, CommandList, ContainerType,
+        JUMP_TABLE_END_MARKER, LevelScriptCommand, Movement, ParseContext, ParserState,
+        ScriptCommand,
     },
 };
 

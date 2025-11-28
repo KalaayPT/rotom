@@ -1,18 +1,185 @@
 use linked_hash_set::LinkedHashSet;
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
-use crate::database::{Enums, ScriptDatabase};
+use crate::{
+    ast::{ScriptFile, Spanned, Statement, StatementKind},
+    database::{Enums, ScriptDatabase},
+    lexer::Lexer,
+    parse_error::{ParseError, ParseResult},
+    token::{Token, TokenType},
+};
+
+pub struct Parser<'a> {
+    lexer: Lexer<'a>,
+    current_token: Token,
+    peek_token: Token,
+}
+impl<'a> Parser<'a> {
+    pub fn new(mut lexer: Lexer<'a>) -> Parser<'a> {
+        let first = lexer.next_token();
+        let second = lexer.next_token();
+        Parser {
+            lexer,
+            current_token: first,
+            peek_token: second,
+        }
+    }
+    pub fn advance(&mut self) {
+        self.current_token = self.peek_token.clone();
+        self.peek_token = self.lexer.next_token();
+    }
+    pub fn current_token_is(&self, kind: TokenType) -> bool {
+        self.current_token.kind == kind
+    }
+    pub fn expect_advance(&mut self, kind: TokenType) -> ParseResult<Token> {
+        if self.current_token_is(kind.clone()) {
+            let token = self.current_token.clone();
+            self.advance();
+            Ok(token)
+        } else {
+            Err(ParseError {
+                span: self.current_token.span.clone(),
+                message: format!(
+                    "Unexpected Token. Expected: {:?}, found: {:?}",
+                    kind, self.current_token.kind
+                ),
+            })
+        }
+    }
+    pub fn parse_script_file(&mut self) -> ParseResult<ScriptFile> {
+        let mut aliases = Vec::new();
+        let mut functions = Vec::new();
+        let mut actions = Vec::new();
+        while !self.current_token_is(TokenType::EOF) {
+            let stmt = self.parse_top_level_stmt()?;
+            match &stmt.node {
+                StatementKind::Function { .. } => functions.push(stmt),
+                StatementKind::Action { .. } => actions.push(stmt),
+                StatementKind::AliasStatement { .. } => aliases.push(stmt),
+                _ => unreachable!("top_level_stmt should prevent other statements or errors"),
+            }
+        }
+        Ok(ScriptFile {
+            aliases,
+            functions,
+            actions,
+        })
+    }
+    pub fn parse_top_level_stmt(&mut self) -> ParseResult<Statement> {
+        match self.current_token.kind {
+            TokenType::Function | TokenType::Public => self.parse_function(),
+            TokenType::Action => self.parse_action(),
+            TokenType::Global => self.parse_alias(),
+            _ => {
+                let token = self.current_token.clone();
+                Err(ParseError {
+                    span: token.span,
+                    message: format!("Expected top-level definition, found {:?}", token.kind),
+                })
+            }
+        }
+    }
+    pub fn parse_function(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        let is_public = if self.current_token_is(TokenType::Public) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        self.expect_advance(TokenType::Function)?;
+        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+        let name = match name_token.kind {
+            TokenType::Identifier(name) => name,
+            _ => unreachable!(),
+        };
+        let id = match is_public {
+            true => {
+                self.expect_advance(TokenType::Hash)?;
+                let id_token = self.expect_advance(TokenType::Num(0))?;
+                match id_token.kind {
+                    TokenType::Num(num) => Some(num),
+                    _ => unreachable!(),
+                }
+            }
+            false => None,
+        };
+        let body = self.parse_block(vec![TokenType::End, TokenType::Return])?;
+
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: StatementKind::Function {
+                is_public,
+                name,
+                id,
+                body,
+            },
+            span: start..end,
+        })
+    }
+    pub fn parse_action(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        self.expect_advance(TokenType::Action)?;
+        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+        let name = match name_token.kind {
+            TokenType::Identifier(name) => name,
+            _ => unreachable!(),
+        };
+        let body = self.parse_block(vec![TokenType::End])?;
+
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: StatementKind::Action { name, body },
+            span: start..end,
+        })
+    }
+    pub fn parse_block(&mut self, end_condition: Vec<TokenType>) -> ParseResult<Vec<Statement>> {
+        let block = Vec::new();
+        while !end_condition.contains(&self.current_token.kind) {}
+        Ok(block)
+    }
+    pub fn parse_alias(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        let is_global = if self.current_token_is(TokenType::Global) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        self.expect_advance(TokenType::Alias)?;
+        let id_token = self.expect_advance(TokenType::Num(0))?;
+        let id = match id_token.kind {
+            TokenType::Num(num) => num,
+            _ => unreachable!(),
+        };
+        self.expect_advance(TokenType::As)?;
+        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+        let name = match name_token.kind {
+            TokenType::Identifier(name) => name,
+            _ => unreachable!(),
+        };
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: StatementKind::AliasStatement {
+                is_global,
+                id,
+                name,
+            },
+            span: start..end,
+        })
+    }
+}
 
 pub const CONDITIONAL_PARAM_MARKER: u8 = 255;
 pub const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
 
 #[derive(Debug)]
-pub struct ScriptFile {
+pub struct _ScriptFile {
     pub containers: Vec<CommandContainer>,
 }
-impl ScriptFile {
-    pub fn new() -> ScriptFile {
-        ScriptFile {
+impl _ScriptFile {
+    pub fn new() -> _ScriptFile {
+        _ScriptFile {
             containers: Vec::new(),
         }
     }
@@ -109,31 +276,6 @@ impl LevelScriptCommand {
     }
 }
 
-#[derive(Debug)]
-pub enum ParseError {
-    NotACommand(String, u32),
-    InvalidParameter(usize, u32, String),
-    TooManyParameters(usize, usize, u32, String),
-}
-impl std::error::Error for ParseError {}
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotACommand(cmd, position) => write!(
-                f,
-                "failed to read command: {cmd} At line/offset: {position}"
-            ),
-            Self::InvalidParameter(param, position, cmd) => write!(
-                f,
-                "invalid parameter {param} at line/offset {position}: {cmd}"
-            ),
-            Self::TooManyParameters(dblen, cmdlen, position, cmd) => write!(
-                f,
-                "Too many parameters (excepted: {dblen}, found: {cmdlen}) at line/offset {position}: {cmd}"
-            ),
-        }
-    }
-}
 pub struct ParserState {
     pub script_no: u32,
     pub func_no: u32,
@@ -166,4 +308,3 @@ pub struct ParseContext<'a> {
     pub db: &'a ScriptDatabase,
     pub enums: &'a Enums,
 }
-

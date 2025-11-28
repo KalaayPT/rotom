@@ -17,12 +17,14 @@ use crate::parser::ParseContext;
 use crate::token::TokenType;
 
 mod assembler;
+mod ast;
 mod cache;
 mod database;
 mod disassembler;
 mod helpers;
 mod levelscript;
 mod lexer;
+mod parse_error;
 mod parser;
 mod token;
 
@@ -49,7 +51,7 @@ enum Directive {
     Assemble,
     Disassemble,
 }
-pub struct ParseResult {
+pub struct _ParseResult {
     pub file_name: String,
     pub cache_entry: FileCache,
 }
@@ -57,10 +59,14 @@ pub struct ParseResult {
 fn main() {
     let input = r"
     public function Test #123
-        if x == 0 then
-            End 
+    alias result_alias as 0x800C
+        if result_alias == 0 then
+            Call foo
         endif 
-    End";
+    End
+    function foo
+    Return
+    ";
 
     let mut lexer = Lexer::new(input);
 
@@ -92,7 +98,7 @@ fn parse_directory(
     let entries = std::fs::read_dir(folder)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
-    let results: Vec<(PathBuf, Result<ParseResult>)> = entries
+    let results: Vec<(PathBuf, Result<_ParseResult>)> = entries
         .par_iter()
         .map(|file| {
             let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:").unwrap();

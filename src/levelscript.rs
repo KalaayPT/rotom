@@ -7,8 +7,8 @@ use crate::{
     database::ScriptDatabase,
     disassembler::write_plaintext,
     parser::{
-        CommandContainer, CommandList, ContainerType, LevelScriptCommand, ParseContext,
-        ParserState, ScriptFile,
+        _ScriptFile, CommandContainer, CommandList, ContainerType, LevelScriptCommand,
+        ParseContext, ParserState,
     },
 };
 
@@ -27,7 +27,7 @@ pub fn parse_levelscript_bin(
     byte_array: &Vec<u8>,
     parser: &mut ParserState,
     file_cache: &mut FileCache,
-    script_file: &mut ScriptFile,
+    script_file: &mut _ScriptFile,
     ctx: &ParseContext,
 ) -> Result<()> {
     let mut pc: usize = 0;
@@ -40,7 +40,7 @@ pub fn parse_levelscript_bin(
 }
 fn get_levelscripts(
     pc: &mut usize,
-    script_file: &mut ScriptFile,
+    script_file: &mut _ScriptFile,
     byte_array: &Vec<u8>,
     db: &ScriptDatabase,
 ) -> bool {
@@ -99,7 +99,7 @@ fn get_levelscripts(
 
 fn get_frame_table(
     pc: &mut usize,
-    script_file: &mut ScriptFile,
+    script_file: &mut _ScriptFile,
     byte_array: &Vec<u8>,
     db: &ScriptDatabase,
 ) {

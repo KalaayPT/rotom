@@ -153,6 +153,9 @@ impl<'a> Lexer<'a> {
         match name.as_str() {
             "function" => return TokenType::Function,
             "public" => return TokenType::Public,
+            "action" => return TokenType::Action,
+            "alias" => return TokenType::Alias,
+            "global" => return TokenType::Global,
             "true" => return TokenType::True,
             "false" => return TokenType::False,
             "if" => return TokenType::If,
@@ -167,6 +170,7 @@ impl<'a> Lexer<'a> {
             "and" => return TokenType::And,
             "or" => return TokenType::Or,
             "not" => return TokenType::Not,
+            "as" => return TokenType::As,
             id => return TokenType::Identifier(String::from(id)),
         }
     }

@@ -4,10 +4,14 @@ use std::ops::Range;
 pub enum TokenType {
     Function, // "function"
     Public,   // "public"
+    Action,   // "action"
+    Alias,    // "alias"
+    Global,   // "global"
 
     Num(i32),           // integer
     Identifier(String), // variable,
 
+    // control flow
     True,     // "true"
     False,    // "false"
     If,       // "if"
@@ -20,6 +24,7 @@ pub enum TokenType {
     Return,   // "Return"
     Jump,     // "Jump"
 
+    // operators
     Hash,         // '#'
     Comma,        // ','
     Dot,          // '.'
@@ -35,6 +40,7 @@ pub enum TokenType {
     GreaterEqual, // ">="
     LesserThan,   // '<'
     GreaterThan,  // '>'
+    As,           // "as"
 
     Error(String),
     EOF,
