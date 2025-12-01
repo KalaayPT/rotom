@@ -2,7 +2,7 @@ use linked_hash_set::LinkedHashSet;
 use std::collections::HashMap;
 
 use crate::{
-    ast::{ScriptFile, Spanned, Statement, StatementKind},
+    ast::{ExpressionKind, ScriptFile, Spanned, Statement, StatementKind},
     database::{Enums, ScriptDatabase},
     lexer::Lexer,
     parse_error::{ParseError, ParseResult},
@@ -30,6 +30,19 @@ impl<'a> Parser<'a> {
     }
     pub fn current_token_is(&self, kind: TokenType) -> bool {
         self.current_token.kind == kind
+    }
+    pub fn next_token_is_comparison_op(&self) -> bool {
+        if matches!(self.peek_token.kind, TokenType::Equal)
+            || matches!(self.peek_token.kind, TokenType::NotEqual)
+            || matches!(self.peek_token.kind, TokenType::LesserThan)
+            || matches!(self.peek_token.kind, TokenType::GreaterThan)
+            || matches!(self.peek_token.kind, TokenType::LesserEqual)
+            || matches!(self.peek_token.kind, TokenType::GreaterEqual)
+        {
+            true
+        } else {
+            false
+        }
     }
     pub fn expect_advance(&mut self, kind: TokenType) -> ParseResult<Token> {
         if self.current_token_is(kind.clone()) {
@@ -64,6 +77,25 @@ impl<'a> Parser<'a> {
             functions,
             actions,
         })
+    }
+    pub fn parse_statement(&mut self) -> ParseResult<Statement> {
+        let statement = match self.current_token.kind.clone() {
+            TokenType::If => self.parse_if()?,
+            TokenType::While => self.parse_while()?,
+            TokenType::Alias => self.parse_alias()?,
+            TokenType::Identifier(_) => self.parse_command()?,
+            TokenType::Jump => self.parse_jump()?,
+            _ => {
+                return Err(ParseError {
+                    span: self.current_token.span.clone(),
+                    message: format!(
+                        "unexpected statement inside function: {:?}",
+                        self.current_token.kind
+                    ),
+                });
+            }
+        };
+        Ok(statement)
     }
     pub fn parse_top_level_stmt(&mut self) -> ParseResult<Statement> {
         match self.current_token.kind {
@@ -105,7 +137,8 @@ impl<'a> Parser<'a> {
             false => None,
         };
         let body = self.parse_block(vec![TokenType::End, TokenType::Return])?;
-
+        // eat terminator
+        self.advance();
         let end = self.current_token.span.start;
         Ok(Spanned {
             node: StatementKind::Function {
@@ -134,8 +167,13 @@ impl<'a> Parser<'a> {
         })
     }
     pub fn parse_block(&mut self, end_condition: Vec<TokenType>) -> ParseResult<Vec<Statement>> {
-        let block = Vec::new();
-        while !end_condition.contains(&self.current_token.kind) {}
+        let mut block = Vec::new();
+        while !self.current_token_is(TokenType::EOF) {
+            if end_condition.contains(&self.current_token.kind) {
+                break;
+            }
+            block.push(self.parse_statement()?);
+        }
         Ok(block)
     }
     pub fn parse_alias(&mut self) -> ParseResult<Statement> {
@@ -165,6 +203,83 @@ impl<'a> Parser<'a> {
                 id,
                 name,
             },
+            span: start..end,
+        })
+    }
+    pub fn parse_if(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        self.expect_advance(TokenType::If)?;
+        let condition = self.parse_expression(Precedence::Lowest)?;
+        self.expect_advance(TokenType::Then)?;
+        let then_branch = self.parse_block(vec![TokenType::Else, TokenType::EndIf])?;
+        let else_branch = if self.current_token_is(TokenType::Else) {
+            self.advance();
+            if self.current_token_is(TokenType::If) {
+                let elseif = self.parse_if()?;
+                Some(vec![elseif])
+            } else {
+                Some(self.parse_block(vec![TokenType::EndIf])?)
+            }
+        } else {
+            None
+        };
+        self.expect_advance(TokenType::EndIf)?;
+        let end = self.current_token.span.start;
+
+        Ok(Spanned {
+            node: StatementKind::IfStatement {
+                condition: Box::new(condition),
+                body: then_branch,
+                elseblock: else_branch,
+            },
+            span: start..end,
+        })
+    }
+    pub fn parse_while(&mut self) -> ParseResult<Statement> {
+        Ok(Spanned {
+            node: StatementKind::WhileStatement {
+                condition: (),
+                body: (),
+            },
+            span: (),
+        })
+    }
+    pub fn parse_command(&mut self) -> ParseResult<Statement> {}
+    fn parse_jump(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        self.expect_advance(TokenType::Jump)?;
+        let target_expr = match &self.current_token.kind {
+            TokenType::Label(name) => {
+                let span = self.current_token.span.clone();
+                let name_clone = name.clone();
+                self.advance();
+                Spanned {
+                    node: ExpressionKind::Label(name_clone),
+                    span,
+                }
+            }
+            TokenType::Identifier(name) => {
+                let span = self.current_token.span.clone();
+                let name_clone = name.clone();
+                self.advance();
+                Spanned {
+                    node: ExpressionKind::Identifier(name_clone),
+                    span,
+                }
+            }
+            _ => {
+                return Err(ParseError {
+                    span: self.current_token.span.clone(),
+                    message: format!(
+                        "Expected Label or Function Name, found {:?}",
+                        self.current_token.kind
+                    ),
+                });
+            }
+        };
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: StatementKind::Jump(target_expr),
             span: start..end,
         })
     }

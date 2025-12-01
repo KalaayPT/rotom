@@ -29,10 +29,18 @@ pub enum StatementKind {
         body: Vec<Statement>,
         elseblock: Option<Vec<Statement>>,
     },
+    WhileStatement {
+        condition: Box<Expression>,
+        body: Vec<Statement>,
+    },
     ScriptCommand {
         command: String,
         args: Vec<Expression>,
     },
+    Label(String),
+    Jump(Expression),
+    Return,
+    End,
 }
 
 pub enum ExpressionKind {
@@ -47,6 +55,7 @@ pub enum ExpressionKind {
         operator: TokenType,
         right: Box<Expression>,
     },
+    Label(String),
 }
 
 pub struct Spanned<T> {

@@ -10,6 +10,7 @@ pub enum TokenType {
 
     Num(i32),           // integer
     Identifier(String), // variable,
+    Label(String),
 
     // control flow
     True,     // "true"
@@ -28,6 +29,7 @@ pub enum TokenType {
     Hash,         // '#'
     Comma,        // ','
     Dot,          // '.'
+    Colon,        // ':'
     Equal,        // "=="
     Assign,       // '='
     LParen,       // '('
@@ -42,6 +44,7 @@ pub enum TokenType {
     GreaterThan,  // '>'
     As,           // "as"
 
+    Newline,
     Error(String),
     EOF,
 }

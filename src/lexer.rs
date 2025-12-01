@@ -28,7 +28,7 @@ impl<'a> Lexer<'a> {
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             match self.chars.peek() {
-                Some(' ') | Some('\t') | Some('\r') | Some('\n') => {
+                Some(' ') | Some('\t') | Some('\r') => {
                     self.read_char();
                 }
                 Some('/') => match self.peek_next() {
@@ -79,7 +79,30 @@ impl<'a> Lexer<'a> {
         let kind = match self.read_char() {
             Some('#') => TokenType::Hash,
             Some(',') => TokenType::Comma,
-            Some('.') => TokenType::Dot,
+            Some('.') => {
+                if let Some(c) = self.peek_next()
+                    && is_identifier_start(c)
+                {
+                    self.read_char();
+                    let first = match self.read_char() {
+                        Some(char) => char,
+                        _ => unreachable!(),
+                    };
+                    let name = match self.read_identifier(first) {
+                        TokenType::Identifier(string) => string,
+                        keyword => format!("{:?}", keyword),
+                    };
+                    if self.chars.peek() == Some(&':') {
+                        self.read_char();
+                        TokenType::Label(name)
+                    } else {
+                        TokenType::Error(String::from("\':\' not found after label"))
+                    }
+                } else {
+                    TokenType::Dot
+                }
+            }
+            Some(':') => TokenType::Colon,
             Some('=') => {
                 if let Some('=') = self.chars.peek() {
                     self.read_char();
@@ -130,6 +153,7 @@ impl<'a> Lexer<'a> {
                     TokenType::GreaterThan
                 }
             }
+            Some('\n') => TokenType::Newline,
             Some(c) if is_identifier_start(c) => self.read_identifier(c),
             Some(c) if c.is_ascii_digit() => self.read_integer(c),
             None => TokenType::EOF,
