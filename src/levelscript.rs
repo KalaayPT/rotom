@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::{
     cache::FileCache,
     database::ScriptDatabase,
-    disassembler::write_plaintext,
+    // disassembler::write_plaintext,
     parser::{
         _ScriptFile, CommandContainer, CommandList, ContainerType, LevelScriptCommand,
         ParseContext, ParserState,
@@ -36,7 +36,8 @@ pub fn parse_levelscript_bin(
     if has_frame_table {
         get_frame_table(&mut pc, script_file, byte_array, ctx.db);
     }
-    write_plaintext(file, parser, script_file, file_cache, &ctx)
+    // write_plaintext(file, parser, script_file, file_cache, &ctx)
+    Ok(())
 }
 fn get_levelscripts(
     pc: &mut usize,

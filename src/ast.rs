@@ -2,12 +2,14 @@ use std::ops::Range;
 
 use crate::token::{Token, TokenType};
 
+#[derive(Debug)]
 pub struct ScriptFile {
     pub aliases: Vec<Statement>,
     pub functions: Vec<Statement>,
     pub actions: Vec<Statement>,
 }
 
+#[derive(Debug)]
 pub enum StatementKind {
     Function {
         is_public: bool,
@@ -43,6 +45,7 @@ pub enum StatementKind {
     End,
 }
 
+#[derive(Debug)]
 pub enum ExpressionKind {
     Number(i32),
     Identifier(String),
@@ -56,8 +59,21 @@ pub enum ExpressionKind {
         right: Box<Expression>,
     },
     Label(String),
+    Call {
+        function: Box<Expression>,
+        args: Vec<Expression>,
+    },
 }
-
+#[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
+pub enum Precedence {
+    Lowest,
+    Comparison, // ==, !=, <, >, <=, >=
+    Sum,        // +, -
+    Product,    // *, /
+    Prefix,     // !X, -X
+    Call,       // Function()
+}
+#[derive(Debug)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Range<usize>,

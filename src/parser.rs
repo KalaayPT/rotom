@@ -2,7 +2,7 @@ use linked_hash_set::LinkedHashSet;
 use std::collections::HashMap;
 
 use crate::{
-    ast::{ExpressionKind, ScriptFile, Spanned, Statement, StatementKind},
+    ast::{Expression, ExpressionKind, Precedence, ScriptFile, Spanned, Statement, StatementKind},
     database::{Enums, ScriptDatabase},
     lexer::Lexer,
     parse_error::{ParseError, ParseResult},
@@ -31,21 +31,32 @@ impl<'a> Parser<'a> {
     pub fn current_token_is(&self, kind: TokenType) -> bool {
         self.current_token.kind == kind
     }
-    pub fn next_token_is_comparison_op(&self) -> bool {
-        if matches!(self.peek_token.kind, TokenType::Equal)
-            || matches!(self.peek_token.kind, TokenType::NotEqual)
-            || matches!(self.peek_token.kind, TokenType::LesserThan)
-            || matches!(self.peek_token.kind, TokenType::GreaterThan)
-            || matches!(self.peek_token.kind, TokenType::LesserEqual)
-            || matches!(self.peek_token.kind, TokenType::GreaterEqual)
-        {
-            true
-        } else {
-            false
+    pub fn current_token_is_keyword(&self) -> bool {
+        let kind = self.current_token.kind.clone();
+        match kind {
+            TokenType::Function
+            | TokenType::Public
+            | TokenType::Action
+            | TokenType::Alias
+            | TokenType::True
+            | TokenType::False
+            | TokenType::If
+            | TokenType::Then
+            | TokenType::Else
+            | TokenType::EndIf
+            | TokenType::While
+            | TokenType::EndWhile
+            | TokenType::End
+            | TokenType::Return
+            | TokenType::Jump
+            | TokenType::And
+            | TokenType::Or
+            | TokenType::As => true,
+            _ => false,
         }
     }
     pub fn expect_advance(&mut self, kind: TokenType) -> ParseResult<Token> {
-        if self.current_token_is(kind.clone()) {
+        if std::mem::discriminant(&self.current_token.kind) == std::mem::discriminant(&kind) {
             let token = self.current_token.clone();
             self.advance();
             Ok(token)
@@ -53,7 +64,7 @@ impl<'a> Parser<'a> {
             Err(ParseError {
                 span: self.current_token.span.clone(),
                 message: format!(
-                    "Unexpected Token. Expected: {:?}, found: {:?}",
+                    "Unexpected Token. Expected: {}, found: {}",
                     kind, self.current_token.kind
                 ),
             })
@@ -64,6 +75,10 @@ impl<'a> Parser<'a> {
         let mut functions = Vec::new();
         let mut actions = Vec::new();
         while !self.current_token_is(TokenType::EOF) {
+            if self.current_token_is(TokenType::Newline) {
+                self.advance();
+                continue;
+            }
             let stmt = self.parse_top_level_stmt()?;
             match &stmt.node {
                 StatementKind::Function { .. } => functions.push(stmt),
@@ -85,11 +100,18 @@ impl<'a> Parser<'a> {
             TokenType::Alias => self.parse_alias()?,
             TokenType::Identifier(_) => self.parse_command()?,
             TokenType::Jump => self.parse_jump()?,
+            TokenType::Label(name) => {
+                self.advance();
+                Spanned {
+                    node: StatementKind::Label(name),
+                    span: self.current_token.span.clone(),
+                }
+            }
             _ => {
                 return Err(ParseError {
                     span: self.current_token.span.clone(),
                     message: format!(
-                        "unexpected statement inside function: {:?}",
+                        "unexpected statement inside function: {}",
                         self.current_token.kind
                     ),
                 });
@@ -106,7 +128,7 @@ impl<'a> Parser<'a> {
                 let token = self.current_token.clone();
                 Err(ParseError {
                     span: token.span,
-                    message: format!("Expected top-level definition, found {:?}", token.kind),
+                    message: format!("Expected top-level definition, found {}", token.kind),
                 })
             }
         }
@@ -136,9 +158,28 @@ impl<'a> Parser<'a> {
             }
             false => None,
         };
-        let body = self.parse_block(vec![TokenType::End, TokenType::Return])?;
-        // eat terminator
-        self.advance();
+        let mut body = self.parse_block(vec![TokenType::End, TokenType::Return])?;
+        let terminator_stmt = if self.current_token_is(TokenType::Return) {
+            let span = self.current_token.span.clone();
+            self.advance();
+            Spanned {
+                node: StatementKind::Return,
+                span,
+            }
+        } else if self.current_token_is(TokenType::End) {
+            let span = self.current_token.span.clone();
+            self.advance();
+            Spanned {
+                node: StatementKind::End,
+                span,
+            }
+        } else {
+            return Err(ParseError {
+                span: self.current_token.span.clone(),
+                message: "Expected 'End' or 'Return' to close function".into(),
+            });
+        };
+        body.push(terminator_stmt);
         let end = self.current_token.span.start;
         Ok(Spanned {
             node: StatementKind::Function {
@@ -158,8 +199,20 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(name) => name,
             _ => unreachable!(),
         };
-        let body = self.parse_block(vec![TokenType::End])?;
-
+        let mut body = self.parse_block(vec![TokenType::End])?;
+        if self.current_token_is(TokenType::End) {
+            let span = self.current_token.span.clone();
+            self.advance();
+            body.push(Spanned {
+                node: StatementKind::End,
+                span,
+            })
+        } else {
+            return Err(ParseError {
+                span: self.current_token.span.clone(),
+                message: "Expected 'End' to close action".into(),
+            });
+        };
         let end = self.current_token.span.start;
         Ok(Spanned {
             node: StatementKind::Action { name, body },
@@ -171,6 +224,10 @@ impl<'a> Parser<'a> {
         while !self.current_token_is(TokenType::EOF) {
             if end_condition.contains(&self.current_token.kind) {
                 break;
+            }
+            if self.current_token_is(TokenType::Newline) {
+                self.advance();
+                continue;
             }
             block.push(self.parse_statement()?);
         }
@@ -236,15 +293,53 @@ impl<'a> Parser<'a> {
         })
     }
     pub fn parse_while(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        self.expect_advance(TokenType::While)?;
+        let condition = self.parse_expression(Precedence::Lowest)?;
+        self.expect_advance(TokenType::Do)?;
+        let body = self.parse_block(vec![TokenType::EndWhile])?;
+        self.expect_advance(TokenType::EndWhile)?;
+
+        let end = self.current_token.span.start;
+
         Ok(Spanned {
             node: StatementKind::WhileStatement {
-                condition: (),
-                body: (),
+                condition: Box::new(condition),
+                body,
             },
-            span: (),
+            span: start..end,
         })
     }
-    pub fn parse_command(&mut self) -> ParseResult<Statement> {}
+    pub fn parse_command(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+        let name = match name_token.kind {
+            TokenType::Identifier(s) => s,
+            _ => unreachable!(),
+        };
+        let mut args = Vec::new();
+        if !self.current_token_is(TokenType::Newline) && !self.current_token_is_keyword() {
+            loop {
+                args.push(self.parse_expression(Precedence::Lowest)?);
+                if self.current_token_is(TokenType::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        if self.current_token_is(TokenType::Newline) {
+            self.advance();
+        }
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: StatementKind::ScriptCommand {
+                command: name,
+                args,
+            },
+            span: start..end,
+        })
+    }
     fn parse_jump(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
         self.expect_advance(TokenType::Jump)?;
@@ -270,10 +365,7 @@ impl<'a> Parser<'a> {
             _ => {
                 return Err(ParseError {
                     span: self.current_token.span.clone(),
-                    message: format!(
-                        "Expected Label or Function Name, found {:?}",
-                        self.current_token.kind
-                    ),
+                    message: format!("{}", self.current_token.kind),
                 });
             }
         };
@@ -282,6 +374,127 @@ impl<'a> Parser<'a> {
             node: StatementKind::Jump(target_expr),
             span: start..end,
         })
+    }
+    fn parse_expression(&mut self, precedence: Precedence) -> ParseResult<Expression> {
+        let mut left = self.parse_prefix()?;
+        while !self.current_token_is(TokenType::EOF)
+            && !self.current_token_is(TokenType::End)
+            && !self.current_token_is(TokenType::Comma)
+            && !self.current_token_is(TokenType::RParen)
+            && precedence < self.cur_precedence()
+        {
+            left = self.parse_infix(left)?;
+        }
+        Ok(left)
+    }
+    fn parse_prefix(&mut self) -> ParseResult<Expression> {
+        let start = self.current_token.span.start;
+        let kind = match &self.current_token.kind {
+            TokenType::Num(val) => {
+                let kind = ExpressionKind::Number(*val);
+                self.advance();
+                kind
+            }
+            TokenType::Identifier(name) => {
+                let kind = ExpressionKind::Identifier(name.clone());
+                self.advance();
+                kind
+            }
+            TokenType::Not | TokenType::Minus => {
+                let operator = self.current_token.kind.clone();
+                self.advance();
+                let right = self.parse_expression(Precedence::Prefix)?;
+                ExpressionKind::Prefix {
+                    operator,
+                    id: Box::new(right),
+                }
+            }
+            TokenType::LParen => {
+                self.advance();
+                let expression = self.parse_expression(Precedence::Lowest)?;
+                self.expect_advance(TokenType::RParen)?;
+                return Ok(expression);
+            }
+            _ => {
+                return Err(ParseError {
+                    span: self.current_token.span.clone(),
+                    message: format!("Expected expression, found {}", self.current_token.kind),
+                });
+            }
+        };
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: kind,
+            span: start..end,
+        })
+    }
+    fn parse_infix(&mut self, left: Expression) -> ParseResult<Expression> {
+        let start = left.span.start;
+        if self.current_token_is(TokenType::LParen) {
+            return self.parse_call_expression(left);
+        }
+        let operator = self.current_token.kind.clone();
+        let precedence = self.cur_precedence();
+        self.advance();
+        let right = self.parse_expression(precedence)?;
+        let end = right.span.end;
+        Ok(Spanned {
+            node: ExpressionKind::Infix {
+                left: Box::new(left),
+                operator,
+                right: Box::new(right),
+            },
+            span: start..end,
+        })
+    }
+    fn parse_call_expression(&mut self, function: Expression) -> ParseResult<Expression> {
+        let start = function.span.start;
+        self.advance();
+        let mut args = Vec::new();
+        if !self.current_token_is(TokenType::RParen) {
+            loop {
+                args.push(self.parse_expression(Precedence::Lowest)?);
+
+                if self.current_token_is(TokenType::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect_advance(TokenType::RParen)?;
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: ExpressionKind::Call {
+                function: Box::new(function),
+                args,
+            },
+            span: start..end,
+        })
+    }
+    fn get_precedence(kind: &TokenType) -> Precedence {
+        match kind {
+            TokenType::Equal
+            | TokenType::NotEqual
+            | TokenType::LesserThan
+            | TokenType::GreaterThan
+            | TokenType::LesserEqual
+            | TokenType::GreaterEqual => Precedence::Comparison,
+
+            TokenType::Plus | TokenType::Minus => Precedence::Sum,
+
+            TokenType::Mul => Precedence::Product,
+
+            TokenType::LParen => Precedence::Call,
+
+            _ => Precedence::Lowest,
+        }
+    }
+    fn peek_precedence(&self) -> Precedence {
+        Self::get_precedence(&self.peek_token.kind)
+    }
+    fn cur_precedence(&self) -> Precedence {
+        Self::get_precedence(&self.current_token.kind)
     }
 }
 

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +21,7 @@ pub enum TokenType {
     Else,     // "else"
     EndIf,    // "endif"
     While,    // "while"
+    Do,       // "do"
     EndWhile, // "endwhile"
     End,      // "End"
     Return,   // "Return"
@@ -34,8 +36,8 @@ pub enum TokenType {
     Assign,       // '='
     LParen,       // '('
     RParen,       // ')'
-    And,          // "&&"
-    Or,           // "||"
+    And,          // "&&" or "and"
+    Or,           // "||" or "or"
     Not,          // "!"
     NotEqual,     // "!="
     LesserEqual,  // "<="
@@ -43,10 +45,76 @@ pub enum TokenType {
     LesserThan,   // '<'
     GreaterThan,  // '>'
     As,           // "as"
+    Plus,         // '+'
+    Minus,        // '-'
+    Mul,          // '*'
 
     Newline,
     Error(String),
     EOF,
+}
+
+impl fmt::Display for TokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            // --- Keywords ---
+            TokenType::Function => write!(f, "keyword 'function'"),
+            TokenType::Public => write!(f, "keyword 'public'"),
+            TokenType::Action => write!(f, "keyword 'action'"),
+            TokenType::Alias => write!(f, "keyword 'alias'"),
+            TokenType::Global => write!(f, "keyword 'global'"),
+            TokenType::If => write!(f, "keyword 'if'"),
+            TokenType::Then => write!(f, "keyword 'then'"),
+            TokenType::Else => write!(f, "keyword 'else'"),
+            TokenType::EndIf => write!(f, "keyword 'endif'"),
+            TokenType::While => write!(f, "keyword 'while'"),
+            TokenType::EndWhile => write!(f, "keyword 'endwhile'"),
+            TokenType::Do => write!(f, "keyword 'do'"),
+            TokenType::As => write!(f, "keyword 'as'"),
+            TokenType::True => write!(f, "boolean 'true'"),
+            TokenType::False => write!(f, "boolean 'false'"),
+
+            // --- Opcode Keywords ---
+            TokenType::End => write!(f, "terminator 'End'"),
+            TokenType::Return => write!(f, "terminator 'Return'"),
+            TokenType::Jump => write!(f, "command 'Jump'"),
+
+            // --- Literals ---
+            TokenType::Identifier(s) => write!(f, "identifier '{}'", s),
+            TokenType::Num(n) => write!(f, "number '{}'", n),
+            TokenType::Label(l) => write!(f, "label '{}'", l),
+            // if we add string literals for inline messages later
+            // TokenType::StringLit(s) => write!(f, "string \"{}\"", s),
+
+            // --- Symbols ---
+            TokenType::Hash => write!(f, "'#'"),
+            TokenType::Comma => write!(f, "','"),
+            TokenType::Dot => write!(f, "'.'"),
+            TokenType::Colon => write!(f, "':'"),
+            TokenType::Assign => write!(f, "'='"),
+            TokenType::LParen => write!(f, "'('"),
+            TokenType::RParen => write!(f, "')'"),
+
+            // --- Operators ---
+            TokenType::Equal => write!(f, "'=='"),
+            TokenType::NotEqual => write!(f, "'!='"),
+            TokenType::LesserThan => write!(f, "'<'"),
+            TokenType::GreaterThan => write!(f, "'>'"),
+            TokenType::LesserEqual => write!(f, "'<='"),
+            TokenType::GreaterEqual => write!(f, "'>='"),
+            TokenType::Plus => write!(f, "'+'"),
+            TokenType::Minus => write!(f, "'-'"),
+            TokenType::Mul => write!(f, "'*'"),
+            TokenType::Not => write!(f, "'!'"),
+            TokenType::And => write!(f, "'&&'"),
+            TokenType::Or => write!(f, "'||'"),
+
+            // --- Special ---
+            TokenType::Newline => write!(f, "newline"),
+            TokenType::EOF => write!(f, "end of file"),
+            TokenType::Error(e) => write!(f, "error: {}", e),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

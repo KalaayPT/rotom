@@ -80,23 +80,23 @@ impl<'a> Lexer<'a> {
             Some('#') => TokenType::Hash,
             Some(',') => TokenType::Comma,
             Some('.') => {
-                if let Some(c) = self.peek_next()
+                if let Some(&c) = self.chars.peek()
                     && is_identifier_start(c)
                 {
-                    self.read_char();
+                    // self.read_char();
                     let first = match self.read_char() {
                         Some(char) => char,
                         _ => unreachable!(),
                     };
                     let name = match self.read_identifier(first) {
                         TokenType::Identifier(string) => string,
-                        keyword => format!("{:?}", keyword),
+                        keyword => format!("{}", keyword),
                     };
                     if self.chars.peek() == Some(&':') {
                         self.read_char();
                         TokenType::Label(name)
                     } else {
-                        TokenType::Error(String::from("\':\' not found after label"))
+                        TokenType::Label(name)
                     }
                 } else {
                     TokenType::Dot
@@ -153,6 +153,9 @@ impl<'a> Lexer<'a> {
                     TokenType::GreaterThan
                 }
             }
+            Some('+') => TokenType::Plus,
+            Some('-') => TokenType::Minus,
+            Some('*') => TokenType::Mul,
             Some('\n') => TokenType::Newline,
             Some(c) if is_identifier_start(c) => self.read_identifier(c),
             Some(c) if c.is_ascii_digit() => self.read_integer(c),
@@ -187,6 +190,7 @@ impl<'a> Lexer<'a> {
             "else" => return TokenType::Else,
             "endif" => return TokenType::EndIf,
             "while" => return TokenType::While,
+            "do" => return TokenType::Do,
             "endwhile" => return TokenType::EndWhile,
             "End" => return TokenType::End,
             "Return" => return TokenType::Return,

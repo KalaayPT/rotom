@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.100"
 chrono = {version = "0.4.42", features = ["serde"]}
 clap = { version = "4.5.51", features = ["derive"] }
+codespan-reporting = "0.13.1"
 linked_hash_set = "0.1.6"
 rayon = "1.11.0"
 regex = "1.12.2"
