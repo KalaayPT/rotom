@@ -14,18 +14,19 @@ pub enum TokenType {
     Label(String),
 
     // control flow
-    True,     // "true"
-    False,    // "false"
-    If,       // "if"
-    Then,     // "then"
-    Else,     // "else"
-    EndIf,    // "endif"
-    While,    // "while"
-    Do,       // "do"
-    EndWhile, // "endwhile"
-    End,      // "End"
-    Return,   // "Return"
-    Jump,     // "Jump"
+    True,        // "true"
+    False,       // "false"
+    If,          // "if"
+    Then,        // "then"
+    Else,        // "else"
+    EndIf,       // "endif"
+    While,       // "while"
+    Do,          // "do"
+    EndWhile,    // "endwhile"
+    End,         // "End"
+    EndMovement, // "EndMovement"
+    Return,      // "Return"
+    Jump,        // "Jump"
 
     // operators
     Hash,         // '#'
@@ -76,6 +77,7 @@ impl fmt::Display for TokenType {
 
             // --- Opcode Keywords ---
             TokenType::End => write!(f, "terminator 'End'"),
+            TokenType::EndMovement => write!(f, "terminator 'EndMovement'"),
             TokenType::Return => write!(f, "terminator 'Return'"),
             TokenType::Jump => write!(f, "command 'Jump'"),
 

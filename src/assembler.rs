@@ -84,32 +84,6 @@ pub fn parse_plaintext_file(
     })
 }
 
-fn find_command_containers<'a>(
-    text: &'a str,
-    regex: &'a Regex,
-) -> impl Iterator<Item = &'a str> + 'a {
-    let matches: Vec<Match> = regex.find_iter(&text).collect();
-    let mut start_indices: Vec<usize> = Vec::new();
-    if !matches.is_empty() {
-        start_indices.push(matches[0].start());
-    }
-    for i in 1..matches.len() {
-        let prev_match = &matches[i - 1];
-        let current_match = &matches[i];
-        let text_between = &text[prev_match.end()..current_match.start()];
-        if !text_between.trim().is_empty() {
-            start_indices.push(current_match.start());
-        }
-    }
-    let mut end_indices: Vec<usize> = start_indices.iter().skip(1).copied().collect();
-    end_indices.push(text.len());
-    // println!("{:?}", start_indices);
-    start_indices
-        .into_iter()
-        .zip(end_indices)
-        .map(move |(start, end)| text[start..end].trim())
-}
-
 fn write_binary(
     file: &PathBuf,
     parser: &mut ParserState,
@@ -303,73 +277,6 @@ fn linker(byte_array: &mut Vec<u8>, parser: &ParserState) -> Result<()> {
     }
     Ok(())
 }
-
-fn parse_plaintext_container(
-    container_str: &str,
-    parser: &mut ParserState,
-    script_file: &mut ScriptFile,
-    ctx: &ParseContext,
-) -> Result<()> {
-    let mut current_command_container = CommandContainer::new(ContainerType::Script, 0);
-    let mut end_condition = false;
-    let mut header_index = 0;
-    while !end_condition {
-        if let Some(container_line) = container_str.lines().nth(header_index) {
-            // println!("{container_line}");
-            end_condition =
-                parse_container_header(container_line, &mut current_command_container, parser)?;
-            header_index += 1;
-        } else {
-            break;
-        }
-    }
-    // println!("{}",parser.script_no);
-    for (i, line) in container_str.lines().skip(header_index - 1).enumerate() {
-        parse_command_str(line, &mut current_command_container, i, &ctx)?;
-    }
-    // println!("{current_command_container:#?}");
-    script_file.containers.push(current_command_container);
-    Ok(())
-}
-
-fn parse_container_header(
-    container_line: &str,
-    current_command_container: &mut CommandContainer,
-    parser: &mut ParserState,
-) -> Result<bool> {
-    // println!("header line: {container_line}");
-    match container_line.split_whitespace().next().unwrap() {
-        "Script" => {
-            // parser.script_no += 1;
-            current_command_container.kind = ContainerType::Script;
-            current_command_container.reference.id.push(
-                container_line
-                    .split_whitespace()
-                    .nth(1)
-                    .ok_or(anyhow!("container number not found"))?
-                    .trim_end_matches(":")
-                    .parse()?,
-            );
-        }
-        "Function" => {
-            parser.func_no += 1;
-            current_command_container.kind = ContainerType::Function;
-            current_command_container.reference.id.push(parser.func_no);
-        }
-        "Action" => {
-            parser.action_no += 1;
-            current_command_container.kind = ContainerType::Action;
-            current_command_container
-                .reference
-                .id
-                .push(parser.action_no);
-            current_command_container.commands = CommandList::Movement(Vec::new())
-        }
-        _ => return Ok(true),
-    };
-    Ok(false)
-}
-
 fn parse_command_str(
     command: &str,
     current_command_container: &mut CommandContainer,

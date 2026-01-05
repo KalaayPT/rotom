@@ -1,6 +1,6 @@
 use std::{iter::Peekable, str::Chars};
 
-use crate::token::{Token, TokenType};
+use super::token::{Token, TokenType};
 
 pub struct Lexer<'a> {
     pub source: &'a str,
@@ -83,7 +83,6 @@ impl<'a> Lexer<'a> {
                 if let Some(&c) = self.chars.peek()
                     && is_identifier_start(c)
                 {
-                    // self.read_char();
                     let first = match self.read_char() {
                         Some(char) => char,
                         _ => unreachable!(),
@@ -92,11 +91,13 @@ impl<'a> Lexer<'a> {
                         TokenType::Identifier(string) => string,
                         keyword => format!("{}", keyword),
                     };
+                    // Preserve the dot prefix for local labels
+                    let full_name = format!(".{}", name);
                     if self.chars.peek() == Some(&':') {
                         self.read_char();
-                        TokenType::Label(name)
+                        TokenType::Label(full_name)
                     } else {
-                        TokenType::Label(name)
+                        TokenType::Label(full_name)
                     }
                 } else {
                     TokenType::Dot
@@ -124,7 +125,7 @@ impl<'a> Lexer<'a> {
             Some('|') => {
                 if let Some('|') = self.chars.peek() {
                     self.read_char();
-                    TokenType::And
+                    TokenType::Or
                 } else {
                     TokenType::Error(String::from("invalid token"))
                 }
@@ -193,6 +194,7 @@ impl<'a> Lexer<'a> {
             "do" => return TokenType::Do,
             "endwhile" => return TokenType::EndWhile,
             "End" => return TokenType::End,
+            "EndMovement" => return TokenType::EndMovement,
             "Return" => return TokenType::Return,
             "Jump" => return TokenType::Jump,
             "and" => return TokenType::And,

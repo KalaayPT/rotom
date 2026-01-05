@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::token::{Token, TokenType};
+use super::token::TokenType;
 
 #[derive(Debug)]
 pub struct ScriptFile {
@@ -8,13 +8,19 @@ pub struct ScriptFile {
     pub functions: Vec<Statement>,
     pub actions: Vec<Statement>,
 }
+// helper struct to hold the metadata for ONE alias of a function (to support multiple jumptable
+// entries for one function)
+#[derive(Debug, Clone)]
+pub struct FunctionHeader {
+    pub name: String,
+    pub id: Option<i32>,
+    pub is_public: bool,
+}
 
 #[derive(Debug)]
 pub enum StatementKind {
     Function {
-        is_public: bool,
-        name: String,
-        id: Option<i32>,
+        headers: Vec<FunctionHeader>,
         body: Vec<Statement>,
     },
     Action {

@@ -1,12 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Write, path::PathBuf};
 
-use crate::{
-    Directive, cache,
-    helpers::{PathExt, get_output_dir, get_rom_root},
-};
+use crate::helpers::{get_output_dir, get_rom_root, Directive, PathExt};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Cache {
     pub rom_id: String,

@@ -1,13 +1,13 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{Context, Result};
-// use std::path::PathBuf;
-// use sha2::{Digest, Sha256};
 
-use crate::{
-    Directive,
-    parser::{CommandContainer, ContainerType},
-};
+use crate::parser::{CommandContainer, ContainerType};
+
+pub enum Directive {
+    Assemble,
+    Disassemble,
+}
 
 pub trait PathExt {
     fn name_to_str(&self) -> Result<String>;

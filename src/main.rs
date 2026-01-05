@@ -1,177 +1,302 @@
-use anyhow::Result;
-use chrono::Local;
-use clap::{Args, Subcommand};
-use rayon::prelude::*;
-use regex::Regex;
-use std;
-use std::collections::HashMap;
-use std::io::{self};
 use std::path::PathBuf;
 
-// use crate::assembler::{assemble, parse_plaintext_file};
-use crate::cache::{BuildStatus, Cache, FileCache};
-// use crate::disassembler::{disassemble, parse_script_file_bin};
-use crate::helpers::PathExt;
-use crate::lexer::Lexer;
-use crate::parse_error::print_error;
-use crate::parser::{ParseContext, Parser};
-use crate::token::TokenType;
+use clap::{Parser as ClapParser, Subcommand};
 
-// mod assembler;
-mod ast;
-mod cache;
+mod compiler;
 mod database;
-// mod disassembler;
-mod helpers;
-mod levelscript;
-mod lexer;
-mod parse_error;
-mod parser;
-mod token;
 
-#[derive(Debug, clap::Parser)]
-#[command(version, about = "A pokemon script assembler/disassembler", long_about = None)]
+use compiler::parse_error::CompileError;
+use compiler::{Analyzer, IrFunction, Lexer, Lowerer, Parser, StatementKind};
+use database::DatabaseV2;
+
+#[derive(Debug, ClapParser)]
+#[command(name = "rotom")]
+#[command(version, about = "A Pokemon Gen 4 script compiler/decompiler", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
+
 #[derive(Debug, Subcommand)]
 enum Commands {
-    #[command(arg_required_else_help = true)]
-    Assemble(CommandArgs),
-    Disassemble(CommandArgs),
-}
-#[derive(Debug, Args)]
-struct CommandArgs {
-    #[arg(short, long)]
-    database: PathBuf,
-    #[arg(short, long, group = "script")]
-    script_file: PathBuf,
-}
-enum Directive {
-    Assemble,
-    Disassemble,
-}
-pub struct _ParseResult {
-    pub file_name: String,
-    pub cache_entry: FileCache,
+    /// Compile a .rotom script to binary
+    Compile {
+        /// Path to the V2 database JSON file
+        #[arg(short, long)]
+        database: PathBuf,
+
+        /// Input .rotom script file
+        #[arg(short, long)]
+        input: PathBuf,
+
+        /// Output binary file (defaults to input with .bin extension)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Decompile a binary script to .rotom source
+    Decompile {
+        /// Path to the V2 database JSON file
+        #[arg(short, long)]
+        database: PathBuf,
+
+        /// Input binary script file
+        #[arg(short, long)]
+        input: PathBuf,
+
+        /// Output .rotom file (defaults to input with .rotom extension)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Run a test compilation (for development)
+    Test {
+        /// Path to the V2 database JSON file
+        #[arg(short, long)]
+        database: PathBuf,
+    },
 }
 
 fn main() {
-    let input = r"public function Main #1
-    // 1. Alias Usage
-    alias 0x800C as RESULT
-    
-    // 2. Command with complex args (Expression Parsing)
-    // Should parse as: SetVar(0x8000, (1 + 2) * 3)
-    SetVar 0x8000, 1 + 2 * 3
+    let cli = Cli::parse();
 
-    // 3. Nested Logic with Function Calls
-    if GetPlayerX() == 10 then
-        if GetPlayerY() == 20 then
-            Message 5
+    match cli.command {
+        Commands::Compile {
+            database,
+            input,
+            output,
+        } => {
+            if let Err(e) = compile(&database, &input, output.as_ref()) {
+                eprintln!("Compilation failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Decompile {
+            database,
+            input,
+            output,
+        } => {
+            eprintln!("Decompilation not yet implemented");
+            std::process::exit(1);
+        }
+        Commands::Test { database } => {
+            run_test(&database);
+        }
+    }
+}
+
+fn compile(db_path: &PathBuf, input: &PathBuf, _output: Option<&PathBuf>) -> Result<(), CompileError> {
+    println!("Loading database from: {}", db_path.display());
+    let db = DatabaseV2::load(db_path)?;
+    println!(
+        "Loaded {} commands for {}",
+        db.commands.len(),
+        db.meta.version
+    );
+
+    println!("\nReading script from: {}", input.display());
+    let source = std::fs::read_to_string(input).map_err(|e| CompileError::Io {
+        message: format!("Failed to read input file '{}': {}", input.display(), e),
+    })?;
+
+    println!("Parsing...");
+    let lexer = Lexer::new(&source);
+    let mut parser = Parser::new(lexer);
+    let file = parser.parse_script_file()?;
+    println!(
+        "Parsed: {} aliases, {} functions, {} actions",
+        file.aliases.len(),
+        file.functions.len(),
+        file.actions.len()
+    );
+
+    println!("Analyzing...");
+    let mut analyzer = Analyzer::new();
+    analyzer.analyze(&file)?;
+    println!("Analysis passed!");
+
+    println!("\nLowering to IR...");
+    for func in &file.functions {
+        if let StatementKind::Function { headers, body } = &func.node {
+            let func_name = headers
+                .first()
+                .map(|h| h.name.clone())
+                .unwrap_or_else(|| "unnamed".to_string());
+
+            let lowerer = Lowerer::new(&analyzer.symbols);
+            let ir_ops = lowerer.lower_function(body)?;
+
+            let ir_func = IrFunction {
+                name: func_name,
+                instructions: ir_ops,
+            };
+            println!("{}", ir_func);
+        }
+    }
+
+    println!("Codegen not yet implemented - stopping at IR");
+    Ok(())
+}
+
+fn run_test(db_path: &PathBuf) {
+    let input = r#"
+// === Global Aliases ===
+global alias 0x800C as RESULT
+global alias 0x8000 as PLAYER_X
+global alias 0x8001 as COUNTER
+
+// === Main Entry Point ===
+public function Main #1
+    // Local alias (shadows nothing, just for demo)
+    alias 0x8002 as LOCAL_VAR
+
+    // 1. Simple command
+    SetVar PLAYER_X, 100
+
+    // 2. Command with arithmetic expression
+    SetVar LOCAL_VAR, 1 + 2 * 3
+
+    // 3. Simple if/then/endif (variable vs literal)
+    if PLAYER_X == 100 then
+        Message 1
+    endif
+
+    // 4. If/else
+    if RESULT != 0 then
+        Message 2
+    else
+        Message 3
+    endif
+
+    // 5. Nested if with else
+    if PLAYER_X == 100 then
+        if RESULT == 1 then
+            Message 10
         else
-            // 4. Jump to Label
-            Jump .bad_ending
+            Jump .skip_message
         endif
     endif
 
-    // 5. While Loop
-    while RESULT != 0 do
-        Dec RESULT
+    // 6. While loop
+    SetVar COUNTER, 5
+    while COUNTER != 0 do
+        SubVar COUNTER, 1
     endwhile
 
-    .bad_ending:
-    PlaySound 0xFF
+    // 7. Jump to local label
+    Jump .end_script
+
+    .skip_message:
+    Message 99
+
+    .end_script:
+    PlaySound 0x10
 End
 
-// 6. Action (Private, Command-only)
-action WalkRight
-    WalkRight
-    WalkRight
-End
-    ";
+// === Helper Function (private, uses Return) ===
+function HelperFunc
+    Message 50
+Return
 
-    let lexer = Lexer::new(input);
-    let mut parser = Parser::new(lexer);
-    match parser.parse_script_file() {
-        Ok(file) => println!("{file:#?}"),
-        Err(e) => print_error("test", input, e),
+// === Action (movement only, no control flow) ===
+action WalkPattern
+    WalkRight 3
+    WalkDown 2
+    FaceUp
+EndMovement
+"#;
+
+    println!("=== Loading Database ===");
+    let db = match DatabaseV2::load(db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("Failed to load database: {}", e);
+            return;
+        }
+    };
+    println!(
+        "Loaded {} commands for {}",
+        db.commands.len(),
+        db.meta.version
+    );
+
+    // Quick sanity check - look up a few commands
+    println!("\n=== Database Sanity Check ===");
+    for cmd_name in &["End", "SetVar", "Message", "Jump"] {
+        if let Some(cmd) = db.get_script_cmd(cmd_name) {
+            println!(
+                "  {} (id: {:?}, params: {})",
+                cmd_name,
+                cmd.id,
+                cmd.params.len()
+            );
+        } else {
+            println!("  {} NOT FOUND", cmd_name);
+        }
     }
 
-    // loop {
-    //     let token = lexer.next_token();
-    //     println!("{:?}", token);
-    //     if token.kind == TokenType::EOF {
-    //         break;
-    //     }
-    // }
+    println!("\n=== Parsing ===");
+    let lexer = Lexer::new(input);
+    let mut parser = Parser::new(lexer);
+    let file = match parser.parse_script_file() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Parse error: {:?}", e);
+            return;
+        }
+    };
+    println!(
+        "Parsed: {} aliases, {} functions, {} actions",
+        file.aliases.len(),
+        file.functions.len(),
+        file.actions.len()
+    );
+
+    println!("\n=== Analyzing ===");
+    let mut analyzer = Analyzer::new();
+    if let Err(e) = analyzer.analyze(&file) {
+        eprintln!("Analysis error: {:?}", e);
+        return;
+    }
+    println!("Analysis passed!");
+
+    println!("\n=== Lowering Functions to IR ===");
+    for func in &file.functions {
+        if let StatementKind::Function { headers, body } = &func.node {
+            let func_name = headers
+                .first()
+                .map(|h| h.name.clone())
+                .unwrap_or_else(|| "unnamed".to_string());
+
+            let lowerer = Lowerer::new(&analyzer.symbols);
+            let ir_ops = match lowerer.lower_function(body) {
+                Ok(ops) => ops,
+                Err(e) => {
+                    eprintln!("Lowering error in {}: {:?}", func_name, e);
+                    return;
+                }
+            };
+
+            let ir_func = IrFunction {
+                name: func_name,
+                instructions: ir_ops,
+            };
+            println!("{}", ir_func);
+        }
+    }
+
+    println!("=== Actions (no lowering needed - 1:1 with bytecode) ===");
+    for action in &file.actions {
+        if let StatementKind::Action { name, body } = &action.node {
+            println!("Action: {}", name);
+            for stmt in body {
+                if let StatementKind::ScriptCommand { command, args } = &stmt.node {
+                    println!("    {} ({} args)", command, args.len());
+                } else if let StatementKind::End = &stmt.node {
+                    println!("    EndMovement");
+                }
+            }
+            println!();
+        }
+    }
 }
-
-// fn main() -> Result<()> {
-//     let args = Cli::parse();
-//     // println!("{args:?}");
-//     match args.command {
-//         Commands::Disassemble(args) => disassemble(args),
-//         Commands::Assemble(args) => assemble(args),
-//     }
-// }
-
-// fn parse_directory(
-//     folder: &PathBuf,
-//     cache: &Cache,
-//     directive: Directive,
-//     cachemap: &mut HashMap<String, FileCache>,
-//     ctx: &ParseContext,
-// ) -> Result<()> {
-//     let entries = std::fs::read_dir(folder)?
-//         .map(|res| res.map(|e| e.path()))
-//         .collect::<Result<Vec<_>, io::Error>>()?;
-//     let results: Vec<(PathBuf, Result<_ParseResult>)> = entries
-//         .par_iter()
-//         .map(|file| {
-//             let regex = Regex::new(r"(?m)^\w+ [\w\d#]+:").unwrap();
-//
-//             let result = match directive {
-//                 Directive::Assemble => parse_plaintext_file(&file, &regex, &ctx),
-//                 Directive::Disassemble => parse_script_file_bin(&file, cache, &ctx),
-//             };
-//             (file.clone(), result)
-//         })
-//         .collect();
-//     for (file, result) in results {
-//         match result {
-//             Ok(parse_result) => {
-//                 cachemap.insert(parse_result.file_name, parse_result.cache_entry);
-//             }
-//
-//             Err(e) => {
-//                 eprintln!("Error processing {}: {}", file.display(), e);
-//                 let name = file.name_to_str()?;
-//                 match directive {
-//                     Directive::Assemble => {
-//                         cachemap.insert(
-//                             name,
-//                             FileCache {
-//                                 status: BuildStatus::AssembleError,
-//                                 error_message: Some(e.to_string()),
-//                                 build_time: Local::now(),
-//                             },
-//                         );
-//                     }
-//                     Directive::Disassemble => {
-//                         cachemap.insert(
-//                             name,
-//                             FileCache {
-//                                 status: BuildStatus::PartialDisassembly,
-//                                 error_message: Some(e.to_string()),
-//                                 build_time: Local::now(),
-//                             },
-//                         );
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     Ok(())
-// }

@@ -1,11 +1,13 @@
 use linked_hash_set::LinkedHashSet;
 use std::collections::HashMap;
 
-use crate::{
-    ast::{Expression, ExpressionKind, Precedence, ScriptFile, Spanned, Statement, StatementKind},
-    database::{Enums, ScriptDatabase},
+use super::{
+    ast::{
+        Expression, ExpressionKind, FunctionHeader, Precedence, ScriptFile, Spanned, Statement,
+        StatementKind,
+    },
     lexer::Lexer,
-    parse_error::{ParseError, ParseResult},
+    parse_error::{parse_error, ParseResult},
     token::{Token, TokenType},
 };
 
@@ -61,13 +63,13 @@ impl<'a> Parser<'a> {
             self.advance();
             Ok(token)
         } else {
-            Err(ParseError {
-                span: self.current_token.span.clone(),
-                message: format!(
+            Err(parse_error(
+                self.current_token.span.clone(),
+                format!(
                     "Unexpected Token. Expected: {}, found: {}",
                     kind, self.current_token.kind
                 ),
-            })
+            ))
         }
     }
     pub fn parse_script_file(&mut self) -> ParseResult<ScriptFile> {
@@ -108,13 +110,13 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => {
-                return Err(ParseError {
-                    span: self.current_token.span.clone(),
-                    message: format!(
+                return Err(parse_error(
+                    self.current_token.span.clone(),
+                    format!(
                         "unexpected statement inside function: {}",
                         self.current_token.kind
                     ),
-                });
+                ));
             }
         };
         Ok(statement)
@@ -126,38 +128,69 @@ impl<'a> Parser<'a> {
             TokenType::Global => self.parse_alias(),
             _ => {
                 let token = self.current_token.clone();
-                Err(ParseError {
-                    span: token.span,
-                    message: format!("Expected top-level definition, found {}", token.kind),
-                })
+                Err(parse_error(
+                    token.span,
+                    format!("Expected top-level definition, found {}", token.kind),
+                ))
             }
         }
     }
     pub fn parse_function(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
-        let is_public = if self.current_token_is(TokenType::Public) {
-            self.advance();
-            true
-        } else {
-            false
-        };
-        self.expect_advance(TokenType::Function)?;
-        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
-        let name = match name_token.kind {
-            TokenType::Identifier(name) => name,
-            _ => unreachable!(),
-        };
-        let id = match is_public {
-            true => {
-                self.expect_advance(TokenType::Hash)?;
-                let id_token = self.expect_advance(TokenType::Num(0))?;
-                match id_token.kind {
-                    TokenType::Num(num) => Some(num),
-                    _ => unreachable!(),
-                }
+        let mut headers = Vec::new();
+        // Consume all "Function X", "Public Function Y #123" lines (for jump-table multi-pointer
+        // support)
+        loop {
+            if !matches!(
+                self.current_token.kind,
+                TokenType::Function | TokenType::Public
+            ) {
+                break;
             }
-            false => None,
-        };
+            let is_public = if self.current_token_is(TokenType::Public) {
+                self.advance();
+                true
+            } else {
+                false
+            };
+            self.expect_advance(TokenType::Function)?;
+            let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+            let name = match name_token.kind {
+                TokenType::Identifier(name) => name,
+                _ => unreachable!(),
+            };
+            // Optional ID logic (Only if public/explicit)
+            let id = if is_public || self.current_token_is(TokenType::Hash) {
+                if self.current_token_is(TokenType::Hash) {
+                    self.advance(); // eat #
+                    let id_token = self.expect_advance(TokenType::Num(0))?;
+                    match id_token.kind {
+                        TokenType::Num(num) => Some(num),
+                        _ => unreachable!(),
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            // support "function Name:" syntax (for backwards compat maybe?)
+            if self.current_token_is(TokenType::Colon) {
+                self.advance();
+            }
+
+            headers.push(FunctionHeader {
+                name,
+                id,
+                is_public,
+            });
+        }
+        if headers.is_empty() {
+            return Err(parse_error(
+                self.current_token.span.clone(),
+                "Expected function definition",
+            ));
+        }
         let mut body = self.parse_block(vec![TokenType::End, TokenType::Return])?;
         let terminator_stmt = if self.current_token_is(TokenType::Return) {
             let span = self.current_token.span.clone();
@@ -174,20 +207,16 @@ impl<'a> Parser<'a> {
                 span,
             }
         } else {
-            return Err(ParseError {
-                span: self.current_token.span.clone(),
-                message: "Expected 'End' or 'Return' to close function".into(),
-            });
+            return Err(parse_error(
+                self.current_token.span.clone(),
+                "Expected 'End' or 'Return' to close function",
+            ));
         };
         body.push(terminator_stmt);
+
         let end = self.current_token.span.start;
         Ok(Spanned {
-            node: StatementKind::Function {
-                is_public,
-                name,
-                id,
-                body,
-            },
+            node: StatementKind::Function { headers, body },
             span: start..end,
         })
     }
@@ -199,8 +228,8 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(name) => name,
             _ => unreachable!(),
         };
-        let mut body = self.parse_block(vec![TokenType::End])?;
-        if self.current_token_is(TokenType::End) {
+        let mut body = self.parse_block(vec![TokenType::EndMovement])?;
+        if self.current_token_is(TokenType::EndMovement) {
             let span = self.current_token.span.clone();
             self.advance();
             body.push(Spanned {
@@ -208,10 +237,10 @@ impl<'a> Parser<'a> {
                 span,
             })
         } else {
-            return Err(ParseError {
-                span: self.current_token.span.clone(),
-                message: "Expected 'End' to close action".into(),
-            });
+            return Err(parse_error(
+                self.current_token.span.clone(),
+                "Expected 'EndMovement' to close action",
+            ));
         };
         let end = self.current_token.span.start;
         Ok(Spanned {
@@ -363,10 +392,13 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => {
-                return Err(ParseError {
-                    span: self.current_token.span.clone(),
-                    message: format!("{}", self.current_token.kind),
-                });
+                return Err(parse_error(
+                    self.current_token.span.clone(),
+                    format!(
+                        "Expected label or identifier as jump target, found {}",
+                        self.current_token.kind
+                    ),
+                ));
             }
         };
         let end = self.current_token.span.start;
@@ -416,10 +448,10 @@ impl<'a> Parser<'a> {
                 return Ok(expression);
             }
             _ => {
-                return Err(ParseError {
-                    span: self.current_token.span.clone(),
-                    message: format!("Expected expression, found {}", self.current_token.kind),
-                });
+                return Err(parse_error(
+                    self.current_token.span.clone(),
+                    format!("Expected expression, found {}", self.current_token.kind),
+                ));
             }
         };
         let end = self.current_token.span.start;
@@ -498,141 +530,5 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub const CONDITIONAL_PARAM_MARKER: u8 = 255;
+// Legacy constants - may be needed for codegen
 pub const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
-
-#[derive(Debug)]
-pub struct _ScriptFile {
-    pub containers: Vec<CommandContainer>,
-}
-impl _ScriptFile {
-    pub fn new() -> _ScriptFile {
-        _ScriptFile {
-            containers: Vec::new(),
-        }
-    }
-    pub fn contains_offset(&self, offset: i32) -> bool {
-        self.containers
-            .iter()
-            .any(|command| command.reference.offset == offset)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ContainerType {
-    Script,
-    Function,
-    Action,
-    LevelScript,
-}
-#[derive(Debug)]
-pub struct ContainerReference {
-    pub id: Vec<u32>,
-    pub offset: i32,
-}
-#[derive(Debug)]
-pub struct CommandContainer {
-    pub kind: ContainerType,
-    pub reference: ContainerReference,
-    pub commands: CommandList,
-    // called_by: Option<&'static CommandContainer>,
-    // calls: Option<&'static CommandContainer>,
-}
-impl CommandContainer {
-    pub fn new(kind: ContainerType, offset: i32) -> CommandContainer {
-        CommandContainer {
-            commands: match kind {
-                ContainerType::Script | ContainerType::Function => CommandList::Script(Vec::new()),
-                ContainerType::Action => CommandList::Movement(Vec::new()),
-                ContainerType::LevelScript => CommandList::Levelscript(Vec::new()),
-            },
-            kind: kind,
-            reference: ContainerReference {
-                id: Vec::new(),
-                offset: offset,
-            },
-        }
-    }
-}
-#[derive(Debug)]
-pub enum CommandList {
-    Script(Vec<ScriptCommand>),
-    Movement(Vec<Movement>),
-    Levelscript(Vec<LevelScriptCommand>),
-}
-#[derive(Debug)]
-pub struct ScriptCommand {
-    pub id: u16,
-    pub name: String,
-    pub parameters: Vec<i32>,
-}
-impl ScriptCommand {
-    pub fn new() -> ScriptCommand {
-        ScriptCommand {
-            id: 0,
-            name: String::new(),
-            parameters: Vec::new(),
-        }
-    }
-}
-#[derive(Debug)]
-pub struct Movement {
-    pub id: u16,
-    pub name: String,
-    pub parameter: u16,
-}
-impl Movement {
-    pub fn new() -> Movement {
-        Movement {
-            id: 0,
-            name: String::new(),
-            parameter: 0,
-        }
-    }
-}
-#[derive(Debug)]
-pub struct LevelScriptCommand {
-    pub name: String,
-    pub parameter: Option<Vec<i32>>,
-}
-impl LevelScriptCommand {
-    pub fn new() -> LevelScriptCommand {
-        LevelScriptCommand {
-            name: String::new(),
-            parameter: None,
-        }
-    }
-}
-
-pub struct ParserState {
-    pub script_no: u32,
-    pub func_no: u32,
-    pub action_no: u32,
-    pub script_offsets: Vec<i32>,
-    pub function_offsets: LinkedHashSet<i32>,
-    pub action_offsets: LinkedHashSet<i32>,
-    pub output_string: String,
-    pub relocation_table: Vec<(usize, i32, ContainerType)>,
-    pub symbol_table: HashMap<i32, usize>,
-    pub symbol_table_movements: HashMap<i32, usize>,
-}
-impl ParserState {
-    pub fn new() -> ParserState {
-        ParserState {
-            script_no: 0,
-            func_no: 0,
-            action_no: 0,
-            script_offsets: Vec::new(),
-            function_offsets: LinkedHashSet::new(),
-            action_offsets: LinkedHashSet::new(),
-            output_string: String::new(),
-            relocation_table: Vec::new(),
-            symbol_table: HashMap::new(),
-            symbol_table_movements: HashMap::new(),
-        }
-    }
-}
-pub struct ParseContext<'a> {
-    pub db: &'a ScriptDatabase,
-    pub enums: &'a Enums,
-}
