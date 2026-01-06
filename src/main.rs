@@ -4,10 +4,14 @@ use clap::{Parser as ClapParser, Subcommand};
 
 mod compiler;
 mod database;
+mod transpiler;
 
-use compiler::parse_error::CompileError;
-use compiler::{Analyzer, IrFunction, Lexer, Lowerer, Parser, StatementKind};
-use database::DatabaseV2;
+use compiler::parse_error::{CompileError, print_error};
+use compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
+use database::{ConstantDb, DatabaseV2};
+
+use crate::compiler::codegen::Emitter;
+use crate::compiler::ir;
 
 #[derive(Debug, ClapParser)]
 #[command(name = "rotom")]
@@ -85,7 +89,11 @@ fn main() {
     }
 }
 
-fn compile(db_path: &PathBuf, input: &PathBuf, _output: Option<&PathBuf>) -> Result<(), CompileError> {
+fn compile(
+    db_path: &PathBuf,
+    input: &PathBuf,
+    _output: Option<&PathBuf>,
+) -> Result<(), CompileError> {
     println!("Loading database from: {}", db_path.display());
     let db = DatabaseV2::load(db_path)?;
     println!(
@@ -93,6 +101,11 @@ fn compile(db_path: &PathBuf, input: &PathBuf, _output: Option<&PathBuf>) -> Res
         db.commands.len(),
         db.meta.version
     );
+
+    // Load constants from the database
+    let mut constants = ConstantDb::new();
+    let const_count = constants.load_from_db(&db);
+    println!("Loaded {} built-in constants", const_count);
 
     println!("\nReading script from: {}", input.display());
     let source = std::fs::read_to_string(input).map_err(|e| CompileError::Io {
@@ -111,30 +124,20 @@ fn compile(db_path: &PathBuf, input: &PathBuf, _output: Option<&PathBuf>) -> Res
     );
 
     println!("Analyzing...");
-    let mut analyzer = Analyzer::new();
+    let mut analyzer = Analyzer::with_constants(&constants);
     analyzer.analyze(&file)?;
     println!("Analysis passed!");
 
     println!("\nLowering to IR...");
-    for func in &file.functions {
-        if let StatementKind::Function { headers, body } = &func.node {
-            let func_name = headers
-                .first()
-                .map(|h| h.name.clone())
-                .unwrap_or_else(|| "unnamed".to_string());
 
-            let lowerer = Lowerer::new(&analyzer.symbols);
-            let ir_ops = lowerer.lower_function(body)?;
+    let mut lowerer = Lowerer::new(&analyzer.symbols);
+    let (ir_functions, ir_actions) = lowerer.lower_script_file(&file)?;
 
-            let ir_func = IrFunction {
-                name: func_name,
-                instructions: ir_ops,
-            };
-            println!("{}", ir_func);
-        }
-    }
+    let mut emitter = Emitter::new(&db);
+    let byte_output = emitter.emit_script_file(&ir_functions, &ir_actions)?;
+    println!("Output: {:?}", byte_output);
 
-    println!("Codegen not yet implemented - stopping at IR");
+    // println!("Codegen not yet implemented - stopping at IR");
     Ok(())
 }
 
@@ -200,12 +203,17 @@ Return
 
 // === Action (movement only, no control flow) ===
 action WalkPattern
-    WalkRight 3
-    WalkDown 2
-    FaceUp
+    WalkNormalEast 3
+    WalkNormalSouth 2
+    FaceNorth
 EndMovement
 "#;
 
+    // DSPRE-derived test script (0013)
+    let dspre = std::fs::read_to_string(r"C:\dev\romhacking\renHERgade platinum\renherplat v007_DSPRE_contents\expanded\scripts\0013.script").unwrap();
+    let input = transpiler::DSPRE::transpile(&dspre);
+    println!("{input}");
+    let input = input.as_str();
     println!("=== Loading Database ===");
     let db = match DatabaseV2::load(db_path) {
         Ok(db) => db,
@@ -220,10 +228,15 @@ EndMovement
         db.meta.version
     );
 
+    // Load constants from the database
+    let mut constants = ConstantDb::new();
+    let const_count = constants.load_from_db(&db);
+    println!("Loaded {} built-in constants", const_count);
+
     // Quick sanity check - look up a few commands
     println!("\n=== Database Sanity Check ===");
     for cmd_name in &["End", "SetVar", "Message", "Jump"] {
-        if let Some(cmd) = db.get_script_cmd(cmd_name) {
+        if let Ok(cmd) = db.get_script_cmd(cmd_name) {
             println!(
                 "  {} (id: {:?}, params: {})",
                 cmd_name,
@@ -241,7 +254,7 @@ EndMovement
     let file = match parser.parse_script_file() {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("Parse error: {:?}", e);
+            print_error("<test>", input, &e);
             return;
         }
     };
@@ -253,50 +266,52 @@ EndMovement
     );
 
     println!("\n=== Analyzing ===");
-    let mut analyzer = Analyzer::new();
+    let mut analyzer = Analyzer::with_constants(&constants);
     if let Err(e) = analyzer.analyze(&file) {
-        eprintln!("Analysis error: {:?}", e);
+        print_error("<test>", input, &e);
         return;
     }
     println!("Analysis passed!");
 
     println!("\n=== Lowering Functions to IR ===");
-    for func in &file.functions {
-        if let StatementKind::Function { headers, body } = &func.node {
-            let func_name = headers
-                .first()
-                .map(|h| h.name.clone())
-                .unwrap_or_else(|| "unnamed".to_string());
 
-            let lowerer = Lowerer::new(&analyzer.symbols);
-            let ir_ops = match lowerer.lower_function(body) {
-                Ok(ops) => ops,
-                Err(e) => {
-                    eprintln!("Lowering error in {}: {:?}", func_name, e);
-                    return;
-                }
-            };
-
-            let ir_func = IrFunction {
-                name: func_name,
-                instructions: ir_ops,
-            };
-            println!("{}", ir_func);
+    // println!("{:#?}", file);
+    let mut lowerer = Lowerer::new(&analyzer.symbols);
+    let (ir_functions, ir_actions) = match lowerer.lower_script_file(&file) {
+        Ok(result) => result,
+        Err(e) => {
+            print_error("<test>", input, &e);
+            return;
         }
+    };
+    for ir_func in &ir_functions {
+        println!("{}", ir_func);
+    }
+    for ir_action in &ir_actions {
+        println!("{}", ir_action);
     }
 
-    println!("=== Actions (no lowering needed - 1:1 with bytecode) ===");
-    for action in &file.actions {
-        if let StatementKind::Action { name, body } = &action.node {
-            println!("Action: {}", name);
-            for stmt in body {
-                if let StatementKind::ScriptCommand { command, args } = &stmt.node {
-                    println!("    {} ({} args)", command, args.len());
-                } else if let StatementKind::End = &stmt.node {
-                    println!("    EndMovement");
-                }
+    let pub_funcs = file
+        .functions
+        .iter()
+        .filter(|f| {
+            if let StatementKind::Function { headers, .. } = &f.node {
+                headers.iter().any(|h| h.is_public)
+            } else {
+                false
             }
-            println!();
+        })
+        .count();
+    println!("Public functions found: {}", pub_funcs);
+
+    let mut emitter = Emitter::new(&db);
+    let byte_output = match emitter.emit_script_file(&ir_functions, &ir_actions) {
+        Ok(output) => output,
+        Err(e) => {
+            print_error("<test>", input, &e);
+            return;
         }
-    }
+    };
+    println!("Output: {:?}", byte_output);
+    std::fs::write("test_output.bin", &byte_output).unwrap();
 }

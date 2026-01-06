@@ -6,7 +6,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::compiler::parse_error::CompileError;
+use crate::compiler::ParseResult;
+use crate::compiler::parse_error::{CompileError, database_error};
 
 // ============================================================================
 // Hardcoded Enums (fixed across all games)
@@ -45,6 +46,17 @@ impl ComparisonOperator {
             Self::LessEqual => "LESS/EQUAL",
             Self::GreaterEqual => "GREATER/EQUAL",
             Self::Different => "DIFFERENT",
+        }
+    }
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "LESS" => Some(Self::Less),
+            "EQUAL" => Some(Self::Equal),
+            "GREATER" => Some(Self::Greater),
+            "LESS/EQUAL" | "LESSEQUAL" => Some(Self::LessEqual),
+            "GREATER/EQUAL" | "GREATEREQUAL" => Some(Self::GreaterEqual),
+            "DIFFERENT" => Some(Self::Different),
+            _ => None,
         }
     }
 }
@@ -91,6 +103,10 @@ pub struct DatabaseV2 {
     pub commands: HashMap<String, Command>,
     #[serde(default)]
     pub sounds: HashMap<String, Sound>,
+    #[serde(default)]
+    pub comparison_operators: HashMap<String, String>,
+    #[serde(default)]
+    pub overworld_directions: HashMap<String, String>,
     #[serde(default)]
     pub special_overworlds: HashMap<String, String>,
 }
@@ -173,7 +189,7 @@ impl ParamType {
             ParamType::U8 => 1,
             ParamType::U16 | ParamType::Var | ParamType::Flag => 2,
             ParamType::U32 | ParamType::Label | ParamType::ScriptId | ParamType::MovementId => 4,
-            ParamType::MsgId => 2, // Usually u16
+            ParamType::MsgId => 2,   // Usually u16
             ParamType::Unknown => 2, // Default to u16
         }
     }
@@ -207,23 +223,60 @@ impl DatabaseV2 {
             message: format!("Failed to read database file '{}': {}", path.display(), e),
         })?;
 
-        let db: DatabaseV2 = serde_json::from_str(&contents).map_err(|e| CompileError::Database {
-            message: format!("Failed to parse database JSON '{}': {}", path.display(), e),
-        })?;
+        let db: DatabaseV2 =
+            serde_json::from_str(&contents).map_err(|e| CompileError::Database {
+                message: format!("Failed to parse database JSON '{}': {}", path.display(), e),
+            })?;
 
         Ok(db)
     }
 
     /// Look up a command by name
-    pub fn get_command(&self, name: &str) -> Option<&Command> {
-        self.commands.get(name)
+    pub fn get_command(&self, name: &str) -> ParseResult<&Command> {
+        match self.commands.get(name) {
+            Some(cmd) => Ok(cmd),
+            None => {
+                if let Some((_, cmd)) = self
+                    .commands
+                    .iter()
+                    .find(|(_, cmd)| cmd.legacy_name == Some(name.to_string()))
+                {
+                    Ok(cmd)
+                } else {
+                    Err(database_error(format!(
+                        "Command '{}' not found in database",
+                        name
+                    )))
+                }
+            }
+        }
     }
 
-    /// Look up a script command by name (returns None if it's not a script_cmd)
-    pub fn get_script_cmd(&self, name: &str) -> Option<&Command> {
-        self.commands
+    /// Look up a script command by name (returns database error if no command with that name as
+    /// legacy name or normal name is found)
+    pub fn get_script_cmd(&self, name: &str) -> ParseResult<&Command> {
+        match self
+            .commands
             .get(name)
             .filter(|cmd| cmd.cmd_type == CommandType::ScriptCmd)
+        {
+            Some(cmd) => Ok(cmd),
+            None => {
+                if let Some((_, cmd)) = self
+                    .commands
+                    .iter()
+                    .find(|(_, cmd)| cmd.legacy_name == Some(name.to_string()))
+                    .filter(|(_, cmd)| cmd.cmd_type == CommandType::ScriptCmd)
+                {
+                    Ok(cmd)
+                } else {
+                    Err(database_error(format!(
+                        "Command '{}' not found in database",
+                        name
+                    )))
+                }
+            }
+        }
     }
 
     /// Look up a movement by name
@@ -278,15 +331,160 @@ impl Command {
     }
 }
 
+// ============================================================================
+// Constants Database
+// ============================================================================
+
+/// Database for named constants (species, items, trainers, etc.)
+#[derive(Debug, Default)]
+pub struct ConstantDb {
+    /// All constants: name -> value
+    constants: HashMap<String, i32>,
+}
+
+impl ConstantDb {
+    /// Create a new empty ConstantDb
+    pub fn new() -> Self {
+        ConstantDb {
+            constants: HashMap::new(),
+        }
+    }
+
+    /// Load built-in constants from DatabaseV2 (comparison_operators, directions, special_overworlds, sounds)
+    pub fn load_from_db(&mut self, db: &DatabaseV2) -> usize {
+        let mut count = 0;
+
+        // Load comparison operators
+        for (id_str, name) in &db.comparison_operators {
+            if let Ok(id) = id_str.parse::<i32>() {
+                // Normalize name: "LESS/EQUAL" -> "LESS_EQUAL"
+                let normalized = name.replace("/", "_");
+                self.constants.insert(normalized, id);
+                count += 1;
+            }
+        }
+
+        // Load overworld directions
+        for (id_str, name) in &db.overworld_directions {
+            if let Ok(id) = id_str.parse::<i32>() {
+                self.constants.insert(name.clone(), id);
+                count += 1;
+            }
+        }
+
+        // Load special overworlds (Player, Camera, etc.)
+        for (id_str, name) in &db.special_overworlds {
+            if let Ok(id) = id_str.parse::<i32>() {
+                self.constants.insert(name.clone(), id);
+                count += 1;
+            }
+        }
+
+        // Load sounds
+        for (id_str, sound) in &db.sounds {
+            if let Ok(id) = id_str.parse::<i32>() {
+                self.constants.insert(sound.name.clone(), id);
+                count += 1;
+            }
+        }
+
+        count
+    }
+
+    /// Load constants from a JSON file with format { "id": "NAME", ... }
+    /// The JSON has numeric string keys and name values, we invert to name -> id
+    pub fn load_json<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, CompileError> {
+        let path = path.as_ref();
+        let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
+            message: format!("Failed to read constants file '{}': {}", path.display(), e),
+        })?;
+
+        let raw: HashMap<String, String> =
+            serde_json::from_str(&contents).map_err(|e| CompileError::Database {
+                message: format!("Failed to parse constants JSON '{}': {}", path.display(), e),
+            })?;
+
+        let mut count = 0;
+        for (id_str, name) in raw {
+            if let Ok(id) = id_str.parse::<i32>() {
+                self.constants.insert(name, id);
+                count += 1;
+            }
+        }
+        
+        Ok(count)
+    }
+
+    /// Load all JSON files from a directory
+    pub fn load_directory<P: AsRef<Path>>(&mut self, dir: P) -> Result<usize, CompileError> {
+        let dir = dir.as_ref();
+        let mut total = 0;
+        
+        if !dir.exists() || !dir.is_dir() {
+            return Ok(0);  // Directory doesn't exist, that's fine
+        }
+
+        let entries = std::fs::read_dir(dir).map_err(|e| CompileError::Database {
+            message: format!("Failed to read directory '{}': {}", dir.display(), e),
+        })?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                // Skip the main command database if it's in the same directory
+                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if filename.contains("_v2") || filename == "commands.json" {
+                    continue;
+                }
+                match self.load_json(&path) {
+                    Ok(count) => total += count,
+                    Err(e) => eprintln!("Warning: Failed to load '{}': {}", path.display(), e),
+                }
+            }
+        }
+        
+        Ok(total)
+    }
+
+    /// Look up a constant by name
+    pub fn get(&self, name: &str) -> Option<i32> {
+        self.constants.get(name).copied()
+    }
+
+    /// Get the number of constants loaded
+    pub fn len(&self) -> usize {
+        self.constants.len()
+    }
+
+    /// Check if database is empty
+    pub fn is_empty(&self) -> bool {
+        self.constants.is_empty()
+    }
+
+    /// Iterate over all constants
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &i32)> {
+        self.constants.iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_comparison_operators() {
-        assert_eq!(ComparisonOperator::from_id(0), Some(ComparisonOperator::Less));
-        assert_eq!(ComparisonOperator::from_id(1), Some(ComparisonOperator::Equal));
-        assert_eq!(ComparisonOperator::from_id(5), Some(ComparisonOperator::Different));
+        assert_eq!(
+            ComparisonOperator::from_id(0),
+            Some(ComparisonOperator::Less)
+        );
+        assert_eq!(
+            ComparisonOperator::from_id(1),
+            Some(ComparisonOperator::Equal)
+        );
+        assert_eq!(
+            ComparisonOperator::from_id(5),
+            Some(ComparisonOperator::Different)
+        );
         assert_eq!(ComparisonOperator::from_id(6), None);
     }
 

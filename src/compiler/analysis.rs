@@ -1,17 +1,22 @@
 use std::{collections::HashMap, ops::Range};
 
+use crate::database::ConstantDb;
+
 use super::{
     ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind},
-    parse_error::{analysis_error, CompileError, ParseResult},
+    parse_error::{CompileError, ParseResult, analysis_error},
 };
 
+#[derive(Debug, Clone)]
 pub enum SymbolType {
-    Function(Option<i32>),
+    Function(Option<u32>),
     Action,
     Label,
     Variable(i32),
+    Constant(i32),
 }
 
+#[derive(Debug, Clone)]
 pub struct SymbolTable {
     scopes: Vec<HashMap<String, (SymbolType, Range<usize>)>>,
 }
@@ -36,7 +41,13 @@ impl SymbolTable {
         kind: SymbolType,
         span: Range<usize>,
     ) -> ParseResult<()> {
-        if let Some((_, original_span)) = self.scopes[0].get(&name) {
+        if let Some((existing_kind, original_span)) = self.scopes[0].get(&name) {
+            // Allow user definitions to shadow database constants
+            if matches!(existing_kind, SymbolType::Constant(_)) {
+                // Overwrite the constant with the user's definition
+                self.scopes[0].insert(name, (kind, span));
+                return Ok(());
+            }
             return Err(analysis_error(
                 span.clone(),
                 format!(
@@ -79,17 +90,39 @@ impl SymbolTable {
     }
 }
 
-pub struct Analyzer {
+pub struct Analyzer<'a> {
     pub symbols: SymbolTable,
+    constants: Option<&'a ConstantDb>,
 }
 
-impl Analyzer {
-    pub fn new() -> Analyzer {
+impl<'a> Analyzer<'a> {
+    pub fn new() -> Analyzer<'a> {
         Analyzer {
             symbols: SymbolTable::new(),
+            constants: None,
         }
     }
+    
+    /// Create an analyzer with a constants database
+    pub fn with_constants(constants: &'a ConstantDb) -> Analyzer<'a> {
+        Analyzer {
+            symbols: SymbolTable::new(),
+            constants: Some(constants),
+        }
+    }
+    
     pub fn analyze(&mut self, file: &ScriptFile) -> ParseResult<()> {
+        // First, register all constants from the database into the symbol table
+        if let Some(const_db) = self.constants {
+            for (name, value) in const_db.iter() {
+                let _ = self.symbols.define_global(
+                    name.clone(),
+                    SymbolType::Constant(*value),
+                    0..0,
+                );
+            }
+        }
+        
         for alias in &file.aliases {
             self.register_global_alias(alias)?;
         }
@@ -306,6 +339,94 @@ impl Analyzer {
                     name
                 ),
             )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Display;
+
+    use super::*;
+    use crate::compiler::ast::{ExpressionKind, FunctionHeader, StatementKind};
+
+    #[test]
+    fn test_analyzer_registers_global_alias() {
+        let mut analyzer = Analyzer::new();
+        let alias_stmt = Statement {
+            node: StatementKind::AliasStatement {
+                is_global: true,
+                id: 1,
+                name: "global_var".to_string(),
+            },
+            span: 0..10,
+        };
+        analyzer
+            .register_global_alias(&alias_stmt)
+            .expect("Failed to register global alias");
+        match analyzer.symbols.resolve("global_var") {
+            Some(SymbolType::Variable(id)) => assert_eq!(*id, 1),
+            _ => panic!("Global alias not found in symbol table"),
+        }
+    }
+
+    #[test]
+    fn test_analyzer_detects_undefined_symbol() {
+        let analyzer = Analyzer::new();
+        let expr = Expression {
+            node: ExpressionKind::Identifier("undefined_var".to_string()),
+            span: 0..15,
+        };
+        let result = analyzer.validate_expression(&expr);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_analyzer_registers_function_name() {
+        let mut analyzer = Analyzer::new();
+        let func_stmt = Statement {
+            node: StatementKind::Function {
+                headers: vec![FunctionHeader {
+                    name: "my_function".to_string(),
+                    id: Some(42),
+                    is_public: true,
+                }],
+                body: vec![],
+            },
+            span: 0..20,
+        };
+        analyzer
+            .register_function_names(&func_stmt)
+            .expect("Failed to register function name");
+        match analyzer.symbols.resolve("my_function") {
+            Some(SymbolType::Function(id)) => assert_eq!(*id, Some(42)),
+            _ => panic!("Function name not found in symbol table"),
+        }
+    }
+
+    #[test]
+    fn test_analyzer_registers_labels_in_block() {
+        let mut analyzer = Analyzer::new();
+        let block = vec![
+            Statement {
+                node: StatementKind::Label("global_label".to_string()),
+                span: 0..15,
+            },
+            Statement {
+                node: StatementKind::Label(".local_label".to_string()),
+                span: 16..30,
+            },
+        ];
+        analyzer
+            .register_labels_in_block(&block)
+            .expect("Failed to register labels in block");
+        match analyzer.symbols.resolve("global_label") {
+            Some(SymbolType::Label) => {}
+            _ => panic!("Global label not found in symbol table"),
+        }
+        match analyzer.symbols.resolve(".local_label") {
+            Some(SymbolType::Label) => {}
+            _ => panic!("Local label not found in symbol table"),
         }
     }
 }

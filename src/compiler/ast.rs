@@ -13,7 +13,7 @@ pub struct ScriptFile {
 #[derive(Debug, Clone)]
 pub struct FunctionHeader {
     pub name: String,
-    pub id: Option<i32>,
+    pub id: Option<u32>,
     pub is_public: bool,
 }
 

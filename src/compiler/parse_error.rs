@@ -97,11 +97,21 @@ pub fn codegen_error(message: impl Into<String>) -> CompileError {
     }
 }
 
+pub fn database_error(message: impl Into<String>) -> CompileError {
+    CompileError::Database {
+        message: message.into(),
+    }
+}
+
 /// Print a compile error with source context
 pub fn print_error(filename: &str, source: &str, error: &CompileError) {
     let (span, message, error_type) = match error {
-        CompileError::Parse { span, message } => (Some(span.clone()), message.as_str(), "Parse error"),
-        CompileError::Analysis { span, message } => (Some(span.clone()), message.as_str(), "Analysis error"),
+        CompileError::Parse { span, message } => {
+            (Some(span.clone()), message.as_str(), "Parse error")
+        }
+        CompileError::Analysis { span, message } => {
+            (Some(span.clone()), message.as_str(), "Analysis error")
+        }
         CompileError::Lowering { message } => (None, message.as_str(), "Lowering error"),
         CompileError::Codegen { message } => (None, message.as_str(), "Codegen error"),
         CompileError::Database { message } => (None, message.as_str(), "Database error"),
@@ -113,9 +123,7 @@ pub fn print_error(filename: &str, source: &str, error: &CompileError) {
         let file_id = files.add(filename, source);
         let diagnostic = Diagnostic::error()
             .with_message(error_type)
-            .with_labels(vec![
-                Label::primary(file_id, span).with_message(message),
-            ]);
+            .with_labels(vec![Label::primary(file_id, span).with_message(message)]);
         let writer = StandardStream::stderr(ColorChoice::Always);
         let config = term::Config::default();
         if let Err(e) = term::emit(&mut writer.lock(), &config, &files, &diagnostic) {

@@ -1,50 +1,102 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::compiler::ast::{FunctionHeader, ScriptFile};
+
 use super::{
     analysis::{SymbolTable, SymbolType},
     ast::{Expression, ExpressionKind, Statement, StatementKind},
-    parse_error::{lowering_error, ParseResult},
+    parse_error::{ParseResult, lowering_error},
     token::TokenType,
 };
 
+#[derive(Debug, Clone)]
 pub enum IrOpcode {
-    Command { name: String, args: Vec<i32> },
+    Command { name: String, args: Vec<Arg> },
     Label(String),
-    Jump(String),
-    JumpIf { cond: Condition, label: String },
-    Return,
-    End,
 }
 
 impl fmt::Display for IrOpcode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             IrOpcode::Command { name, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| format!("0x{:X}", a)).collect();
+                let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
                 write!(f, "    {} {}", name, args_str.join(", "))
             }
             IrOpcode::Label(name) => write!(f, "{}:", name),
-            IrOpcode::Jump(target) => write!(f, "    Jump {}", target),
-            IrOpcode::JumpIf { cond, label } => write!(f, "    JumpIf {:?} -> {}", cond, label),
-            IrOpcode::Return => write!(f, "    Return"),
-            IrOpcode::End => write!(f, "    End"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Arg {
+    Value(i32),
+    Pointer(String),
+}
+
+impl fmt::Display for Arg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Arg::Value(v) => write!(f, "0x{:X}", v),
+            Arg::Pointer(s) => write!(f, "Pointer({})", s),
+        }
+    }
+}
+
+impl Arg {
+    pub fn unwrap_value(&self) -> i32 {
+        match self {
+            Arg::Value(v) => *v,
+            _ => panic!("called unwrap_value on {:?}", self),
+        }
+    }
+    pub fn unwrap_pointer(&self) -> String {
+        match self {
+            Arg::Pointer(s) => s.clone(),
+            _ => panic!("called unwrap_pointer on {:?}", self),
         }
     }
 }
 
 pub struct IrFunction {
+    pub headers: Vec<FunctionHeader>,
+    pub instructions: Vec<IrOpcode>,
+}
+pub struct IrAction {
     pub name: String,
     pub instructions: Vec<IrOpcode>,
 }
 
 impl fmt::Display for IrFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "=== IR: {} ===", self.name)?;
+        writeln!(f, "=== IR: {} ===", self.headers[0].name)?;
         for op in &self.instructions {
             writeln!(f, "{}", op)?;
         }
         Ok(())
+    }
+}
+impl fmt::Display for IrAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "=== IR Action: {} ===", self.name)?;
+        for op in &self.instructions {
+            writeln!(f, "{}", op)?;
+        }
+        Ok(())
+    }
+}
+impl IrFunction {
+    pub fn name(&self) -> &str {
+        &self.headers[0].name
+    }
+    pub fn is_public(&self) -> bool {
+        self.headers.iter().any(|h| h.is_public)
+    }
+    pub fn jump_table_slots(&self) -> impl Iterator<Item = (u32, String)> {
+        self.headers
+            .iter()
+            .filter(|h| h.is_public && h.id.is_some())
+            .map(|h| (h.id.unwrap(), h.name.clone()))
     }
 }
 
@@ -65,6 +117,7 @@ enum OperandType {
     Value,    // raw number (5)
 }
 
+#[derive(Debug, Clone)]
 pub struct Lowerer<'a> {
     label_counter: usize,
     output: Vec<IrOpcode>,
@@ -85,21 +138,40 @@ impl<'a> Lowerer<'a> {
         self.label_counter += 1;
         format!(".{}_gen_{}", prefix, self.label_counter)
     }
-    fn resolve_name(&self, name: &str) -> Option<i32> {
-        // Check local aliases first
-        if let Some(&val) = self.local_aliases.get(name) {
-            return Some(val);
+    pub fn lower_script_file(
+        &mut self,
+        scr_file: &ScriptFile,
+    ) -> ParseResult<(Vec<IrFunction>, Vec<IrAction>)> {
+        let mut ir_functions = Vec::new();
+        for func in &scr_file.functions {
+            if let StatementKind::Function { headers, body } = &func.node {
+                self.local_aliases.clear();
+                let instructions = self.lower_function(body)?;
+                ir_functions.push(IrFunction {
+                    headers: headers.clone(),
+                    instructions,
+                });
+            }
         }
-        match self.global_symbols.resolve(name) {
-            Some(SymbolType::Variable(id)) => Some(*id),
-            _ => None,
+        let mut ir_actions = Vec::new();
+        for action in &scr_file.actions {
+            if let StatementKind::Action { name, body } = &action.node {
+                self.local_aliases.clear();
+                let instructions = self.lower_function(body)?;
+                ir_actions.push(IrAction {
+                    name: name.clone(),
+                    instructions,
+                });
+            }
         }
+        Ok((ir_functions, ir_actions))
     }
-    pub fn lower_function(mut self, body: &[Statement]) -> ParseResult<Vec<IrOpcode>> {
+    pub fn lower_function(&mut self, body: &[Statement]) -> ParseResult<Vec<IrOpcode>> {
+        self.output.clear();
         for stmt in body {
             self.lower_statement(stmt)?;
         }
-        Ok(self.output)
+        Ok(std::mem::take(&mut self.output))
     }
     fn lower_statement(&mut self, stmt: &Statement) -> ParseResult<()> {
         match &stmt.node {
@@ -120,7 +192,10 @@ impl<'a> Lowerer<'a> {
                     self.lower_statement(s)?;
                 }
                 if let Some(else_b) = elseblock {
-                    self.output.push(IrOpcode::Jump(label_end.clone()));
+                    self.output.push(IrOpcode::Command {
+                        name: "GoTo".to_string(),
+                        args: vec![Arg::Pointer(label_end.clone())],
+                    });
                     // unwrap is safe here because we already checked if else is some
                     self.output.push(IrOpcode::Label(label_else.unwrap()));
                     for s in else_b {
@@ -137,7 +212,10 @@ impl<'a> Lowerer<'a> {
                 for s in body {
                     self.lower_statement(s)?;
                 }
-                self.output.push(IrOpcode::Jump(label_start));
+                self.output.push(IrOpcode::Command {
+                    name: "GoTo".to_string(),
+                    args: vec![Arg::Pointer(label_start.clone())],
+                });
                 self.output.push(IrOpcode::Label(label_end));
             }
             StatementKind::ScriptCommand { command, args } => {
@@ -152,12 +230,20 @@ impl<'a> Lowerer<'a> {
             StatementKind::Jump(target) => {
                 if let ExpressionKind::Label(name) | ExpressionKind::Identifier(name) = &target.node
                 {
-                    self.output.push(IrOpcode::Jump(name.clone()));
+                    self.output.push(IrOpcode::Command {
+                        name: "GoTo".to_string(),
+                        args: vec![Arg::Pointer(name.clone())],
+                    });
                 }
             }
-            StatementKind::Return => self.output.push(IrOpcode::Return),
-            StatementKind::End => self.output.push(IrOpcode::End),
-
+            StatementKind::Return => self.output.push(IrOpcode::Command {
+                name: "Return".to_string(),
+                args: vec![],
+            }),
+            StatementKind::End => self.output.push(IrOpcode::Command {
+                name: "End".to_string(),
+                args: vec![],
+            }),
             // Register local aliases for resolution during this function's lowering
             StatementKind::AliasStatement { name, id, .. } => {
                 self.local_aliases.insert(name.clone(), *id);
@@ -192,40 +278,51 @@ impl<'a> Lowerer<'a> {
                 };
             self.output.push(IrOpcode::Command {
                 name: cmd_name.to_string(),
-                args: vec![final_left, final_right],
+                args: vec![Arg::Value(final_left), Arg::Value(final_right)],
             });
             let cond = self.get_inverted_condition(operator, swapped);
-            self.output.push(IrOpcode::JumpIf {
-                cond,
-                label: target_label.to_string(),
+            self.output.push(IrOpcode::Command {
+                name: "GoToIf".to_string(),
+                args: vec![
+                    Arg::Value(cond as i32),
+                    Arg::Pointer(target_label.to_string()),
+                ],
             });
         }
         Ok(())
     }
-    fn analyze_operand(&self, expr: &Expression) -> ParseResult<(OperandType, i32)> {
+    fn resolve_args(&self, args: &[Expression]) -> ParseResult<Vec<Arg>> {
+        args.iter().map(|arg| self.resolve_arg(arg)).collect()
+    }
+    /// Resolve an expression to an Arg (Value or Pointer)
+    fn resolve_arg(&self, expr: &Expression) -> ParseResult<Arg> {
         match &expr.node {
-            ExpressionKind::Identifier(name) => match self.resolve_name(name) {
-                Some(id) => {
-                    if id < 0x4000 {
-                        Ok((OperandType::Value, id))
-                    } else {
-                        Ok((OperandType::Variable, id))
-                    }
+            ExpressionKind::Identifier(name) => {
+                if let Some(&val) = self.local_aliases.get(name) {
+                    return Ok(Arg::Value(val));
                 }
-                None => Err(lowering_error(format!(
-                    "Symbol '{}' could not be resolved (analysis should have caught this)",
-                    name
-                ))),
-            },
-            ExpressionKind::Number(val) => Ok((OperandType::Value, *val)),
-            // Handle compile-time arithmetic
+                match self.global_symbols.resolve(name) {
+                    Some(SymbolType::Variable(id)) => Ok(Arg::Value(*id)),
+                    Some(SymbolType::Constant(id)) => Ok(Arg::Value(*id)),
+                    Some(SymbolType::Function(_))
+                    | Some(SymbolType::Label)
+                    | Some(SymbolType::Action) => Ok(Arg::Pointer(name.clone())),
+                    None => Err(lowering_error(format!(
+                        "Symbol '{}' could not be resolved (analysis should have caught this)",
+                        name
+                    ))),
+                }
+            }
+            ExpressionKind::Number(val) => Ok(Arg::Value(*val)),
+            ExpressionKind::Label(name) => Ok(Arg::Pointer(name.clone())),
+            // compile-time arithmetic
             ExpressionKind::Infix {
                 left,
                 operator,
                 right,
             } => {
-                let (_, left_val) = self.analyze_operand(left)?;
-                let (_, right_val) = self.analyze_operand(right)?;
+                let left_val = self.resolve_arg(left)?.unwrap_value();
+                let right_val = self.resolve_arg(right)?.unwrap_value();
                 let result = match operator {
                     TokenType::Plus => left_val + right_val,
                     TokenType::Minus => left_val - right_val,
@@ -234,38 +331,46 @@ impl<'a> Lowerer<'a> {
                         return Err(lowering_error(format!(
                             "Unsupported operator '{:?}' in compile-time arithmetic (only +, -, * are supported)",
                             operator
-                        )))
+                        )));
                     }
                 };
-                Ok((OperandType::Value, result))
+                Ok(Arg::Value(result))
             }
             ExpressionKind::Prefix { operator, id } => {
-                let (_, val) = self.analyze_operand(id)?;
+                let val = self.resolve_arg(id)?.unwrap_value();
                 let result = match operator {
                     TokenType::Minus => -val,
                     _ => {
                         return Err(lowering_error(format!(
                             "Unsupported prefix operator '{:?}' (only unary minus is supported)",
                             operator
-                        )))
+                        )));
                     }
                 };
-                Ok((OperandType::Value, result))
+                Ok(Arg::Value(result))
             }
-            // TODO: Handle Call expressions for conditions like `if GetPlayerGender() == 1`
             _ => Err(lowering_error(format!(
-                "Unsupported expression type in operand: {:?}",
+                "Unsupported expression type: {:?}",
                 expr.node
             ))),
         }
     }
-    fn resolve_args(&self, args: &[Expression]) -> ParseResult<Vec<i32>> {
-        args.iter()
-            .map(|arg| {
-                let (_, val) = self.analyze_operand(arg)?;
-                Ok(val)
-            })
-            .collect()
+    /// Analyze operand for conditions - needs to distinguish Variable vs Value
+    fn analyze_operand(&self, expr: &Expression) -> ParseResult<(OperandType, i32)> {
+        let arg = self.resolve_arg(expr)?;
+        match arg {
+            Arg::Value(v) => {
+                if v >= 0x4000 {
+                    Ok((OperandType::Variable, v))
+                } else {
+                    Ok((OperandType::Value, v))
+                }
+            }
+            Arg::Pointer(name) => Err(lowering_error(format!(
+                "Cannot use pointer '{}' in condition expression",
+                name
+            ))),
+        }
     }
     // we need to invert conditions here because we are doing "jump if" logic
     fn get_inverted_condition(&self, token: &TokenType, swapped: bool) -> Condition {

@@ -281,6 +281,13 @@ The compiled script binary consists of:
 
 [] codegen
 [] simple decompilation
+[] tests
+  [x] lexer tests
+  [x] parser tests
+  [x] semantic analysis tests
+  [] codegen tests
+[] binary matching against known scripts
+[] macro support
 [] decompilation into high-level logic
 [] Register allocation for automatic variable assignment
 [] Constant folding for compile-time arithmetic

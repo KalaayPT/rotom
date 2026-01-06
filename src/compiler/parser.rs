@@ -7,7 +7,7 @@ use super::{
         StatementKind,
     },
     lexer::Lexer,
-    parse_error::{parse_error, ParseResult},
+    parse_error::{ParseResult, parse_error},
     token::{Token, TokenType},
 };
 
@@ -165,7 +165,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // eat #
                     let id_token = self.expect_advance(TokenType::Num(0))?;
                     match id_token.kind {
-                        TokenType::Num(num) => Some(num),
+                        TokenType::Num(num) => Some(num as u32),
                         _ => unreachable!(),
                     }
                 } else {
@@ -532,3 +532,106 @@ impl<'a> Parser<'a> {
 
 // Legacy constants - may be needed for codegen
 pub const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parser_initialization() {
+        let source = "function TestFunction\nEnd";
+        let lexer = Lexer::new(source);
+        let parser = Parser::new(lexer);
+        assert_eq!(parser.current_token.kind, TokenType::Function);
+        assert_eq!(
+            parser.peek_token.kind,
+            TokenType::Identifier("TestFunction".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parser_advance() {
+        let source = "function TestFunction\nEnd";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        parser.advance();
+        assert_eq!(
+            parser.current_token.kind,
+            TokenType::Identifier("TestFunction".to_string())
+        );
+        assert_eq!(parser.peek_token.kind, TokenType::Newline);
+    }
+
+    #[test]
+    fn test_expect_advance_success() {
+        let source = "function TestFunction\nEnd";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let token = parser.expect_advance(TokenType::Function).unwrap();
+        assert_eq!(token.kind, TokenType::Function);
+        assert_eq!(
+            parser.current_token.kind,
+            TokenType::Identifier("TestFunction".to_string())
+        );
+    }
+
+    #[test]
+    fn test_expect_advance_failure() {
+        let source = "function TestFunction\nEnd";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let result = parser.expect_advance(TokenType::If);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_empty_script_file() {
+        let source = "";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        assert!(script_file.aliases.is_empty());
+        assert!(script_file.functions.is_empty());
+        assert!(script_file.actions.is_empty());
+    }
+
+    #[test]
+    fn test_parse_simple_function() {
+        let source = "function TestFunction\nEnd";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        assert_eq!(script_file.functions.len(), 1);
+        let function = &script_file.functions[0];
+        match &function.node {
+            StatementKind::Function { headers, body } => {
+                assert_eq!(headers.len(), 1);
+                assert_eq!(headers[0].name, "TestFunction");
+                assert!(body.len() == 1);
+            }
+            _ => panic!("Expected function statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_function_with_return() {
+        let source = "function TestFunction\nReturn";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        assert_eq!(script_file.functions.len(), 1);
+        let function = &script_file.functions[0];
+        match &function.node {
+            StatementKind::Function { headers, body } => {
+                assert_eq!(headers.len(), 1);
+                assert_eq!(headers[0].name, "TestFunction");
+                assert_eq!(body.len(), 1);
+                match &body[0].node {
+                    StatementKind::Return => {}
+                    _ => panic!("Expected return statement"),
+                }
+            }
+            _ => panic!("Expected function statement"),
+        }
+    }
+}

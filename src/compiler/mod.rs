@@ -2,6 +2,7 @@
 
 pub mod analysis;
 pub mod ast;
+pub mod codegen;
 pub mod ir;
 pub mod lexer;
 pub mod parse_error;

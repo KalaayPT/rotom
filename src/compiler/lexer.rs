@@ -248,3 +248,285 @@ fn is_identifier_start(c: char) -> bool {
 fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lexer_basic_tokens() {
+        let source = "# , . : = == ( ) && || ! != < <= > >= + - * \n";
+        let mut lexer = Lexer::new(source);
+        let expected_tokens = vec![
+            TokenType::Hash,
+            TokenType::Comma,
+            TokenType::Dot,
+            TokenType::Colon,
+            TokenType::Assign,
+            TokenType::Equal,
+            TokenType::LParen,
+            TokenType::RParen,
+            TokenType::And,
+            TokenType::Or,
+            TokenType::Not,
+            TokenType::NotEqual,
+            TokenType::LesserThan,
+            TokenType::LesserEqual,
+            TokenType::GreaterThan,
+            TokenType::GreaterEqual,
+            TokenType::Plus,
+            TokenType::Minus,
+            TokenType::Mul,
+            TokenType::Newline,
+        ];
+        for expected in expected_tokens {
+            let token = lexer.next_token();
+            assert_eq!(token.kind, expected);
+        }
+        let eof_token = lexer.next_token();
+        assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_identifiers_and_numbers() {
+        let source = "function myFunc123 alias_var 0 42 0x1A3F";
+        let mut lexer = Lexer::new(source);
+        let expected_tokens = vec![
+            TokenType::Function,
+            TokenType::Identifier("myFunc123".to_string()),
+            TokenType::Identifier("alias_var".to_string()),
+            TokenType::Num(0),
+            TokenType::Num(42),
+            TokenType::Num(6719),
+        ];
+        for expected in expected_tokens {
+            let token = lexer.next_token();
+            assert_eq!(token.kind, expected);
+        }
+        let eof_token = lexer.next_token();
+        assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_comments_and_whitespace() {
+        let source = "  // This is a comment\n  /* Block \n comment */  identifier  ";
+        let mut lexer = Lexer::new(source);
+        let token = lexer.next_token();
+        assert_eq!(token.kind, TokenType::Identifier("identifier".to_string()));
+        let eof_token = lexer.next_token();
+        assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_labels() {
+        let source = ".localLabel: .anotherLabel";
+        let mut lexer = Lexer::new(source);
+        let token1 = lexer.next_token();
+        assert_eq!(token1.kind, TokenType::Label(".localLabel".to_string()));
+        let token2 = lexer.next_token();
+        assert_eq!(token2.kind, TokenType::Label(".anotherLabel".to_string()));
+        let eof_token = lexer.next_token();
+        assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_keywords() {
+        let source = "if then else endif while do endwhile End EndMovement Return Jump true false";
+        let mut lexer = Lexer::new(source);
+        let expected_tokens = vec![
+            TokenType::If,
+            TokenType::Then,
+            TokenType::Else,
+            TokenType::EndIf,
+            TokenType::While,
+            TokenType::Do,
+            TokenType::EndWhile,
+            TokenType::End,
+            TokenType::EndMovement,
+            TokenType::Return,
+            TokenType::Jump,
+            TokenType::True,
+            TokenType::False,
+        ];
+        for expected in expected_tokens {
+            let token = lexer.next_token();
+            assert_eq!(token.kind, expected);
+        }
+        let eof_token = lexer.next_token();
+        assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_errors() {
+        let source = "@ $ ^";
+        let mut lexer = Lexer::new(source);
+        let expected_errors = vec![
+            "unexpected token: @",
+            "unexpected token: $",
+            "unexpected token: ^",
+        ];
+        for expected_msg in expected_errors {
+            let token = lexer.next_token();
+            match token.kind {
+                TokenType::Error(msg) => assert_eq!(msg, expected_msg),
+                _ => panic!("Expected an error token"),
+            }
+        }
+        let eof_token = lexer.next_token();
+        assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_simple_function() {
+        let source = "
+        function myFunc:
+            alias_var = 42
+            if alias_var >= 10 then
+                Return
+            endif
+        End
+        ";
+        let mut lexer = Lexer::new(source);
+        let mut tokens = Vec::new();
+        loop {
+            let token = lexer.next_token();
+            if let TokenType::EOF = token.kind {
+                break;
+            }
+            tokens.push(token.kind);
+        }
+        let expected_tokens = vec![
+            TokenType::Newline,
+            TokenType::Function,
+            TokenType::Identifier("myFunc".to_string()),
+            TokenType::Colon,
+            TokenType::Newline,
+            TokenType::Identifier("alias_var".to_string()),
+            TokenType::Assign,
+            TokenType::Num(42),
+            TokenType::Newline,
+            TokenType::If,
+            TokenType::Identifier("alias_var".to_string()),
+            TokenType::GreaterEqual,
+            TokenType::Num(10),
+            TokenType::Then,
+            TokenType::Newline,
+            TokenType::Return,
+            TokenType::Newline,
+            TokenType::EndIf,
+            TokenType::Newline,
+            TokenType::End,
+            TokenType::Newline,
+        ];
+        assert_eq!(tokens, expected_tokens);
+    }
+
+    #[test]
+    fn test_full_example_file() {
+        let source = "
+        // Example function
+        function example
+            /* Initialize variable */
+            count = 0
+            while count < 10 do
+                count = count + 1
+            endwhile
+        End
+
+        public function anotherExample #1
+            alias 0xFF as maxCount
+            if maxCount == 255 then
+                Jump .start
+            else
+                ApplyMovement sampleMovement
+                WaitMovement
+                Return
+            endif
+        End
+
+        movement sampleMovement
+            WalkNorth 10
+        EndMovement
+        ";
+        let mut lexer = Lexer::new(source);
+        let mut tokens = Vec::new();
+        loop {
+            let token = lexer.next_token();
+            if let TokenType::EOF = token.kind {
+                break;
+            }
+            tokens.push(token.kind);
+        }
+        let expected_tokens = vec![
+            TokenType::Newline,
+            TokenType::Function,
+            TokenType::Identifier("example".to_string()),
+            TokenType::Newline,
+            TokenType::Newline,
+            TokenType::Identifier("count".to_string()),
+            TokenType::Assign,
+            TokenType::Num(0),
+            TokenType::Newline,
+            TokenType::While,
+            TokenType::Identifier("count".to_string()),
+            TokenType::LesserThan,
+            TokenType::Num(10),
+            TokenType::Do,
+            TokenType::Newline,
+            TokenType::Identifier("count".to_string()),
+            TokenType::Assign,
+            TokenType::Identifier("count".to_string()),
+            TokenType::Plus,
+            TokenType::Num(1),
+            TokenType::Newline,
+            TokenType::EndWhile,
+            TokenType::Newline,
+            TokenType::End,
+            TokenType::Newline,
+            TokenType::Newline,
+            TokenType::Public,
+            TokenType::Function,
+            TokenType::Identifier("anotherExample".to_string()),
+            TokenType::Hash,
+            TokenType::Num(1),
+            TokenType::Newline,
+            TokenType::Alias,
+            TokenType::Num(255),
+            TokenType::As,
+            TokenType::Identifier("maxCount".to_string()),
+            TokenType::Newline,
+            TokenType::If,
+            TokenType::Identifier("maxCount".to_string()),
+            TokenType::Equal,
+            TokenType::Num(255),
+            TokenType::Then,
+            TokenType::Newline,
+            TokenType::Jump,
+            TokenType::Label(".start".to_string()),
+            TokenType::Newline,
+            TokenType::Else,
+            TokenType::Newline,
+            TokenType::Identifier("ApplyMovement".to_string()),
+            TokenType::Identifier("sampleMovement".to_string()),
+            TokenType::Newline,
+            TokenType::Identifier("WaitMovement".to_string()),
+            TokenType::Newline,
+            TokenType::Return,
+            TokenType::Newline,
+            TokenType::EndIf,
+            TokenType::Newline,
+            TokenType::End,
+            TokenType::Newline,
+            TokenType::Newline,
+            TokenType::Identifier("movement".to_string()),
+            TokenType::Identifier("sampleMovement".to_string()),
+            TokenType::Newline,
+            TokenType::Identifier("WalkNorth".to_string()),
+            TokenType::Num(10),
+            TokenType::Newline,
+            TokenType::EndMovement,
+            TokenType::Newline,
+        ];
+        assert_eq!(tokens, expected_tokens);
+    }
+}
