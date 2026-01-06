@@ -281,7 +281,7 @@ impl<'a> Parser<'a> {
             let span = self.current_token.span.clone();
             self.advance();
             body.push(Spanned {
-                node: StatementKind::End,
+                node: StatementKind::EndMovement,
                 span,
             })
         } else {

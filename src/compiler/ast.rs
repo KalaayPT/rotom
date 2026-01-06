@@ -49,6 +49,7 @@ pub enum StatementKind {
     Jump(Expression),
     Return,
     End,
+    EndMovement,
 }
 
 #[derive(Debug)]

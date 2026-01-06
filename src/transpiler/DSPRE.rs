@@ -44,6 +44,7 @@ pub fn transpile(input: &str) -> String {
     let input = strip_block_comments(input);
     
     let mut output = String::new();
+    let mut in_action = false; // Track if we're inside an Action block
 
     // Compile regexes once
     let script_header = Regex::new(r"^Script\s+(\d+)\s*:").unwrap();
@@ -79,6 +80,7 @@ pub fn transpile(input: &str) -> String {
         if let Some(caps) = script_header.captures(trimmed) {
             let id: u32 = caps[1].parse().unwrap();
             output.push_str(&format!("function script_{} #{}:\n", id, id));
+            in_action = false;
             continue;
         }
 
@@ -86,6 +88,7 @@ pub fn transpile(input: &str) -> String {
         if let Some(caps) = function_header.captures(trimmed) {
             let id: u32 = caps[1].parse().unwrap();
             output.push_str(&format!("func_{}:\n", id));
+            in_action = false;
             continue;
         }
 
@@ -93,6 +96,7 @@ pub fn transpile(input: &str) -> String {
         if let Some(caps) = action_header.captures(trimmed) {
             let id: u32 = caps[1].parse().unwrap();
             output.push_str(&format!("action action_{}\n", id));
+            in_action = true;
             continue;
         }
 
@@ -103,6 +107,13 @@ pub fn transpile(input: &str) -> String {
             let leading_ws = &line[..line.len() - line.trim_start().len()];
             output.push_str(leading_ws);
             output.push_str(&format!("Jump script_{}\n", id));
+            continue;
+        }
+        
+        // Convert End to EndMovement inside Action blocks
+        if in_action && trimmed.eq_ignore_ascii_case("End") {
+            output.push_str("EndMovement\n");
+            in_action = false;
             continue;
         }
 
@@ -120,6 +131,10 @@ pub fn transpile(input: &str) -> String {
         
         // Strip descriptors: Overworld.0 -> 0, Move.HM01 -> HM01
         processed = descriptor.replace_all(&processed, "$1").to_string();
+        
+        // Convert DSPRE comparison operators: GREATER/EQUAL -> GREATER_EQUAL, LESS/EQUAL -> LESS_EQUAL
+        processed = processed.replace("GREATER/EQUAL", "GREATER_EQUAL");
+        processed = processed.replace("LESS/EQUAL", "LESS_EQUAL");
         
         // Convert space-separated arguments to comma-separated
         // Command Arg1 Arg2 Arg3 -> Command Arg1, Arg2, Arg3
@@ -226,6 +241,9 @@ mod tests {
         let input = "Action 1:\n    LookRight 0x1\nEnd";
         let output = transpile(input);
         assert!(output.contains("action action_1"));
+        // End inside action should become EndMovement
+        assert!(output.contains("EndMovement"));
+        assert!(!output.contains("\nEnd\n"));
     }
 
     #[test]
@@ -234,6 +252,19 @@ mod tests {
         let output = transpile(input);
         // Space-separated args become comma-separated
         assert!(output.contains("JumpIf EQUAL, script_3"));
+    }
+
+    #[test]
+    fn test_comparison_operators() {
+        let input = "    CallIf GREATER/EQUAL func_2";
+        let output = transpile(input);
+        assert!(output.contains("GREATER_EQUAL"));
+        assert!(!output.contains("GREATER/EQUAL"));
+        
+        let input2 = "    JumpIf LESS/EQUAL Script#1";
+        let output2 = transpile(input2);
+        assert!(output2.contains("LESS_EQUAL"));
+        assert!(!output2.contains("LESS/EQUAL"));
     }
 
     #[test]
@@ -306,6 +337,8 @@ End
         assert!(output.contains("func_2:"));
         assert!(!output.contains("function func_2"));
         assert!(output.contains("action action_1"));
+        // End inside action should become EndMovement
+        assert!(output.contains("EndMovement"));
         // Space-separated args become comma-separated
         assert!(output.contains("JumpIf EQUAL, script_3"));
         assert!(output.contains("JumpIf EQUAL, func_2"));

@@ -244,6 +244,10 @@ impl<'a> Lowerer<'a> {
                 name: "End".to_string(),
                 args: vec![],
             }),
+            StatementKind::EndMovement => self.output.push(IrOpcode::Command {
+                name: "EndMovement".to_string(),
+                args: vec![],
+            }),
             // Register local aliases for resolution during this function's lowering
             StatementKind::AliasStatement { name, id, .. } => {
                 self.local_aliases.insert(name.clone(), *id);

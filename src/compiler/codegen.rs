@@ -78,7 +78,7 @@ impl<'a> Emitter<'a> {
             }
             self.action_offsets.insert(ir_action.name.clone(), self.pc);
             for ir_op in &ir_action.instructions {
-                self.emit_ir_opcode(ir_op)?;
+                self.emit_movement(ir_op)?;
             }
         }
         // Handle relocations
@@ -95,7 +95,7 @@ impl<'a> Emitter<'a> {
             let offset_bytes = (relative as u32).to_le_bytes();
             self.output[reloc.offset..reloc.offset + 4].copy_from_slice(&offset_bytes);
         }
-        while self.output.len() % 4 != 0 {
+        while self.output.len() % 2 != 0 {
             self.emit_u8(0);
         }
         Ok(self.output.clone())
@@ -108,6 +108,24 @@ impl<'a> Emitter<'a> {
             IrOpcode::Command { name, args } => {
                 let cmd = self.db.get_command(name)?;
                 self.emit_command(&name, cmd, args)?;
+            }
+        }
+        Ok(())
+    }
+    /// Emit a movement command (for actions)
+    /// Movement format: u16 opcode + u16 param (always 4 bytes per movement)
+    pub fn emit_movement(&mut self, ir_op: &IrOpcode) -> ParseResult<()> {
+        match ir_op {
+            IrOpcode::Label(name) => {
+                self.label_offsets.insert(name.clone(), self.pc);
+            }
+            IrOpcode::Command { name, args } => {
+                let cmd = self.db.get_movement(name)?;
+                let opcode = cmd.id.unwrap();
+                self.emit_u16(opcode);
+                // Movement always has exactly one u16 param (default 0)
+                let param = args.first().map(|a| a.unwrap_value() as u16).unwrap_or(0);
+                self.emit_u16(param);
             }
         }
         Ok(())

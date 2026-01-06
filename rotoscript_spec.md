@@ -362,6 +362,8 @@ Rotom includes a transpiler for DSPRE script format:
   - [x] Semantic analysis tests
   - [ ] Codegen tests
 - [ ] Binary matching against known scripts
+  - [x] DSPRE
+  - [ ] Pokeplatinum
 - [ ] Macro support
 - [ ] Decompilation into high-level logic
 - [ ] Register allocation for automatic variable assignment

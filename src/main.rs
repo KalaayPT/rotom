@@ -204,9 +204,14 @@ EndMovement
 "#;
 
     // DSPRE-derived test script (0013)
-    let dspre = std::fs::read_to_string(r"C:\dev\romhacking\renHERgade platinum\renherplat v007_DSPRE_contents\expanded\scripts\0013.script").unwrap();
+    let dspre = std::fs::read_to_string(r"C:\Users\micro\Desktop\Pokémon - Platinum Version (USA) (Rev 1)_DSPRE_contents\expanded\scripts\0002.script").unwrap();
+    let decomp =
+        std::fs::read_to_string(r"C:\dev\pokeplatinum\res\field\scripts\scripts_jubilife_city.s")
+            .unwrap();
     let input = transpiler::DSPRE::transpile(&dspre);
+    let input = transpiler::decomp::transpile(&decomp);
     println!("{input}");
+    std::fs::write("test_input.rotom", &input).unwrap();
     let input = input.as_str();
     println!("=== Loading Database ===");
     let db = match DatabaseV2::load(db_path) {
@@ -225,6 +230,18 @@ EndMovement
     // Load constants from the database
     let mut constants = ConstantDb::new();
     let const_count = constants.load_from_db(&db);
+
+    // Load additional constants from JSON files in src/db/
+    let db_dir = std::path::Path::new("src/db");
+    for file in &["items.json", "pokemon.json", "moves.json", "trainers.json"] {
+        let path = db_dir.join(file);
+        if path.exists() {
+            match constants.load_json(&path) {
+                Ok(count) => println!("Loaded {} constants from {}", count, file),
+                Err(e) => eprintln!("Warning: Failed to load {}: {}", file, e),
+            }
+        }
+    }
     println!("Loaded {} built-in constants", const_count);
 
     // Quick sanity check - look up a few commands

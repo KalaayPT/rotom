@@ -188,7 +188,7 @@ impl<'a> Analyzer<'a> {
                             self.validate_expression(arg)?;
                         }
                     }
-                    StatementKind::End => {}
+                    StatementKind::End | StatementKind::EndMovement => {}
                     _ => {
                         return Err(analysis_error(
                             stmt.span.clone(),

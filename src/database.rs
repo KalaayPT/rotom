@@ -279,11 +279,31 @@ impl DatabaseV2 {
         }
     }
 
-    /// Look up a movement by name
-    pub fn get_movement(&self, name: &str) -> Option<&Command> {
-        self.commands
+    /// Look up a movement by name (checks both primary name and legacy_name)
+    pub fn get_movement(&self, name: &str) -> Result<&Command, CompileError> {
+        match self
+            .commands
             .get(name)
             .filter(|cmd| cmd.cmd_type == CommandType::Movement)
+        {
+            Some(cmd) => Ok(cmd),
+            None => {
+                // Check legacy_name
+                if let Some((_, cmd)) = self
+                    .commands
+                    .iter()
+                    .find(|(_, cmd)| cmd.legacy_name == Some(name.to_string()))
+                    .filter(|(_, cmd)| cmd.cmd_type == CommandType::Movement)
+                {
+                    Ok(cmd)
+                } else {
+                    Err(database_error(format!(
+                        "Movement '{}' not found in database",
+                        name
+                    )))
+                }
+            }
+        }
     }
 
     /// Get all script commands
