@@ -21,12 +21,12 @@
 //!
 //! ## Rotoscript Output:
 //! ```text
-//! public function script_1 #1
+//! function script_1 #1:
 //!     PlayFanfare 1500
 //!     LockAll
 //! End
 //!
-//! function func_2:
+//! func_2:
 //!     CloseMessage
 //!     Jump script_3
 //! End
@@ -75,17 +75,17 @@ pub fn transpile(input: &str) -> String {
             continue;
         }
 
-        // Check for Script N: header
+        // Check for Script N: header -> becomes `function script_N #N:`
         if let Some(caps) = script_header.captures(trimmed) {
             let id: u32 = caps[1].parse().unwrap();
-            output.push_str(&format!("public function script_{} #{}\n", id, id));
+            output.push_str(&format!("function script_{} #{}:\n", id, id));
             continue;
         }
 
-        // Check for Function N: header
+        // Check for Function N: header -> becomes bare label `func_N:`
         if let Some(caps) = function_header.captures(trimmed) {
             let id: u32 = caps[1].parse().unwrap();
-            output.push_str(&format!("function func_{}:\n", id));
+            output.push_str(&format!("func_{}:\n", id));
             continue;
         }
 
@@ -97,7 +97,7 @@ pub fn transpile(input: &str) -> String {
         }
 
         // Check for UseScript_#N (DSPRE workaround for jumping to scripts)
-        if let Some(caps) = use_script.captures(line) {
+        if let Some(caps) = use_script.captures(&line) {
             let id: u32 = caps[1].parse().unwrap();
             // Preserve leading whitespace
             let leading_ws = &line[..line.len() - line.trim_start().len()];
@@ -209,14 +209,16 @@ mod tests {
     fn test_script_header() {
         let input = "Script 1:\n    LockAll\nEnd";
         let output = transpile(input);
-        assert!(output.contains("public function script_1 #1"));
+        assert!(output.contains("function script_1 #1:"));
     }
 
     #[test]
     fn test_function_header() {
         let input = "Function 2:\n    CloseMessage\nEnd";
         let output = transpile(input);
-        assert!(output.contains("function func_2:"));
+        // DSPRE "Function" becomes a bare label in rotoscript
+        assert!(output.contains("func_2:"));
+        assert!(!output.contains("function func_2"));
     }
 
     #[test]
@@ -298,10 +300,11 @@ End
 "#;
         let output = transpile(input);
 
-        assert!(output.contains("public function script_1 #1"));
-        assert!(output.contains("public function script_2 #2"));
-        assert!(output.contains("public function script_3 #3"));
-        assert!(output.contains("function func_2:"));
+        assert!(output.contains("function script_1 #1:"));
+        assert!(output.contains("function script_2 #2:"));
+        assert!(output.contains("function script_3 #3:"));
+        assert!(output.contains("func_2:"));
+        assert!(!output.contains("function func_2"));
         assert!(output.contains("action action_1"));
         // Space-separated args become comma-separated
         assert!(output.contains("JumpIf EQUAL, script_3"));

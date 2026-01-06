@@ -1,7 +1,7 @@
 # Rotom Language Specification
 
 **Version:** 0.1 (Draft)
-**Target:** Nintendo DS Scripting Engine (DSPRE)
+**Target:** Nintendo DS Scripting Engine (Pokemon Gen 4)
 **File Extension:** `.rotom`
 
 ## 1. Lexical Structure
@@ -27,17 +27,17 @@
 * **Hexadecimal Integers:** `0x1A`, `0x4000`.
 
 ### 1.4 Labels
-Labels define locations in code for Jumps or Pointers.
-* **Global Labels:** End with a colon. Visible everywhere. Can be jumped to from any function.
-    * Syntax: `MyGlobalLabel:`
-* **Local Labels:** Start with a dot, optionally end with a colon. Visible only within the current Function.
+Labels define locations in code for jumps or pointers.
+* **Top-Level Labels:** Defined at the file level with `Name:` syntax. Create a new code block.
+    * Syntax: `MyLabel:`
+* **Inline Labels:** Defined inside a function body. Start with a dot.
     * Syntax: `.loop_start:` or `.loop_start`
-    * Note: The colon is optional for local labels. Both forms are equivalent.
+    * Note: The colon is optional for inline labels. Both forms are equivalent.
 
 ### 1.5 Keywords
 Reserved words that cannot be used as identifiers:
-* **Block Delimiters:** `function`, `action`, `End`, `Return`
-* **Modifiers:** `public`, `global`, `alias`, `as`
+* **Block Delimiters:** `function`, `action`, `End`, `Return`, `EndMovement`
+* **Modifiers:** `alias`, `as`
 * **Control Flow:** `if`, `then`, `else`, `endif`, `while`, `do`, `endwhile`, `Jump`
 * **Logical Operators:** `and`, `or`, `not`
 * **Literals:** `true`, `false`
@@ -46,92 +46,144 @@ Reserved words that cannot be used as identifiers:
 
 ## 2. Program Structure
 
-A Rotom script consists of three sections, usually in this order:
-1.  **Global Definitions** (Aliases)
-2.  **Code Blocks** (Functions)
-3.  **Data Blocks** (Actions / Movement)
+A Rotom script is a flat sequence of:
+1. **Aliases** (compile-time constants)
+2. **Functions** (public entry points with jump table slots)
+3. **Labels** (private code blocks, not in jump table)
+4. **Actions** (movement data blocks)
 
-```c
-// 1. Globals
-global alias 2550 as FLAG_Badge
+Code blocks are delimited by the start of the next block, not by explicit terminators.
 
-// 2. Functions
-public function GymLeader #1
-    if FLAG_Badge == 1 then // this is an implicit "CheckFlag" instruction and compiles down to such
-        Jump .already_fought // for commands (jump is a script command opcode), newlines are delimiters
+```rotom
+// 1. Aliases (all global)
+alias 0x800C as VAR_RESULT
+alias 2550 as FLAG_Badge
+
+// 2. Public function (in jump table)
+function GymLeader #1:
+    if FLAG_Badge == 1 then
+        Jump .already_fought
     endif
     .already_fought:
     End
-End
 
-// 3. Actions
+// 3. Private label (not in jump table)
+HelperCode:
+    Message 1
+    Return
+
+// 4. Actions
 action MovePlayer
     WalkLeft 1
     FaceUp
-End
+EndMovement
 ```
 
 ### 2.1 Function Declarations
 
-Functions are the primary code containers. They can have multiple entry points for jump-table aliasing.
+Functions are public entry points that appear in the jump table. They require a slot number.
 
 ```rotom
-// Private function (not in jump table)
-function Helper
+// Public function with jump-table slot #1
+function Main #1:
     Message 1
-End
+    End
 
-// Public function with explicit jump-table ID
-public function Main #1
-    Call Helper
-End
-
-// Multiple headers pointing to same code (jump-table aliasing)
-public function TalkToNPC #5
-public function InteractWithSign #6
-function SharedHandler
+// Stacked headers (multiple jump table entries pointing to same code)
+function TalkToNPC #5:
+function InteractWithSign #6:
     Message 10
-End
+    End
 ```
 
-* `public` - Function appears in the jump table (callable from game engine)
-* `#N` - Explicit jump-table slot assignment
-* `function Name:` - Colon suffix is optional (for legacy compatibility)
+* `function Name #N:` - Function with jump-table slot N (required)
+* The colon after the header is required
 
-### 2.2 Terminators
+### 2.2 Labels (Private Code Blocks)
+
+Labels are code blocks that are NOT in the jump table. They are used for:
+- Shared code that multiple functions jump to
+- Helper routines
+- Fall-through code organization
+
+```rotom
+// Bare label syntax
+SharedHandler:
+    Message 10
+    End
+
+NoCoinCase:
+    Message 5
+    CloseMessage
+    End
+```
+
+### 2.3 Fall-Through
+
+Code blocks that don't end with `End` or `Return` fall through to the next block in source order. This is useful for:
+- Multiple entry points sharing common code
+- Sequential code organization matching decomp style
+
+```rotom
+function SlotMachine_9 #9:
+    SetVar LOCALID, 9
+    GoTo SlotMachine_Common
+    // No End - next block follows in binary
+
+function SlotMachine_10 #10:
+    SetVar LOCALID, 10
+    GoTo SlotMachine_Common
+
+SlotMachine_Common:
+    PlayFanfare SEQ_SE_CONFIRM
+    LockAll
+    // ... shared implementation
+    End
+```
+
+### 2.4 Terminators
 
 * `End` - Terminates script execution entirely. The script stops running.
-* `Return` - Returns control to the caller. Used for sub-functions called via `Call`.
+* `Return` - Returns control to the caller. Used for sub-routines called via `Call`.
 
-## 3. Scoping & Variables
+Note: These are commands that emit bytecode, not structural delimiters.
 
-The Gen 4 Pokemon games have many persistent variables, but only 14 of them are script-local and function exactly exactly like CPU registers:
+## 3. Aliases & Variables
+
+The Gen 4 Pokemon games have many persistent variables, but only 14 of them are script-local and function like CPU registers:
 * 0x8000-0x800B: 12 normal variables
 * 0x800C: used as "result" variable, but can be used freely
 * 0x800D: special: "last interacted" overworld, which triggered the script execution
 
 ### 3.1 Aliases
 
-Aliases are compile-time constants (macros) that map a name to a number.
+Aliases are compile-time constants that map a name to a number. All aliases are global.
 
-This is in leu of a planned (TODO) "register allocation" system for variables to be auto-assigned.
 * Syntax: `alias Value as Name`
-* **Global Alias:** Defined at the top level with `global` prefix. Visible in all functions.
-    * Syntax: `global alias 0x8000 as MyVar`
-* **Local Alias:** Defined inside a function (no `global` prefix). Visible only in that function.
-    * Syntax: `alias 0x8001 as TempVar`
+* Defined at the top level of the file
+* Visible in all functions and labels
 
-### 3.2 Scoping Rules
+```rotom
+alias 0x8000 as VAR_TEMP
+alias 0x800C as VAR_RESULT
+alias 1500 as SEQ_SE_CONFIRM
+```
 
-1. Shadowing: A Local Alias can shadow (hide) a Global Alias of the same name.
-2. Redeclaration: A name cannot be redefined within the exact same scope block.
-    * Rationale: Prevents "Time Travel" bugs where the meaning of a variable changes halfway through a block after code has already been generated.
+### 3.2 Built-in Constants
+
+The compiler loads constants from the database, including:
+- Comparison operators: `EQUAL`, `NOT_EQUAL`, `LESS_THAN`, etc.
+- Sound IDs: `SEQ_SE_CONFIRM`, etc.
+- Special overworld IDs
+- Direction constants
+
+User aliases can shadow (override) built-in constants.
 
 ### 3.3 Variable Heuristics (Compiler Logic)
 
 The compiler infers the "type" of a number based on the Nintendo DS Memory Map:
 * Value (Immediate): 0x0000 to 0x3FFF
-* Variable (Pointer): 0x4000 and above (e.g., Flags, Script Vars). // this logic isnt flawless and what really matters is command expectation types but this works for now
+* Variable (Pointer): 0x4000 and above (e.g., Flags, Script Vars).
 
 ## 4. Control Flow
 
@@ -172,11 +224,11 @@ endwhile
 ```
 
 ### 4.3 Jumps and Calls
-* `Jump LabelName` - Unconditional jump to a label
-* `Jump .local_label` - Jump to a local label within the same function
+* `Jump LabelName` - Unconditional jump to a label or function
+* `Jump .local_label` - Jump to an inline label within the same function
 * `Call FunctionName` - Call a function, execution returns after `Return`
 
-Restriction: You cannot Jump to a variable alias. You can only jump to (or call) Labels or Functions.
+Restriction: You cannot Jump to a variable alias. You can only jump to Labels or Functions.
 
 ### 4.4 Expressions in Conditions
 
@@ -196,7 +248,7 @@ SetVar y, (1 + 2) * 3  // Evaluates to 9 (parentheses override)
 ```
 Note: Complex expressions in conditions (e.g., `if x + 1 == 5`) are not yet supported.
 
-## 5. Commands & Functions
+## 5. Commands & Actions
 
 ### 5.1 Script Commands
 
@@ -205,21 +257,22 @@ Native hardware commands defined in the game database.
 * Argument Resolution:
     * If Arg is an Integer, it passes raw.
     * If Arg is a Variable Alias, it resolves to the ID (e.g., 0x4000).
-    * If Arg is a Label, it passes a reference (LabelRef) to that label's offset.
+    * If Arg is a Label/Function name, it passes a reference to that location's offset.
 
 ### 5.2 Actions
 
 Special blocks containing only movement commands.
 * Strict Mode: Actions cannot contain control flow logic (if, while, Jump) or aliases.
-* Terminator: Actions must end with `End`.
-* Usage: Actions are referenced by specific commands (e.g., `ApplyMovement OW_ID, @ActionName`).
+* Terminator: Actions must end with `EndMovement`.
+* Self-contained: Actions are always fully encapsulated (no fall-through).
+* Usage: Actions are referenced by specific commands (e.g., `ApplyMovement OW_ID, ActionName`).
 
 ```rotom
 action WalkPattern
     WalkRight 3
     WalkDown 2
     FaceLeft
-End
+EndMovement
 ```
 
 ## 6. Error Handling
@@ -227,13 +280,13 @@ End
 The compiler reports errors with source locations using the following categories:
 
 * **Lexer Errors:** Invalid tokens, unclosed block comments
-* **Parse Errors:** Unexpected tokens, missing delimiters (endif, endwhile, End)
+* **Parse Errors:** Unexpected tokens, missing delimiters (endif, endwhile, EndMovement)
 * **Semantic Errors:**
     * Undefined symbol references
     * Duplicate definitions in the same scope
     * Invalid jump targets (jumping to a variable instead of a label)
     * Control flow inside Actions
-    * Global aliases defined inside functions
+    * Missing slot number on function declarations
 
 Example error output:
 ```
@@ -245,52 +298,74 @@ error: Undefined symbol: 'undefined_var'
 ```
 
 ## 7. Compiler Pipeline (Technical)
-1. Lexer: Source → Tokens.
-2. Parser: Tokens → AST (Statement nodes).
-3. Semantic Analysis:
-    * Registers Symbols (functions, actions, labels, aliases).
-    * Validates scopes and label existence.
+
+1. **Lexer:** Source → Tokens.
+2. **Parser:** Tokens → AST (Statement nodes).
+    * Functions end at next function/label/action/EOF
+    * Actions are self-contained (end at EndMovement)
+3. **Semantic Analysis:**
+    * Registers Symbols (functions, labels, actions, aliases).
+    * Validates references and label existence.
     * Enforces "Movement-Only" rules for Actions.
     * Checks for undefined references and duplicate definitions.
-4. Lowering (IR Generation):
+4. **Lowering (IR Generation):**
     * Flattens If/While blocks into Labels and Jumps.
     * Swaps comparison operands to match hardware (Val == Var → Var == Val).
     * Generates Symbolic IR (Command { name: "SetVar" }).
     * Inverts conditions for jump-if semantics.
-5. Codegen (Assembler):
+5. **Codegen (Assembler):**
     * Maps Symbolic Names to Hex IDs using JSON DB.
     * Calculates byte offsets for Labels.
     * Writes jump table and binary output.
-6. Disassembler (Reverse):
+    * Emits code in source order (preserves fall-through semantics).
+6. **Decompiler (Reverse):**
     * Parses binary jump table to find entry points.
-    * Iteratively discovers functions/actions via call analysis.
-    * Generates human-readable Rotom source.
+    * Discovers all jump targets to identify label boundaries.
+    * Generates flat Rotom source matching binary layout.
 
 ## 8. Binary Format (Reference)
 
 The compiled script binary consists of:
 1. **Jump Table:** Array of 4-byte offsets pointing to public function entry points
     * Terminated by `0xFD13` marker
-2. **Script Data:** Concatenated function and action bytecode
+    * Order matches function slot numbers
+2. **Script Data:** Concatenated function and label bytecode
     * Commands are 2-byte IDs followed by parameters
     * Parameters are 2 or 4 bytes depending on command definition
+    * Code emitted in source order (fall-through preserved)
 3. **Movement Data:** Separate section for action bytecode
     * Movement commands are 2-byte ID + 2-byte parameter
 
-## 9. Future Work (TODO)
+## 9. DSPRE Compatibility
 
-[] codegen
-[] simple decompilation
-[] tests
-  [x] lexer tests
-  [x] parser tests
-  [x] semantic analysis tests
-  [] codegen tests
-[] binary matching against known scripts
-[] macro support
-[] decompilation into high-level logic
-[] Register allocation for automatic variable assignment
-[] Constant folding for compile-time arithmetic
-[] Complex expressions in conditions (`if x + 1 == 5`)
-[] Type checking against command parameter expectations
-[] Optimization passes (dead code elimination, jump threading)
+Rotom includes a transpiler for DSPRE script format:
+
+| DSPRE Syntax | Rotom Syntax |
+|--------------|--------------|
+| `Script N:` | `function script_N #N:` |
+| `Function N:` | `func_N:` (bare label) |
+| `Action N:` | `action action_N` |
+| `Script#N` | `script_N` |
+| `Function#N` | `func_N` |
+| `UseScript_#N` | `Jump script_N` |
+| `Overworld.0` | `0` (descriptor stripped) |
+| `arg1 arg2 arg3` | `arg1, arg2, arg3` (comma-separated) |
+
+## 10. Future Work (TODO)
+
+- [x] Codegen
+- [x] DSPRE transpiler
+- [ ] Simple decompilation
+- [ ] Tests
+  - [x] Lexer tests
+  - [x] Parser tests
+  - [x] Semantic analysis tests
+  - [ ] Codegen tests
+- [ ] Binary matching against known scripts
+- [ ] Macro support
+- [ ] Decompilation into high-level logic
+- [ ] Register allocation for automatic variable assignment
+- [ ] Constant folding for compile-time arithmetic
+- [ ] Complex expressions in conditions (`if x + 1 == 5`)
+- [ ] Type checking against command parameter expectations
+- [ ] Optimization passes (dead code elimination, jump threading)

@@ -142,36 +142,30 @@ fn compile(
 }
 
 fn run_test(db_path: &PathBuf) {
-    let input = r#"
+    let _old_input = r#"
 // === Global Aliases ===
-global alias 0x800C as RESULT
-global alias 0x8000 as PLAYER_X
-global alias 0x8001 as COUNTER
+alias 0x800C as RESULT
+alias 0x8000 as PLAYER_X
+alias 0x8001 as COUNTER
 
 // === Main Entry Point ===
-public function Main #1
-    // Local alias (shadows nothing, just for demo)
-    alias 0x8002 as LOCAL_VAR
-
+function Main #1:
     // 1. Simple command
     SetVar PLAYER_X, 100
 
-    // 2. Command with arithmetic expression
-    SetVar LOCAL_VAR, 1 + 2 * 3
-
-    // 3. Simple if/then/endif (variable vs literal)
+    // 2. Simple if/then/endif (variable vs literal)
     if PLAYER_X == 100 then
         Message 1
     endif
 
-    // 4. If/else
+    // 3. If/else
     if RESULT != 0 then
         Message 2
     else
         Message 3
     endif
 
-    // 5. Nested if with else
+    // 4. Nested if with else
     if PLAYER_X == 100 then
         if RESULT == 1 then
             Message 10
@@ -180,13 +174,13 @@ public function Main #1
         endif
     endif
 
-    // 6. While loop
+    // 5. While loop
     SetVar COUNTER, 5
     while COUNTER != 0 do
         SubVar COUNTER, 1
     endwhile
 
-    // 7. Jump to local label
+    // 6. Jump to local label
     Jump .end_script
 
     .skip_message:
@@ -196,8 +190,8 @@ public function Main #1
     PlaySound 0x10
 End
 
-// === Helper Function (private, uses Return) ===
-function HelperFunc
+// === Helper Label (uses Return) ===
+HelperFunc:
     Message 50
 Return
 

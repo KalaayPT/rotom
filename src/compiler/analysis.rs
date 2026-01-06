@@ -243,24 +243,6 @@ impl<'a> Analyzer<'a> {
     }
     fn validate_statement(&mut self, stmt: &Statement) -> ParseResult<()> {
         match &stmt.node {
-            StatementKind::AliasStatement {
-                name,
-                id,
-                is_global,
-            } => {
-                if !*is_global {
-                    self.symbols.define_scoped(
-                        name.clone(),
-                        SymbolType::Variable(*id),
-                        stmt.span.clone(),
-                    )?;
-                } else {
-                    return Err(analysis_error(
-                        stmt.span.clone(),
-                        "Global aliases have to be defined at the global level",
-                    ));
-                }
-            }
             StatementKind::Jump(target_expr) => {
                 self.validate_jump_target(target_expr)?;
             }
