@@ -2,12 +2,14 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::compiler::ast::{FunctionHeader, ScriptFile};
+use crate::database::{Command, DatabaseV2, ParamDef};
 
 use super::{
     analysis::{SymbolTable, SymbolType},
-    ast::{Expression, ExpressionKind, Statement, StatementKind},
+    ast::{Expression, ExpressionKind, Statement, StatementKind, Spanned},
     parse_error::{ParseResult, lowering_error},
     token::TokenType,
+    Lexer, Parser,
 };
 
 #[derive(Debug, Clone)]
@@ -58,13 +60,31 @@ impl Arg {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct IrFunction {
     pub headers: Vec<FunctionHeader>,
     pub instructions: Vec<IrOpcode>,
 }
+#[derive(Debug, Clone)]
 pub struct IrAction {
     pub name: String,
     pub instructions: Vec<IrOpcode>,
+}
+
+/// A top-level item in a script (preserves ordering of functions and actions)
+#[derive(Debug, Clone)]
+pub enum TopLevelItem {
+    Function(IrFunction),
+    Action(IrAction),
+}
+
+impl fmt::Display for TopLevelItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TopLevelItem::Function(func) => write!(f, "{}", func),
+            TopLevelItem::Action(action) => write!(f, "{}", action),
+        }
+    }
 }
 
 impl fmt::Display for IrFunction {
@@ -117,21 +137,26 @@ enum OperandType {
     Value,    // raw number (5)
 }
 
+/// Maximum depth for macro expansion to prevent infinite recursion
+const MAX_MACRO_DEPTH: usize = 10;
+
 #[derive(Debug, Clone)]
 pub struct Lowerer<'a> {
     label_counter: usize,
     output: Vec<IrOpcode>,
     global_symbols: &'a SymbolTable,
     local_aliases: HashMap<String, i32>,
+    db: &'a DatabaseV2,
 }
 
 impl<'a> Lowerer<'a> {
-    pub fn new(symbols: &'a SymbolTable) -> Self {
+    pub fn new(symbols: &'a SymbolTable, db: &'a DatabaseV2) -> Self {
         Self {
             label_counter: 0,
             output: Vec::new(),
             global_symbols: symbols,
             local_aliases: HashMap::new(),
+            db,
         }
     }
     fn new_label(&mut self, prefix: &str) -> String {
@@ -141,30 +166,30 @@ impl<'a> Lowerer<'a> {
     pub fn lower_script_file(
         &mut self,
         scr_file: &ScriptFile,
-    ) -> ParseResult<(Vec<IrFunction>, Vec<IrAction>)> {
-        let mut ir_functions = Vec::new();
-        for func in &scr_file.functions {
-            if let StatementKind::Function { headers, body } = &func.node {
-                self.local_aliases.clear();
-                let instructions = self.lower_function(body)?;
-                ir_functions.push(IrFunction {
-                    headers: headers.clone(),
-                    instructions,
-                });
+    ) -> ParseResult<Vec<TopLevelItem>> {
+        let mut items = Vec::new();
+        for item in &scr_file.items {
+            match &item.node {
+                StatementKind::Function { headers, body } => {
+                    self.local_aliases.clear();
+                    let instructions = self.lower_function(body)?;
+                    items.push(TopLevelItem::Function(IrFunction {
+                        headers: headers.clone(),
+                        instructions,
+                    }));
+                }
+                StatementKind::Action { name, body } => {
+                    self.local_aliases.clear();
+                    let instructions = self.lower_function(body)?;
+                    items.push(TopLevelItem::Action(IrAction {
+                        name: name.clone(),
+                        instructions,
+                    }));
+                }
+                _ => {}
             }
         }
-        let mut ir_actions = Vec::new();
-        for action in &scr_file.actions {
-            if let StatementKind::Action { name, body } = &action.node {
-                self.local_aliases.clear();
-                let instructions = self.lower_function(body)?;
-                ir_actions.push(IrAction {
-                    name: name.clone(),
-                    instructions,
-                });
-            }
-        }
-        Ok((ir_functions, ir_actions))
+        Ok(items)
     }
     pub fn lower_function(&mut self, body: &[Statement]) -> ParseResult<Vec<IrOpcode>> {
         self.output.clear();
@@ -174,6 +199,10 @@ impl<'a> Lowerer<'a> {
         Ok(std::mem::take(&mut self.output))
     }
     fn lower_statement(&mut self, stmt: &Statement) -> ParseResult<()> {
+        self.lower_statement_with_depth(stmt, 0)
+    }
+    
+    fn lower_statement_with_depth(&mut self, stmt: &Statement, macro_depth: usize) -> ParseResult<()> {
         match &stmt.node {
             StatementKind::IfStatement {
                 condition,
@@ -189,7 +218,7 @@ impl<'a> Lowerer<'a> {
                 let jump_target = label_else.as_ref().unwrap_or(&label_end);
                 self.lower_condition(condition, jump_target)?;
                 for s in body {
-                    self.lower_statement(s)?;
+                    self.lower_statement_with_depth(s, macro_depth)?;
                 }
                 if let Some(else_b) = elseblock {
                     self.output.push(IrOpcode::Command {
@@ -199,7 +228,7 @@ impl<'a> Lowerer<'a> {
                     // unwrap is safe here because we already checked if else is some
                     self.output.push(IrOpcode::Label(label_else.unwrap()));
                     for s in else_b {
-                        self.lower_statement(s)?;
+                        self.lower_statement_with_depth(s, macro_depth)?;
                     }
                 }
                 self.output.push(IrOpcode::Label(label_end));
@@ -210,7 +239,7 @@ impl<'a> Lowerer<'a> {
                 self.output.push(IrOpcode::Label(label_start.clone()));
                 self.lower_condition(condition, &label_end)?;
                 for s in body {
-                    self.lower_statement(s)?;
+                    self.lower_statement_with_depth(s, macro_depth)?;
                 }
                 self.output.push(IrOpcode::Command {
                     name: "GoTo".to_string(),
@@ -219,11 +248,7 @@ impl<'a> Lowerer<'a> {
                 self.output.push(IrOpcode::Label(label_end));
             }
             StatementKind::ScriptCommand { command, args } => {
-                let resolved_args = self.resolve_args(args)?;
-                self.output.push(IrOpcode::Command {
-                    name: command.clone(),
-                    args: resolved_args,
-                });
+                self.lower_command(command, args, macro_depth)?;
             }
 
             StatementKind::Label(name) => self.output.push(IrOpcode::Label(name.clone())),
@@ -257,6 +282,317 @@ impl<'a> Lowerer<'a> {
         }
         Ok(())
     }
+    
+    /// Lower a command, expanding macros if needed
+    fn lower_command(&mut self, command: &str, args: &[Expression], macro_depth: usize) -> ParseResult<()> {
+        // Check if this is a macro by looking it up in the database
+        if let Ok(cmd) = self.db.get_command(command) {
+            if cmd.is_macro() {
+                return self.expand_macro(command, args, macro_depth);
+            }
+
+            // Not a macro - apply defaults if needed, then emit directly
+            let args_with_defaults = self.apply_defaults(command, &cmd, args)?;
+            let resolved_args = self.resolve_args(&args_with_defaults)?;
+            self.output.push(IrOpcode::Command {
+                name: command.to_string(),
+                args: resolved_args,
+            });
+            Ok(())
+        } else {
+            // Command not found in DB - emit as-is (assuming it's valid)
+            let resolved_args = self.resolve_args(args)?;
+            self.output.push(IrOpcode::Command {
+                name: command.to_string(),
+                args: resolved_args,
+            });
+            Ok(())
+        }
+    }
+
+    /// Apply default parameter values to fill in missing arguments
+    /// Arguments map to required parameter positions. Optional parameters with defaults
+    /// are filled in when there are fewer arguments than parameters.
+    fn apply_defaults(&self, command: &str, cmd: &Command, args: &[Expression]) -> ParseResult<Vec<Expression>> {
+        let params = &cmd.params;
+        let arg_count = args.len();
+        let param_count = params.len();
+        
+        if arg_count == param_count {
+            return Ok(args.to_vec());
+        }
+        
+        // For args < params, skip params with defaults
+        // Start from the END of the params list and work backwards
+        let mut result: Vec<Option<Expression>> = vec![None; param_count];
+        let mut arg_idx = arg_count;
+        
+        // Fill from the end
+        for i in (0..param_count).rev() {
+            if let Some(default_str) = params[i].default.as_ref() {
+                // Param has default - fill with default, don't consume arg
+                let lexer = Lexer::new(default_str);
+                let mut parser = Parser::new(lexer);
+                let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
+                result[i] = Some(expr);
+            } else if arg_idx > 0 {
+                // No default, consume an arg
+                result[i] = Some(args[arg_idx - 1].clone());
+                arg_idx -= 1;
+            } else {
+                // No default and no arg available
+                return Err(lowering_error(format!(
+                    "Missing required argument '{}' for command '{}'",
+                    params[i].name, command
+                )));
+            }
+        }
+        
+        // Convert Option<Vec> to Vec
+        Ok(result.into_iter().map(Option::unwrap).collect())
+    }
+
+    /// Calculate number of required parameters (those without defaults)
+    fn count_required(params: &[ParamDef]) -> usize {
+        params.iter().filter(|p| p.default.is_none()).count()
+    }
+
+    /// Expand a macro by substituting parameters and recursively lowering
+    fn expand_macro(&mut self, macro_name: &str, args: &[Expression], depth: usize) -> ParseResult<()> {
+        if depth > MAX_MACRO_DEPTH {
+            return Err(lowering_error(format!(
+                "Macro expansion depth exceeded (max {}) while expanding '{}'. Possible infinite recursion.",
+                MAX_MACRO_DEPTH, macro_name
+            )));
+        }
+        
+        let cmd = self.db.get_command(macro_name)?;
+        let params = &cmd.params;
+        // Apply defaults for missing arguments
+        let args_with_defaults = self.apply_defaults(macro_name, cmd, args)?;
+        
+        // Build parameter substitution map: param_name -> formatted value
+        if args_with_defaults.len() != params.len() {
+            return Err(lowering_error(format!(
+                "Macro '{}' expects {} arguments, got {}",
+                macro_name, params.len(), args_with_defaults.len()
+            )));
+        }
+        
+        // Check for conditional variants
+        let expansion = if let Some(variants) = &cmd.variants {
+            // Find the first matching variant
+            let mut matched_expansion = None;
+            for variant in variants {
+                if let Some(condition) = &variant.condition {
+                    if condition == "else" {
+                        matched_expansion = variant.expansion.as_ref();
+                        break;
+                    }
+                    
+                    // Evaluate condition
+                    if self.evaluate_condition(condition, &args_with_defaults, params)? {
+                        matched_expansion = variant.expansion.as_ref();
+                        break;
+                    }
+                }
+            }
+            
+            // If no match found in variants, fall back to base expansion?
+            matched_expansion.or(cmd.expansion.as_ref())
+        } else {
+            cmd.expansion.as_ref()
+        };
+
+        let expansion = expansion.ok_or_else(|| {
+            lowering_error(format!("Macro '{}' has no expansion defined (and no matching variant)", macro_name))
+        })?;
+        
+        let mut param_map: HashMap<String, String> = HashMap::new();
+        for (param, arg) in params.iter().zip(args.iter()) {
+            let formatted = self.format_arg_for_substitution(arg)?;
+            param_map.insert(param.name.clone(), formatted);
+        }
+        
+        // Process each line in expansion
+        for line in expansion {
+            // Substitute $paramName with actual values
+            let substituted = self.substitute_params(line, &param_map);
+            
+            // Parse as substituted line as a command
+            let parsed_stmt = self.parse_expansion_line(&substituted)?;
+            
+            // Recursively lower (which may expand nested macros)
+            self.lower_statement_with_depth(&parsed_stmt, depth + 1)?;
+        }
+        
+        Ok(())
+    }
+
+    /// Evaluate a macro condition string (e.g., "\value < VARS_START")
+    fn evaluate_condition(&self, condition: &str, args: &[Expression], params: &[crate::database::ParamDef]) -> ParseResult<bool> {
+        use regex::Regex;
+        
+        // 1. Substitute \paramName with the integer value of the argument
+        let re = Regex::new(r"\\(\w+)").unwrap();
+        
+        let substituted = re.replace_all(condition, |caps: &regex::Captures| {
+            let param_name = &caps[1];
+            // Find the argument corresponding to this param name
+            if let Some(pos) = params.iter().position(|p| p.name == param_name) {
+                if let Some(arg) = args.get(pos) {
+                    // Resolve argument to an integer value
+                    match self.resolve_arg_to_int(arg) {
+                        Ok(val) => val.to_string(),
+                        Err(_) => "0".to_string(), // Error fallback
+                    }
+                } else {
+                    "0".to_string()
+                }
+            } else {
+                // Unknown param
+                "0".to_string()
+            }
+        });
+        
+        // 2. Parse the substituted string as an expression
+        let lexer = Lexer::new(&substituted);
+        let mut parser = Parser::new(lexer);
+        let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
+        
+        // 3. Evaluate the expression to a boolean
+        self.eval_bool_expr(&expr)
+    }
+    
+    /// Resolve an argument expression to an integer value (for condition evaluation)
+    fn resolve_arg_to_int(&self, expr: &Expression) -> ParseResult<i32> {
+        match &expr.node {
+            ExpressionKind::Number(n) => Ok(*n),
+            ExpressionKind::Identifier(name) => {
+                // Resolve identifier using global symbols (constants)
+                if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
+                    Ok(*val)
+                } else if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
+                    Ok(*val)
+                } else {
+                    Err(lowering_error(format!("Could not resolve '{}' to an integer for macro condition", name)))
+                }
+            }
+            _ => Err(lowering_error(format!("Unsupported argument type for macro condition: {:?}", expr.node))),
+        }
+    }
+    
+    /// Evaluate an expression AST to a boolean
+    fn eval_bool_expr(&self, expr: &Expression) -> ParseResult<bool> {
+        match &expr.node {
+            ExpressionKind::Infix { left, operator, right } => {
+                let left_val = self.eval_int_expr(left)?;
+                let right_val = self.eval_int_expr(right)?;
+                
+                match operator {
+                    TokenType::LesserThan => Ok(left_val < right_val),
+                    TokenType::GreaterThan => Ok(left_val > right_val),
+                    TokenType::LesserEqual => Ok(left_val <= right_val),
+                    TokenType::GreaterEqual => Ok(left_val >= right_val),
+                    TokenType::Equal => Ok(left_val == right_val),
+                    TokenType::NotEqual => Ok(left_val != right_val),
+                    _ => Err(lowering_error(format!("Unsupported operator {:?} in macro condition", operator))),
+                }
+            }
+            _ => Err(lowering_error(format!("Expected comparison expression in macro condition, got {:?}", expr.node))),
+        }
+    }
+    
+    /// Evaluate an expression AST to an integer (helper for eval_bool_expr)
+    fn eval_int_expr(&self, expr: &Expression) -> ParseResult<i32> {
+        match &expr.node {
+            ExpressionKind::Number(n) => Ok(*n),
+            ExpressionKind::Identifier(_) => {
+                self.resolve_arg_to_int(expr)
+            }
+            ExpressionKind::Infix { left, operator, right } => {
+                let left_val = self.eval_int_expr(left)?;
+                let right_val = self.eval_int_expr(right)?;
+                match operator {
+                    TokenType::Plus => Ok(left_val + right_val),
+                    TokenType::Minus => Ok(left_val - right_val),
+                    TokenType::Mul => Ok(left_val * right_val),
+                    // TokenType::Slash => Ok(left_val / right_val),
+                    _ => Err(lowering_error(format!("Unsupported arithmetic operator {:?} in macro condition", operator))),
+                }
+            }
+            _ => Err(lowering_error(format!("Cannot evaluate expression to integer: {:?}", expr.node))),
+        }
+    }
+    
+    /// Format an argument expression as a string for macro substitution
+    fn format_arg_for_substitution(&self, expr: &Expression) -> ParseResult<String> {
+        match &expr.node {
+            ExpressionKind::Number(n) => Ok(n.to_string()),
+            ExpressionKind::Identifier(name) => {
+                // Keep identifiers as-is - they'll be resolved when the expanded line is parsed
+                Ok(name.clone())
+            }
+            ExpressionKind::Label(name) => Ok(name.clone()),
+            ExpressionKind::Prefix { operator, id } => {
+                let inner = self.format_arg_for_substitution(id)?;
+                let op_str = match operator {
+                    TokenType::Minus => "-",
+                    _ => return Err(lowering_error(format!(
+                        "Unsupported prefix operator {:?} in macro argument", operator
+                    ))),
+                };
+                Ok(format!("{}{}", op_str, inner))
+            }
+            ExpressionKind::Infix { left, operator, right } => {
+                let left_str = self.format_arg_for_substitution(left)?;
+                let right_str = self.format_arg_for_substitution(right)?;
+                let op_str = match operator {
+                    TokenType::Plus => "+",
+                    TokenType::Minus => "-",
+                    TokenType::Mul => "*",
+                    _ => return Err(lowering_error(format!(
+                        "Unsupported operator {:?} in macro argument", operator
+                    ))),
+                };
+                Ok(format!("{} {} {}", left_str, op_str, right_str))
+            }
+            _ => Err(lowering_error(format!(
+                "Unsupported expression type in macro argument: {:?}", expr.node
+            ))),
+        }
+    }
+    
+    /// Substitute $paramName placeholders with actual values
+    fn substitute_params(&self, line: &str, param_map: &HashMap<String, String>) -> String {
+        let mut result = line.to_string();
+        for (name, value) in param_map {
+            result = result.replace(&format!("${}", name), value);
+        }
+        result
+    }
+    
+    /// Parse a macro expansion line into a Statement
+    fn parse_expansion_line(&self, line: &str) -> ParseResult<Statement> {
+        if line.trim().is_empty() {
+            // Empty line - skip
+            return Err(lowering_error(format!(
+                "Macro expansion produced empty line"
+            )));
+        }
+        
+        // Add newline to ensure proper parsing of commands without params
+        let line_with_newline = format!("{}\n", line.trim());
+        
+        // Parse as a single statement
+        let lexer = Lexer::new(&line_with_newline);
+        let mut parser = Parser::new(lexer);
+        
+        parser.parse_statement().map_err(|e| {
+            lowering_error(format!("Failed to parse macro expansion '{}': {}", line, e))
+        })
+    }
+    
     fn lower_condition(&mut self, expr: &Expression, target_label: &str) -> ParseResult<()> {
         if let ExpressionKind::Infix {
             left,

@@ -126,17 +126,27 @@ impl<'a> Analyzer<'a> {
         for alias in &file.aliases {
             self.register_global_alias(alias)?;
         }
-        for func in &file.functions {
-            self.register_function_names(func)?;
+        for item in &file.items {
+            match &item.node {
+                StatementKind::Function { .. } => {
+                    self.register_function_names(item)?;
+                }
+                StatementKind::Action { .. } => {
+                    self.register_action_name(item)?;
+                }
+                _ => {}
+            }
         }
-        for act in &file.actions {
-            self.register_action_name(act)?;
-        }
-        for func in &file.functions {
-            self.validate_function_body(func)?;
-        }
-        for act in &file.actions {
-            self.validate_action_body(act)?;
+        for item in &file.items {
+            match &item.node {
+                StatementKind::Function { .. } => {
+                    self.validate_function_body(item)?;
+                }
+                StatementKind::Action { .. } => {
+                    self.validate_action_body(item)?;
+                }
+                _ => {}
+            }
         }
         Ok(())
     }

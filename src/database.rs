@@ -13,6 +13,50 @@ use crate::compiler::parse_error::{CompileError, database_error};
 // Hardcoded Enums (fixed across all games)
 // ============================================================================
 
+/// Pokemon Gen 4 game families
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum GameFamily {
+    DP = 1,      // Diamond, Pearl
+    Platinum = 2, // Platinum
+    HGSS = 3,    // HeartGold, SoulSilver
+}
+
+impl GameFamily {
+    /// Parse game family from string (case-insensitive)
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "DP" | "DIAMOND" | "PEARL" => Some(Self::DP),
+            "PLATINUM" | "PT" => Some(Self::Platinum),
+            "HGSS" | "HEARTGOLD" | "SOULSILVER" => Some(Self::HGSS),
+            _ => None,
+        }
+    }
+
+    /// Get display name for the game family
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::DP => "Diamond/Pearl",
+            Self::Platinum => "Platinum",
+            Self::HGSS => "HeartGold/SoulSilver",
+        }
+    }
+
+    /// Infer game family from database version string
+    pub fn from_db_version(version: &str) -> Option<Self> {
+        let v = version.to_uppercase();
+        if v.contains("PLATINUM") {
+            Some(Self::Platinum)
+        } else if v.contains("HEARTGOLD") || v.contains("SOULSILVER") || v.contains("HGSS") {
+            Some(Self::HGSS)
+        } else if v.contains("DIAMOND") || v.contains("PEARL") || v.contains("DP") {
+            Some(Self::DP)
+        } else {
+            None
+        }
+    }
+}
+
 /// Comparison operators for conditional jumps
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -160,6 +204,9 @@ pub struct ParamDef {
     /// For variant discriminants, the constant value this param must have
     #[serde(rename = "const")]
     pub const_value: Option<String>,
+    /// Default value for optional parameters (e.g. "0", "VAR_RESULT")
+    #[serde(default)]
+    pub default: Option<String>,
 }
 
 /// Parameter type - determines byte size and semantic meaning
@@ -198,9 +245,15 @@ impl ParamType {
 /// Variant for commands with mode-dependent parameters
 #[derive(Debug, Deserialize)]
 pub struct Variant {
+    #[serde(default)]
     pub params: Vec<ParamDef>,
     #[serde(default)]
     pub desc: Option<String>,
+    // New fields for macro variants
+    #[serde(default)]
+    pub condition: Option<String>,
+    #[serde(default)]
+    pub expansion: Option<Vec<String>>,
 }
 
 /// Sound entry
@@ -233,23 +286,38 @@ impl DatabaseV2 {
 
     /// Look up a command by name
     pub fn get_command(&self, name: &str) -> ParseResult<&Command> {
-        match self.commands.get(name) {
-            Some(cmd) => Ok(cmd),
-            None => {
+        // Try direct lookup first
+        if let Some(cmd) = self.commands.get(name) {
+            return Ok(cmd);
+        }
+        
+        // Try legacy_name lookup
+        if let Some((_, cmd)) = self
+            .commands
+            .iter()
+            .find(|(_, cmd)| cmd.legacy_name == Some(name.to_string()))
+        {
+            return Ok(cmd);
+        }
+        
+        // Try ID-based lookup for "ScrCmd_N" format (N is hex)
+        if let Some(id_str) = name.strip_prefix("ScrCmd_") {
+            // Parse as hex (e.g., "131" -> 0x131 = 305)
+            if let Ok(id) = i32::from_str_radix(id_str, 16) {
                 if let Some((_, cmd)) = self
                     .commands
                     .iter()
-                    .find(|(_, cmd)| cmd.legacy_name == Some(name.to_string()))
+                    .find(|(_, cmd)| cmd.id == Some(id as u16))
                 {
-                    Ok(cmd)
-                } else {
-                    Err(database_error(format!(
-                        "Command '{}' not found in database",
-                        name
-                    )))
+                    return Ok(cmd);
                 }
             }
         }
+        
+        Err(database_error(format!(
+            "Command '{}' not found in database",
+            name
+        )))
     }
 
     /// Look up a script command by name (returns database error if no command with that name as
@@ -322,6 +390,11 @@ impl DatabaseV2 {
 }
 
 impl Command {
+    /// Check if this command is a macro (requires expansion)
+    pub fn is_macro(&self) -> bool {
+        self.cmd_type == CommandType::Macro
+    }
+
     /// Get parameters for a specific variant mode
     /// Returns the base params if no variants or mode not found
     pub fn get_variant_params(&self, mode: u8) -> &[ParamDef] {

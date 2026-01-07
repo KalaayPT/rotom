@@ -5,8 +5,8 @@ use super::token::TokenType;
 #[derive(Debug)]
 pub struct ScriptFile {
     pub aliases: Vec<Statement>,
-    pub functions: Vec<Statement>,
-    pub actions: Vec<Statement>,
+    /// Top-level items (functions and actions interleaved in source order)
+    pub items: Vec<Statement>,
 }
 // helper struct to hold the metadata for ONE alias of a function (to support multiple jumptable
 // entries for one function)
@@ -17,7 +17,7 @@ pub struct FunctionHeader {
     pub is_public: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StatementKind {
     Function {
         headers: Vec<FunctionHeader>,
@@ -52,7 +52,7 @@ pub enum StatementKind {
     EndMovement,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExpressionKind {
     Number(i32),
     Identifier(String),
@@ -80,7 +80,7 @@ pub enum Precedence {
     Prefix,     // !X, -X
     Call,       // Function()
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Range<usize>,

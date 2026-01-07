@@ -83,8 +83,7 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_script_file(&mut self) -> ParseResult<ScriptFile> {
         let mut aliases = Vec::new();
-        let mut functions = Vec::new();
-        let mut actions = Vec::new();
+        let mut items = Vec::new();
         while !self.current_token_is(TokenType::EOF) {
             if self.current_token_is(TokenType::Newline) {
                 self.advance();
@@ -92,16 +91,14 @@ impl<'a> Parser<'a> {
             }
             let stmt = self.parse_top_level_stmt()?;
             match &stmt.node {
-                StatementKind::Function { .. } => functions.push(stmt),
-                StatementKind::Action { .. } => actions.push(stmt),
+                StatementKind::Function { .. } | StatementKind::Action { .. } => items.push(stmt),
                 StatementKind::AliasStatement { .. } => aliases.push(stmt),
                 _ => unreachable!("top_level_stmt should prevent other statements or errors"),
             }
         }
         Ok(ScriptFile {
             aliases,
-            functions,
-            actions,
+            items,
         })
     }
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
@@ -451,7 +448,7 @@ impl<'a> Parser<'a> {
             span: start..end,
         })
     }
-    fn parse_expression(&mut self, precedence: Precedence) -> ParseResult<Expression> {
+    pub fn parse_expression(&mut self, precedence: Precedence) -> ParseResult<Expression> {
         let mut left = self.parse_prefix()?;
         while !self.current_token_is(TokenType::EOF)
             && !self.current_token_is(TokenType::End)
@@ -635,8 +632,10 @@ mod tests {
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
         assert!(script_file.aliases.is_empty());
-        assert!(script_file.functions.is_empty());
-        assert!(script_file.actions.is_empty());
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let actions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Action { .. })).collect();
+        assert!(functions.is_empty());
+        assert!(actions.is_empty());
     }
 
     #[test]
@@ -645,8 +644,9 @@ mod tests {
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        assert_eq!(script_file.functions.len(), 1);
-        let function = &script_file.functions[0];
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        assert_eq!(functions.len(), 1);
+        let function = functions[0];
         match &function.node {
             StatementKind::Function { headers, body } => {
                 assert_eq!(headers.len(), 1);
@@ -665,8 +665,9 @@ mod tests {
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        assert_eq!(script_file.functions.len(), 1);
-        let function = &script_file.functions[0];
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        assert_eq!(functions.len(), 1);
+        let function = functions[0];
         match &function.node {
             StatementKind::Function { headers, body } => {
                 assert_eq!(headers.len(), 1);
@@ -687,8 +688,9 @@ mod tests {
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        assert_eq!(script_file.functions.len(), 1);
-        let function = &script_file.functions[0];
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        assert_eq!(functions.len(), 1);
+        let function = functions[0];
         match &function.node {
             StatementKind::Function { headers, body } => {
                 assert_eq!(headers.len(), 1);
@@ -706,10 +708,11 @@ mod tests {
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        assert_eq!(script_file.functions.len(), 2);
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        assert_eq!(functions.len(), 2);
 
         // First function
-        match &script_file.functions[0].node {
+        match &functions[0].node {
             StatementKind::Function { headers, .. } => {
                 assert_eq!(headers[0].name, "Main");
                 assert!(headers[0].is_public);
@@ -718,7 +721,7 @@ mod tests {
         }
 
         // Second (bare label)
-        match &script_file.functions[1].node {
+        match &functions[1].node {
             StatementKind::Function { headers, .. } => {
                 assert_eq!(headers[0].name, "SecondLabel");
                 assert!(!headers[0].is_public);
@@ -733,10 +736,11 @@ mod tests {
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        assert_eq!(script_file.functions.len(), 2);
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        assert_eq!(functions.len(), 2);
 
         // First function has no End in its body
-        match &script_file.functions[0].node {
+        match &functions[0].node {
             StatementKind::Function { body, .. } => {
                 // Should just have the Message command, no End
                 assert_eq!(body.len(), 1);

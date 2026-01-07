@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     compiler::{
         IrFunction, ParseResult,
-        ir::{Arg, IrAction, IrOpcode},
+        ir::{Arg, IrAction, IrOpcode, TopLevelItem},
         parse_error::codegen_error,
         parser::JUMP_TABLE_END_MARKER,
     },
@@ -45,14 +45,18 @@ impl<'a> Emitter<'a> {
             relocations: Vec::new(),
         }
     }
-    pub fn emit_script_file(
-        &mut self,
-        ir_functions: &Vec<IrFunction>,
-        ir_actions: &Vec<IrAction>,
-    ) -> ParseResult<Vec<u8>> {
-        self.jump_table_slots = ir_functions
+    pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec<u8>> {
+        // Collect jump table slots from all functions
+        self.jump_table_slots = items
             .iter()
-            .flat_map(|f| f.jump_table_slots())
+            .filter_map(|item| {
+                if let TopLevelItem::Function(f) = item {
+                    Some(f.jump_table_slots().collect::<Vec<_>>())
+                } else {
+                    None
+                }
+            })
+            .flatten()
             .collect();
         for (_, func_name) in self.jump_table_slots.clone() {
             // Placeholder for function offset
@@ -64,21 +68,27 @@ impl<'a> Emitter<'a> {
         }
         self.output.extend_from_slice(&JUMP_TABLE_END_MARKER);
         self.pc += JUMP_TABLE_END_MARKER.len();
-        for ir_func in ir_functions {
-            self.function_offsets
-                .insert(ir_func.name().to_string(), self.pc);
-            for ir_op in &ir_func.instructions {
-                self.emit_ir_opcode(ir_op)?;
-            }
-        }
-        for ir_action in ir_actions {
-            // actions need to be 4-byte aligned
-            while self.pc % 4 != 0 {
-                self.emit_u8(0);
-            }
-            self.action_offsets.insert(ir_action.name.clone(), self.pc);
-            for ir_op in &ir_action.instructions {
-                self.emit_movement(ir_op)?;
+
+        // Emit all items in order (functions and actions interleaved)
+        for item in items {
+            match item {
+                TopLevelItem::Function(ir_func) => {
+                    self.function_offsets
+                        .insert(ir_func.name().to_string(), self.pc);
+                    for ir_op in &ir_func.instructions {
+                        self.emit_ir_opcode(ir_op)?;
+                    }
+                }
+                TopLevelItem::Action(ir_action) => {
+                    // actions need to be 4-byte aligned
+                    while self.pc % 4 != 0 {
+                        self.emit_u8(0);
+                    }
+                    self.action_offsets.insert(ir_action.name.clone(), self.pc);
+                    for ir_op in &ir_action.instructions {
+                        self.emit_movement(ir_op)?;
+                    }
+                }
             }
         }
         // Handle relocations

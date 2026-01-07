@@ -36,23 +36,23 @@ use regex::Regex;
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(input: &str) -> String {
     let mut output = String::new();
-    
+
     // Track jump table entries: name -> slot number
     let mut jump_table: Vec<String> = Vec::new();
-    
+
     // Track which labels are movements (preceded by .balign 4, 0)
     let mut movement_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
-    
+
     // First pass: collect jump table and identify movement labels
     let mut next_is_movement = false;
     for line in input.lines() {
         let trimmed = line.trim();
-        
+
         // Skip empty lines and comments
         if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("@") {
             continue;
         }
-        
+
         // Parse ScriptEntry
         if let Some(name) = trimmed.strip_prefix("ScriptEntry ") {
             let name = name.trim();
@@ -61,7 +61,7 @@ pub fn transpile(input: &str) -> String {
             }
             continue;
         }
-        
+
         // Track .balign 4, 0 - next label is a movement
         if trimmed.starts_with(".balign 4") {
             next_is_movement = true;
@@ -83,22 +83,22 @@ pub fn transpile(input: &str) -> String {
             }
         }
     }
-    
+
     // Create a map from name to slot number for quick lookup
     let slot_map: std::collections::HashMap<String, usize> = jump_table
         .iter()
         .enumerate()
         .map(|(i, name)| (name.clone(), i))
         .collect();
-    
+
     // Second pass: generate output
     let mut in_movement = false;
     let mut skip_until_label = false; // Skip lines until we hit the first real label (after jump table)
     let mut seen_script_entry_end = false;
-    
+
     for line in input.lines() {
         let trimmed = line.trim();
-        
+
         // Skip empty lines in output but preserve them
         if trimmed.is_empty() {
             if seen_script_entry_end && !skip_until_label {
@@ -106,12 +106,12 @@ pub fn transpile(input: &str) -> String {
             }
             continue;
         }
-        
+
         // Skip preprocessor directives
         if trimmed.starts_with("#include") || trimmed.starts_with("#") {
             continue;
         }
-        
+
         // Skip assembly comments
         if trimmed.starts_with("@") || trimmed.starts_with("//") {
             // Keep regular comments
@@ -121,7 +121,7 @@ pub fn transpile(input: &str) -> String {
             }
             continue;
         }
-        
+
         // Skip ScriptEntry/ScriptEntryEnd
         if trimmed.starts_with("ScriptEntry") {
             if trimmed == "ScriptEntryEnd" {
@@ -129,22 +129,22 @@ pub fn transpile(input: &str) -> String {
             }
             continue;
         }
-        
+
         // Skip .balign directives
         if trimmed.starts_with(".balign") || trimmed.starts_with(".align") {
             continue;
         }
-        
+
         // Skip other assembler directives
         if trimmed.starts_with(".") {
             continue;
         }
-        
+
         // Handle labels
         if let Some(label_name) = trimmed.strip_suffix(':') {
             // Close previous movement if any
             // (EndMovement should have been emitted by the command itself)
-            
+
             // Check if this is a movement label
             if movement_labels.contains(label_name) {
                 output.push_str(&format!("action {}\n", label_name));
@@ -161,19 +161,19 @@ pub fn transpile(input: &str) -> String {
             skip_until_label = false;
             continue;
         }
-        
+
         // Skip lines before we've seen any real content
         if !seen_script_entry_end {
             continue;
         }
-        
+
         // Handle commands
         // Decomp format is already comma-separated, so we just need to indent
         output.push_str("    ");
         output.push_str(trimmed);
         output.push('\n');
     }
-    
+
     output
 }
 
@@ -322,15 +322,20 @@ Move2:
     #[test]
     fn test_real_decomp_file() {
         let input = std::fs::read_to_string(
-            r"C:\dev\pokeplatinum\res\field\scripts\scripts_battle_tower_battle_salon.s"
+            r"C:\dev\pokeplatinum\res\field\scripts\scripts_battle_tower_battle_salon.s",
         );
         if let Ok(content) = input {
             let output = transpile(&content);
             // Check that it has the expected structure
             assert!(output.contains("function BattleTowerBattleSalon_Attendant #0:"));
             assert!(output.contains("function BattleTowerBattleSalon_Cheryl #1:"));
-            assert!(output.contains("action BattleTowerBattleSalon_PlayerEnterBattleSalonMovement"));
-            println!("=== Transpiled Output (first 2000 chars) ===\n{}", &output[..output.len().min(2000)]);
+            assert!(
+                output.contains("action BattleTowerBattleSalon_PlayerEnterBattleSalonMovement")
+            );
+            println!(
+                "=== Transpiled Output (first 2000 chars) ===\n{}",
+                &output[..output.len().min(2000)]
+            );
         }
     }
 }

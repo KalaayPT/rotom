@@ -8,7 +8,7 @@ mod transpiler;
 
 use compiler::parse_error::{CompileError, print_error};
 use compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
-use database::{ConstantDb, DatabaseV2};
+use database::{ConstantDb, DatabaseV2, GameFamily};
 
 use crate::compiler::codegen::Emitter;
 use crate::compiler::ir;
@@ -110,6 +110,11 @@ fn compile(
         db.meta.version
     );
 
+    // Auto-detect game family from database version
+    if let Some(family) = GameFamily::from_db_version(&db.meta.version) {
+        println!("Detected game family: {}", family.as_str());
+    }
+
     // Load constants from the database
     let mut constants = ConstantDb::new();
     let const_count = constants.load_from_db(&db);
@@ -137,11 +142,13 @@ fn compile(
     let lexer = Lexer::new(&source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
+    let func_count = file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).count();
+    let action_count = file.items.iter().filter(|s| matches!(s.node, StatementKind::Action { .. })).count();
     println!(
         "Parsed: {} aliases, {} functions, {} actions",
         file.aliases.len(),
-        file.functions.len(),
-        file.actions.len()
+        func_count,
+        action_count
     );
 
     println!("Analyzing...");
@@ -151,11 +158,11 @@ fn compile(
 
     println!("\nLowering to IR...");
 
-    let mut lowerer = Lowerer::new(&analyzer.symbols);
-    let (ir_functions, ir_actions) = lowerer.lower_script_file(&file)?;
+    let mut lowerer = Lowerer::new(&analyzer.symbols, &db);
+    let items = lowerer.lower_script_file(&file)?;
 
     let mut emitter = Emitter::new(&db);
-    let byte_output = emitter.emit_script_file(&ir_functions, &ir_actions)?;
+    let byte_output = emitter.emit_script_file(&items)?;
     println!("Output: {:?}", byte_output);
 
     // println!("Codegen not yet implemented - stopping at IR");
@@ -284,9 +291,14 @@ EndMovement
         Err(e) => eprintln!("Warning: Failed to load map events: {}", e),
     }
 
+    // Auto-detect game family from database version
+    if let Some(family) = GameFamily::from_db_version(&db.meta.version) {
+        println!("\n=== Game Family: {} ===", family.as_str());
+    }
+
     // Quick sanity check - look up a few commands
     println!("\n=== Database Sanity Check ===");
-    for cmd_name in &["End", "SetVar", "Message", "Jump"] {
+    for cmd_name in &["End", "SetVar", "Message", "Jump", "StartTrainerBattle"] {
         if let Ok(cmd) = db.get_script_cmd(cmd_name) {
             println!(
                 "  {} (id: {:?}, params: {})",
@@ -309,11 +321,13 @@ EndMovement
             return;
         }
     };
+    let func_count = file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).count();
+    let action_count = file.items.iter().filter(|s| matches!(s.node, StatementKind::Action { .. })).count();
     println!(
         "Parsed: {} aliases, {} functions, {} actions",
         file.aliases.len(),
-        file.functions.len(),
-        file.actions.len()
+        func_count,
+        action_count
     );
 
     println!("\n=== Analyzing ===");
@@ -327,23 +341,20 @@ EndMovement
     println!("\n=== Lowering Functions to IR ===");
 
     // println!("{:#?}", file);
-    let mut lowerer = Lowerer::new(&analyzer.symbols);
-    let (ir_functions, ir_actions) = match lowerer.lower_script_file(&file) {
+    let mut lowerer = Lowerer::new(&analyzer.symbols, &db);
+    let items = match lowerer.lower_script_file(&file) {
         Ok(result) => result,
         Err(e) => {
             print_error("<test>", input, &e);
             return;
         }
     };
-    for ir_func in &ir_functions {
-        println!("{}", ir_func);
-    }
-    for ir_action in &ir_actions {
-        println!("{}", ir_action);
+    for item in &items {
+        println!("{}", item);
     }
 
     let pub_funcs = file
-        .functions
+        .items
         .iter()
         .filter(|f| {
             if let StatementKind::Function { headers, .. } = &f.node {
@@ -356,7 +367,7 @@ EndMovement
     println!("Public functions found: {}", pub_funcs);
 
     let mut emitter = Emitter::new(&db);
-    let byte_output = match emitter.emit_script_file(&ir_functions, &ir_actions) {
+    let byte_output = match emitter.emit_script_file(&items) {
         Ok(output) => output,
         Err(e) => {
             print_error("<test>", input, &e);
