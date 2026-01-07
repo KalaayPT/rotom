@@ -36,6 +36,12 @@ enum Commands {
         /// Output binary file (defaults to input with .bin extension)
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Path to a decomp project root (e.g., pokeplatinum).
+        /// Loads constants from build/generated/ and include/constants/.
+        /// Requires the project to have been built at least once.
+        #[arg(long)]
+        decomp_root: Option<PathBuf>,
     },
 
     /// Decompile a binary script to .rotom source
@@ -69,8 +75,9 @@ fn main() {
             database,
             input,
             output,
+            decomp_root,
         } => {
-            if let Err(e) = compile(&database, &input, output.as_ref()) {
+            if let Err(e) = compile(&database, &input, output.as_ref(), decomp_root.as_ref()) {
                 eprintln!("Compilation failed: {}", e);
                 std::process::exit(1);
             }
@@ -93,6 +100,7 @@ fn compile(
     db_path: &PathBuf,
     input: &PathBuf,
     _output: Option<&PathBuf>,
+    decomp_root: Option<&PathBuf>,
 ) -> Result<(), CompileError> {
     println!("Loading database from: {}", db_path.display());
     let db = DatabaseV2::load(db_path)?;
@@ -106,6 +114,19 @@ fn compile(
     let mut constants = ConstantDb::new();
     let const_count = constants.load_from_db(&db);
     println!("Loaded {} built-in constants", const_count);
+
+    // Load constants from decomp project if specified
+    if let Some(decomp) = decomp_root {
+        println!("\nLoading constants from decomp project: {}", decomp.display());
+        let decomp_count = constants.load_decomp_project(decomp)?;
+        println!("Loaded {} constants from decomp project", decomp_count);
+
+        // Load per-map event constants based on script filename
+        let map_count = constants.load_map_events(decomp, input)?;
+        if map_count > 0 {
+            println!("Loaded {} map-specific event constants", map_count);
+        }
+    }
 
     println!("\nReading script from: {}", input.display());
     let source = std::fs::read_to_string(input).map_err(|e| CompileError::Io {
@@ -243,6 +264,25 @@ EndMovement
         }
     }
     println!("Loaded {} built-in constants", const_count);
+
+    // Load constants from pokeplatinum decomp project (hardcoded for testing)
+    let decomp_root = std::path::Path::new(r"C:\dev\pokeplatinum");
+    println!("\n=== Loading Decomp Constants ===");
+    match constants.load_decomp_project(decomp_root) {
+        Ok(count) => println!("Loaded {} constants from decomp project", count),
+        Err(e) => {
+            eprintln!("Failed to load decomp constants: {}", e);
+            return;
+        }
+    }
+
+    // Load per-map event constants for the jubilife city script
+    let script_path = std::path::Path::new("scripts_jubilife_city.s");
+    match constants.load_map_events(decomp_root, script_path) {
+        Ok(count) if count > 0 => println!("Loaded {} map-specific event constants", count),
+        Ok(_) => println!("No map-specific event constants found"),
+        Err(e) => eprintln!("Warning: Failed to load map events: {}", e),
+    }
 
     // Quick sanity check - look up a few commands
     println!("\n=== Database Sanity Check ===");

@@ -374,6 +374,11 @@ impl ConstantDb {
     pub fn load_from_db(&mut self, db: &DatabaseV2) -> usize {
         let mut count = 0;
 
+        // Load fundamental C/SDK constants (TRUE, FALSE)
+        self.constants.insert("TRUE".to_string(), 1);
+        self.constants.insert("FALSE".to_string(), 0);
+        count += 2;
+
         // Load comparison operators
         for (id_str, name) in &db.comparison_operators {
             if let Ok(id) = id_str.parse::<i32>() {
@@ -431,7 +436,7 @@ impl ConstantDb {
                 count += 1;
             }
         }
-        
+
         Ok(count)
     }
 
@@ -439,9 +444,9 @@ impl ConstantDb {
     pub fn load_directory<P: AsRef<Path>>(&mut self, dir: P) -> Result<usize, CompileError> {
         let dir = dir.as_ref();
         let mut total = 0;
-        
+
         if !dir.exists() || !dir.is_dir() {
-            return Ok(0);  // Directory doesn't exist, that's fine
+            return Ok(0); // Directory doesn't exist, that's fine
         }
 
         let entries = std::fs::read_dir(dir).map_err(|e| CompileError::Database {
@@ -462,8 +467,252 @@ impl ConstantDb {
                 }
             }
         }
-        
+
         Ok(total)
+    }
+
+    // ========================================================================
+    // Decomp Project Support (pokeplatinum only)
+    // ========================================================================
+
+    /// Load constants from a Python IntEnum file (pokeplatinum build/generated format)
+    ///
+    /// Parses lines like:
+    /// ```python
+    /// class VarFlag(enum.IntEnum):
+    ///     VAR_JUBILIFE_STATE = 16500
+    ///     GENDER_MALE = 0
+    /// ```
+    pub fn load_python_enum<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, CompileError> {
+        use regex::Regex;
+
+        let path = path.as_ref();
+        let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
+            message: format!(
+                "Failed to read Python enum file '{}': {}",
+                path.display(),
+                e
+            ),
+        })?;
+
+        // Match lines like: "    CONSTANT_NAME = 123" or "    CONSTANT_NAME = -1"
+        let re = Regex::new(r"^\s+(\w+)\s*=\s*(-?\d+)\s*$").unwrap();
+
+        let mut count = 0;
+        for (line_num, line) in contents.lines().enumerate() {
+            if let Some(caps) = re.captures(line) {
+                let name = caps.get(1).unwrap().as_str();
+                let value_str = caps.get(2).unwrap().as_str();
+
+                let value: i32 = value_str.parse().map_err(|_| CompileError::Database {
+                    message: format!(
+                        "Invalid integer value '{}' at {}:{}",
+                        value_str,
+                        path.display(),
+                        line_num + 1
+                    ),
+                })?;
+
+                self.constants.insert(name.to_string(), value);
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Load constants from a C header file with simple #define statements
+    ///
+    /// Parses lines like:
+    /// ```c
+    /// #define JUBILIFE_CITY_COUNTERPART 7
+    /// #define DIR_NONE -1
+    /// #define LOCALID_PLAYER 0xFF
+    /// #define NO_EXIT_ON_B FALSE
+    /// ```
+    ///
+    /// Skips lines with expressions like `(1 << 5)` or complex expressions.
+    pub fn load_c_defines<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, CompileError> {
+        use regex::Regex;
+
+        let path = path.as_ref();
+        let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
+            message: format!("Failed to read C header file '{}': {}", path.display(), e),
+        })?;
+
+        // Match lines like: "#define NAME 123" or "#define NAME -1" or "#define NAME 0xFF"
+        let re_numeric =
+            Regex::new(r"^\s*#define\s+(\w+)\s+((?:0[xX][0-9a-fA-F]+)|(?:-?\d+))\s*$").unwrap();
+
+        // Match lines like: "#define NAME OTHER_CONST" (simple constant reference)
+        let re_const_ref = Regex::new(r"^\s*#define\s+(\w+)\s+([A-Z_][A-Z0-9_]*)\s*$").unwrap();
+
+        let mut count = 0;
+        let mut pending_refs: Vec<(String, String)> = Vec::new();
+
+        for line in contents.lines() {
+            // First try numeric match
+            if let Some(caps) = re_numeric.captures(line) {
+                let name = caps.get(1).unwrap().as_str();
+                let value_str = caps.get(2).unwrap().as_str();
+
+                // Parse decimal or hex
+                let value = if value_str.starts_with("0x") || value_str.starts_with("0X") {
+                    i32::from_str_radix(&value_str[2..], 16).ok()
+                } else {
+                    value_str.parse::<i32>().ok()
+                };
+
+                if let Some(v) = value {
+                    self.constants.insert(name.to_string(), v);
+                    count += 1;
+                }
+            }
+            // Then try constant reference match
+            else if let Some(caps) = re_const_ref.captures(line) {
+                let name = caps.get(1).unwrap().as_str().to_string();
+                let ref_name = caps.get(2).unwrap().as_str().to_string();
+                pending_refs.push((name, ref_name));
+            }
+        }
+
+        // Resolve constant references
+        for (name, ref_name) in pending_refs {
+            if let Some(&value) = self.constants.get(&ref_name) {
+                self.constants.insert(name, value);
+                count += 1;
+            }
+            // If reference not found, silently skip (it might be a complex macro)
+        }
+
+        Ok(count)
+    }
+
+    /// Load all constants from a decomp project (e.g., pokeplatinum)
+    ///
+    /// Requires the project to have been built at least once.
+    ///
+    /// Loads from:
+    /// - `{root}/build/generated/*.py` - Python IntEnum files
+    /// - `{root}/include/constants/*.h` - C header files (simple defines only)
+    pub fn load_decomp_project<P: AsRef<Path>>(&mut self, root: P) -> Result<usize, CompileError> {
+        let root = root.as_ref();
+        let mut total = 0;
+
+        // Check that build/generated exists
+        let build_generated = root.join("build").join("generated");
+        if !build_generated.exists() || !build_generated.is_dir() {
+            return Err(CompileError::Database {
+                message: format!(
+                    "Decomp project '{}' has not been built yet. \
+                     Directory '{}' does not exist. \
+                     Please build the project first (e.g., `make`).",
+                    root.display(),
+                    build_generated.display()
+                ),
+            });
+        }
+
+        // Load all .py files from build/generated/
+        let entries = std::fs::read_dir(&build_generated).map_err(|e| CompileError::Database {
+            message: format!(
+                "Failed to read directory '{}': {}",
+                build_generated.display(),
+                e
+            ),
+        })?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "py").unwrap_or(false) {
+                match self.load_python_enum(&path) {
+                    Ok(count) => total += count,
+                    Err(e) => {
+                        return Err(CompileError::Database {
+                            message: format!(
+                                "Failed to load Python enum '{}': {}",
+                                path.display(),
+                                e
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Load .h files from include/constants/ (simple defines only)
+        let include_constants = root.join("include").join("constants");
+        if include_constants.exists() && include_constants.is_dir() {
+            let entries =
+                std::fs::read_dir(&include_constants).map_err(|e| CompileError::Database {
+                    message: format!(
+                        "Failed to read directory '{}': {}",
+                        include_constants.display(),
+                        e
+                    ),
+                })?;
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "h").unwrap_or(false) {
+                    // These may have expressions we can't parse, so we use the
+                    // lenient load_c_defines which skips unparseable lines
+                    if let Ok(count) = self.load_c_defines(&path) {
+                        total += count;
+                    }
+                }
+            }
+        }
+
+        Ok(total)
+    }
+
+    /// Load per-map object event constants for a specific script
+    ///
+    /// Extracts the map name from the script filename and loads the corresponding
+    /// event header from `build/res/field/events/`.
+    ///
+    /// For example:
+    /// - `scripts_jubilife_city.s` → loads `events_jubilife_city.h`
+    /// - `scripts_route_201.s` → loads `events_route_201.h`
+    ///
+    /// Returns 0 if no matching header is found (not an error).
+    pub fn load_map_events<P: AsRef<Path>>(
+        &mut self,
+        decomp_root: P,
+        script_path: P,
+    ) -> Result<usize, CompileError> {
+        let decomp_root = decomp_root.as_ref();
+        let script_path = script_path.as_ref();
+
+        // Extract the script filename
+        let script_name = match script_path.file_stem().and_then(|s| s.to_str()) {
+            Some(name) => name,
+            None => return Ok(0),
+        };
+
+        // Convert "scripts_jubilife_city" to "events_jubilife_city"
+        let map_name = if let Some(stripped) = script_name.strip_prefix("scripts_") {
+            stripped
+        } else {
+            // Not a standard script filename, skip
+            return Ok(0);
+        };
+
+        // Construct path to the events header
+        let events_header = decomp_root
+            .join("build")
+            .join("res")
+            .join("field")
+            .join("events")
+            .join(format!("events_{}.h", map_name));
+
+        if !events_header.exists() {
+            // No events header for this map, that's fine
+            return Ok(0);
+        }
+
+        self.load_c_defines(&events_header)
     }
 
     /// Look up a constant by name
