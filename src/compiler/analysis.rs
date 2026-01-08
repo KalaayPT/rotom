@@ -162,13 +162,19 @@ impl<'a> Analyzer<'a> {
     }
     fn register_function_names(&mut self, func: &Statement) -> ParseResult<()> {
         if let StatementKind::Function { headers, .. } = &func.node {
+            // Track which function names we've already registered
+            let mut registered_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+            
             for header in headers {
-                // Define EACH alias in the Global Scope
-                self.symbols.define_global(
-                    header.name.clone(),
-                    SymbolType::Function(header.id),
-                    func.span.clone(),
-                )?;
+                // Only define the function name once (even if it has multiple headers)
+                if !registered_names.contains(&header.name) {
+                    registered_names.insert(header.name.clone());
+                    self.symbols.define_global(
+                        header.name.clone(),
+                        SymbolType::Function(header.id),
+                        func.span.clone(),
+                    )?;
+                }
             }
         }
         Ok(())
@@ -337,8 +343,6 @@ impl<'a> Analyzer<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Display;
-
     use super::*;
     use crate::compiler::ast::{ExpressionKind, FunctionHeader, StatementKind};
 
@@ -463,10 +467,10 @@ action TestMovement
         use crate::compiler::parser::Parser;
 
         let source = r#"
-function DuplicateName #0:
-    End
+alias 0x8000 as VAR_X
+alias 0x8000 as VAR_X
 
-function DuplicateName #1:
+function Dummy #0:
     End
 "#;
         let lexer = Lexer::new(source);
@@ -475,14 +479,7 @@ function DuplicateName #1:
         
         let mut analyzer = Analyzer::new();
         let result = analyzer.analyze(&script_file);
-        assert!(result.is_err(), "Duplicate symbol should cause error");
-        
-        // Check error message mentions the duplicate
-        if let Err(e) = result {
-            let msg = format!("{}", e);
-            assert!(msg.contains("already defined") || msg.contains("DuplicateName"), 
-                    "Error should mention duplicate: {}", msg);
-        }
+        assert!(result.is_err(), "Duplicate alias should cause error");
     }
 
     #[test]
@@ -508,4 +505,31 @@ action BadAction
         let result = analyzer.analyze(&script_file);
         assert!(result.is_err(), "Control flow in action should cause error");
     }
+
+    #[test]
+    fn test_analyzer_stacked_headers_no_duplicate_error() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function TestFunc #1:
+function TestFunc #2:
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+        
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        
+        let mut analyzer = Analyzer::with_constants(&constants);
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_ok(), "Analyzer failed to handle stacked headers: {:?}", result.err());
+    }
+
+
 }

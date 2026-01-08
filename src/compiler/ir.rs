@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::compiler::ast::{FunctionHeader, ScriptFile};
-use crate::database::{Command, DatabaseV2, ParamDef};
+use crate::database::{Command, DatabaseV2};
 
 use super::{
     analysis::{SymbolTable, SymbolType},
@@ -317,56 +317,126 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Apply default parameter values to fill in missing arguments
-    /// Arguments map to required parameter positions. Optional parameters with defaults
-    /// are filled in when there are fewer arguments than parameters.
+    /// Apply default parameter values to fill in missing arguments.
+    /// 
+    /// Decomp-style logic: Arguments are mapped to required parameters first (in order),
+    /// then to optional parameters (those with defaults) in order.
     fn apply_defaults(
         &self,
         command: &str,
         cmd: &Command,
         args: &[Expression],
     ) -> ParseResult<Vec<Expression>> {
-        let params = &cmd.params;
-        let arg_count = args.len();
-        let param_count = params.len();
+        // Find the matching variant if it exists, otherwise use base params
+        let params = if let Some(variants) = &cmd.variants {
+            let mut matched = &cmd.params;
+            for variant in variants {
+                let mut matches = false;
+                
+                // 1. Try matching by condition (Macro style)
+                if let Some(condition) = &variant.condition {
+                    if condition == "else" {
+                        matches = true;
+                    } else {
+                        // Use base params for name mapping during evaluation
+                        if let Ok(b) = self.evaluate_condition(condition, args, &cmd.params) {
+                            matches = b;
+                        }
+                    }
+                } 
+                // 2. Try matching by const values (UnionGroup style)
+                else if !variant.params.is_empty() {
+                    let mut all_consts_match = true;
+                    let mut had_const = false;
+                    for (i, param) in variant.params.iter().enumerate() {
+                        if let Some(const_val_str) = &param.const_value {
+                            had_const = true;
+                            if let Some(arg) = args.get(i) {
+                                if let Ok(arg_val) = self.resolve_arg_to_int(arg) {
+                                    if let Ok(const_val) = const_val_str.parse::<i32>() {
+                                        if arg_val != const_val {
+                                            all_consts_match = false;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    all_consts_match = false;
+                                    break;
+                                }
+                            } else {
+                                all_consts_match = false;
+                                break;
+                            }
+                        }
+                    }
+                    matches = had_const && all_consts_match;
+                }
 
-        if arg_count == param_count {
-            return Ok(args.to_vec());
+                if matches {
+                    if !variant.params.is_empty() {
+                        matched = &variant.params;
+                    }
+                    break;
+                }
+            }
+            matched
+        } else {
+            &cmd.params
+        };
+
+        let param_count = params.len();
+        
+        // Identify indices of required vs optional parameters
+        let mut required_indices = Vec::new();
+        let mut optional_indices = Vec::new();
+        for (i, p) in params.iter().enumerate() {
+            if p.default.is_none() {
+                required_indices.push(i);
+            } else {
+                optional_indices.push(i);
+            }
         }
-        
-        // For args < params, skip params with defaults
-        // Start from the END of the params list and work backwards
-        let mut result: Vec<Option<Expression>> = vec![None; param_count];
-        let mut arg_idx = arg_count;
-        
-        // Fill from the end
-        for i in (0..param_count).rev() {
-            if let Some(default_str) = params[i].default.as_ref() {
-                // Param has default - fill with default, don't consume arg
+
+        let req_count = required_indices.len();
+        if args.len() < req_count {
+            return Err(lowering_error(format!(
+                "Command '{}' requires at least {} arguments, but got {}",
+                command, req_count, args.len()
+            )));
+        }
+        if args.len() > param_count {
+             return Err(lowering_error(format!(
+                "Command '{}' takes at most {} arguments, but got {}",
+                command, param_count, args.len()
+            )));
+        }
+
+        let mut result_map: Vec<Option<Expression>> = vec![None; param_count];
+        let mut arg_ptr = 0;
+
+        // 1. Fill required parameters from the first part of args
+        for &idx in &required_indices {
+            result_map[idx] = Some(args[arg_ptr].clone());
+            arg_ptr += 1;
+        }
+
+        // 2. Fill optional parameters from the remaining args
+        for &idx in &optional_indices {
+            if arg_ptr < args.len() {
+                // Use provided arg
+                result_map[idx] = Some(args[arg_ptr].clone());
+                arg_ptr += 1;
+            } else {
+                // Use default from DB
+                let default_str = params[idx].default.as_ref().unwrap();
                 let lexer = Lexer::new(default_str);
                 let mut parser = Parser::new(lexer);
                 let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
-                result[i] = Some(expr);
-            } else if arg_idx > 0 {
-                // No default, consume an arg
-                result[i] = Some(args[arg_idx - 1].clone());
-                arg_idx -= 1;
-            } else {
-                // No default and no arg available
-                return Err(lowering_error(format!(
-                    "Missing required argument '{}' for command '{}'",
-                    params[i].name, command
-                )));
+                result_map[idx] = Some(expr);
             }
         }
-        
-        // Convert Option<Vec> to Vec
-        Ok(result.into_iter().map(Option::unwrap).collect())
-    }
 
-    /// Calculate number of required parameters (those without defaults)
-    fn count_required(params: &[ParamDef]) -> usize {
-        params.iter().filter(|p| p.default.is_none()).count()
+        Ok(result_map.into_iter().map(|o| o.unwrap()).collect())
     }
 
     /// Expand a macro by substituting parameters and recursively lowering
@@ -431,7 +501,7 @@ impl<'a> Lowerer<'a> {
         })?;
         
         let mut param_map: HashMap<String, String> = HashMap::new();
-        for (param, arg) in params.iter().zip(args.iter()) {
+        for (param, arg) in params.iter().zip(args_with_defaults.iter()) {
             let formatted = self.format_arg_for_substitution(arg)?;
             param_map.insert(param.name.clone(), formatted);
         }

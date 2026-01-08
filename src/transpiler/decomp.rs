@@ -32,62 +32,6 @@
 //! ```
 
 
-/// Maps command names to argument reordering indices.
-/// Used when decomp macro format has different argument order than game binary expects.
-///
-/// Example: [0, 1, 2, 4, 3] means:
-/// - arg 0 stays at position 0
-/// - arg 1 stays at position 1
-/// - arg 2 stays at position 2
-/// - arg 4 moves to position 3
-/// - arg 3 moves to position 4
-const PARAM_REORDER_MAP: &[(&str, &[usize])] = &[
-    // InitGlobalTextListMenu: decomp macro has (x, y, cursor, selection, cancel)
-    // but game binary expects (x, y, cursor, cancel, selection)
-    ("InitGlobalTextListMenu", &[0, 1, 2, 4, 3]),
-    // InitLocalTextListMenu: same issue
-    ("InitLocalTextListMenu", &[0, 1, 2, 4, 3]),
-];
-
-/// Reorder command arguments according to PARAM_REORDER_MAP
-fn reorder_args(command: &str, args: &str) -> String {
-    // Find if this command has a reordering map
-    let reorder_map = PARAM_REORDER_MAP
-        .iter()
-        .find(|(name, _)| *name == command)
-        .map(|(_, map)| *map);
-
-    if let Some(map) = reorder_map {
-        // Parse arguments into a Vec
-        let arg_vec: Vec<&str> = args.split(',').map(|s| s.trim()).collect();
-        let arg_count = arg_vec.len();
-        let map_len = map.len();
-
-        if arg_count == map_len {
-            // Args match map length - direct reordering
-            let mut reordered = Vec::with_capacity(map_len);
-            for &idx in map {
-                reordered.push(arg_vec[idx]);
-            }
-            return reordered.join(", ");
-        } else if arg_count < map_len {
-            // Fewer args than map - reorder available args
-            let mut reordered = Vec::with_capacity(map_len);
-            for &idx in map {
-                if idx < arg_count {
-                    reordered.push(arg_vec[idx]);
-                } else {
-                    // Missing arg - use placeholder (will be caught by compiler)
-                    reordered.push("0");
-                }
-            }
-            return reordered.join(", ");
-        }
-    }
-    // No reordering needed
-    args.to_string()
-}
-
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(input: &str) -> String {
     let mut output = String::new();
@@ -109,8 +53,12 @@ pub fn transpile(input: &str) -> String {
         }
 
         // Parse ScriptEntry
-        if let Some(name) = trimmed.strip_prefix("ScriptEntry ") {
-            let name = name.trim();
+        if let Some(rest) = trimmed.strip_prefix("ScriptEntry") {
+            // Get the name after "ScriptEntry"
+            let rest = rest.trim();
+            // Strip any comments (e.g., "Name @ 0x123" -> "Name")
+            let name = rest.split('@').next().unwrap_or(rest).trim();
+            let name = name.split("//").next().unwrap_or(name).trim();
             if !name.is_empty() {
                 jump_table.push(name.to_string());
             }
@@ -139,17 +87,39 @@ pub fn transpile(input: &str) -> String {
         }
     }
 
-    // Create a map from name to slot number for quick lookup
-    let slot_map: std::collections::HashMap<String, usize> = jump_table
-        .iter()
-        .enumerate()
-        .map(|(i, name)| (name.clone(), i))
-        .collect();
+    // Create a map from function name to ALL slot numbers it appears in
+    // (A function can appear multiple times in the jump table!)
+    let mut function_to_slots: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for (slot_idx, name) in jump_table.iter().enumerate() {
+        function_to_slots
+            .entry(name.clone())
+            .or_insert_with(Vec::new)
+            .push(slot_idx);
+    }
+    
+    // Collect local #define macros for substitution
+    let mut local_defines: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("#define ") {
+            // Parse: NAME VALUE
+            let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+            if parts.len() == 2 {
+                let name = parts[0].trim();
+                let value = parts[1].trim();
+                // Only store simple identifier-to-identifier mappings
+                if !name.is_empty() && !value.is_empty() {
+                    local_defines.insert(name.to_string(), value.to_string());
+                }
+            }
+        }
+    }
 
     // Second pass: generate output
-    let mut in_movement = false;
     let mut skip_until_label = false; // Skip lines until we hit the first real label (after jump table)
     let mut seen_script_entry_end = false;
+    // Track which functions have had their body emitted (to avoid duplicates)
+    let mut functions_with_bodies_emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in input.lines() {
         let trimmed = line.trim();
@@ -197,21 +167,26 @@ pub fn transpile(input: &str) -> String {
 
         // Handle labels
         if let Some(label_name) = trimmed.strip_suffix(':') {
-            // Close previous movement if any
-            // (EndMovement should have been emitted by the command itself)
-
             // Check if this is a movement label
             if movement_labels.contains(label_name) {
                 output.push_str(&format!("action {}\n", label_name));
-                in_movement = true;
-            } else if let Some(&slot) = slot_map.get(label_name) {
+            } else if let Some(slots) = function_to_slots.get(label_name) {
                 // Public function (in jump table)
-                output.push_str(&format!("function {} #{}:\n", label_name, slot));
-                in_movement = false;
+                // Only emit if we haven't seen this function before
+                if functions_with_bodies_emitted.contains(label_name) {
+                    // Skip this entire function (headers + body already emitted)
+                    // Set skip_until_label to skip all commands until next label
+                    skip_until_label = true;
+                } else {
+                    // Emit header for EACH slot this function appears in
+                    for slot in slots {
+                        output.push_str(&format!("function {} #{}:\n", label_name, slot));
+                    }
+                    functions_with_bodies_emitted.insert(label_name.to_string());
+                }
             } else {
                 // Private label
                 output.push_str(&format!("{}:\n", label_name));
-                in_movement = false;
             }
             skip_until_label = false;
             continue;
@@ -222,7 +197,7 @@ pub fn transpile(input: &str) -> String {
             continue;
         }
 
-        // Handle commands - parse and optionally reorder arguments
+        // Handle commands
         // Decomp format: CommandName arg1, arg2, arg3
         output.push_str("    ");
         if let Some(cmd_end_idx) = trimmed.find(|c| c == ' ' || c == '\t') {
@@ -233,12 +208,12 @@ pub fn transpile(input: &str) -> String {
                 // Command with no arguments
                 output.push_str(cmd_name);
             } else {
-                // Command with arguments - check if reordering is needed
-                let reordered_args = reorder_args(cmd_name, args);
+                // Apply local #define substitutions to arguments
+                let substituted_args = substitute_defines(args, &local_defines);
                 output.push_str(cmd_name);
-                if !reordered_args.is_empty() {
+                if !substituted_args.is_empty() {
                     output.push(' ');
-                    output.push_str(&reordered_args);
+                    output.push_str(&substituted_args);
                 }
             }
         } else {
@@ -249,6 +224,30 @@ pub fn transpile(input: &str) -> String {
     }
 
     output
+}
+
+/// Substitute local #define macros in argument string
+fn substitute_defines(args: &str, defines: &std::collections::HashMap<String, String>) -> String {
+    if defines.is_empty() {
+        return args.to_string();
+    }
+
+    // Split by comma to handle each argument separately
+    let parts: Vec<&str> = args.split(',').collect();
+    let substituted: Vec<String> = parts
+        .iter()
+        .map(|part| {
+            let trimmed = part.trim();
+            // Check if this is an identifier that needs substitution
+            if let Some(replacement) = defines.get(trimmed) {
+                replacement.clone()
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect();
+
+    substituted.join(", ")
 }
 
 #[cfg(test)]
@@ -394,22 +393,16 @@ Move2:
     }
 
     #[test]
-    fn test_real_decomp_file() {
-        let input = std::fs::read_to_string(
-            r"C:\dev\pokeplatinum\res\field\scripts\scripts_battle_tower_battle_salon.s",
-        );
+    fn test_transpile_acuity_lakefront_fixture() {
+        let fixture_path = "tests/fixtures/scripts/scripts_acuity_lakefront.s";
+        let input = std::fs::read_to_string(fixture_path);
+        
         if let Ok(content) = input {
             let output = transpile(&content);
-            // Check that it has the expected structure
-            assert!(output.contains("function BattleTowerBattleSalon_Attendant #0:"));
-            assert!(output.contains("function BattleTowerBattleSalon_Cheryl #1:"));
-            assert!(
-                output.contains("action BattleTowerBattleSalon_PlayerEnterBattleSalonMovement")
-            );
-            println!(
-                "=== Transpiled Output (first 2000 chars) ===\n{}",
-                &output[..output.len().min(2000)]
-            );
+            assert!(output.contains("function _0012 #1:"));
+            assert!(output.contains("function _004E #0:"));
+            assert!(output.contains("action _00E8"));
+            assert!(output.contains("AcuityLakefront_SetWarpsLakeAcuityNormal:"));
         }
     }
 }

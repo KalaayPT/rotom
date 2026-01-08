@@ -616,11 +616,20 @@ impl ConstantDb {
         })?;
 
         // Match lines like: "#define NAME 123" or "#define NAME -1" or "#define NAME 0xFF"
+        // Allow trailing comments (// ...) and whitespace
         let re_numeric =
-            Regex::new(r"^\s*#define\s+(\w+)\s+((?:0[xX][0-9a-fA-F]+)|(?:-?\d+))\s*$").unwrap();
+            Regex::new(r"^\s*#define\s+(\w+)\s+((?:0[xX][0-9a-fA-F]+)|(?:-?\d+))(?:\s*//.*)?$")
+                .unwrap();
+
+        // Match lines like: "#define NAME RGB(31, 31, 31)"
+        let re_rgb =
+            Regex::new(r"^\s*#define\s+(\w+)\s+RGB\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)(?:\s*//.*)?$")
+                .unwrap();
 
         // Match lines like: "#define NAME OTHER_CONST" (simple constant reference)
-        let re_const_ref = Regex::new(r"^\s*#define\s+(\w+)\s+([A-Z_][A-Z0-9_]*)\s*$").unwrap();
+        // Allow trailing comments (// ...) and whitespace
+        let re_const_ref =
+            Regex::new(r"^\s*#define\s+(\w+)\s+([A-Z_][A-Z0-9_]*)(?:\s*//.*)?$").unwrap();
 
         let mut count = 0;
         let mut pending_refs: Vec<(String, String)> = Vec::new();
@@ -642,6 +651,18 @@ impl ConstantDb {
                     self.constants.insert(name.to_string(), v);
                     count += 1;
                 }
+            }
+            // Try RGB match
+            else if let Some(caps) = re_rgb.captures(line) {
+                let name = caps.get(1).unwrap().as_str();
+                let r: i32 = caps.get(2).unwrap().as_str().parse().unwrap_or(0);
+                let g: i32 = caps.get(3).unwrap().as_str().parse().unwrap_or(0);
+                let b: i32 = caps.get(4).unwrap().as_str().parse().unwrap_or(0);
+                
+                // 15-bit color: (b << 10) | (g << 5) | r
+                let value = (b << 10) | (g << 5) | r;
+                self.constants.insert(name.to_string(), value);
+                count += 1;
             }
             // Then try constant reference match
             else if let Some(caps) = re_const_ref.captures(line) {
@@ -674,47 +695,6 @@ impl ConstantDb {
         let root = root.as_ref();
         let mut total = 0;
 
-        // Check that build/generated exists
-        let build_generated = root.join("build").join("generated");
-        if !build_generated.exists() || !build_generated.is_dir() {
-            return Err(CompileError::Database {
-                message: format!(
-                    "Decomp project '{}' has not been built yet. \
-                     Directory '{}' does not exist. \
-                     Please build the project first (e.g., `make`).",
-                    root.display(),
-                    build_generated.display()
-                ),
-            });
-        }
-
-        // Load all .py files from build/generated/
-        let entries = std::fs::read_dir(&build_generated).map_err(|e| CompileError::Database {
-            message: format!(
-                "Failed to read directory '{}': {}",
-                build_generated.display(),
-                e
-            ),
-        })?;
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|e| e == "py").unwrap_or(false) {
-                match self.load_python_enum(&path) {
-                    Ok(count) => total += count,
-                    Err(e) => {
-                        return Err(CompileError::Database {
-                            message: format!(
-                                "Failed to load Python enum '{}': {}",
-                                path.display(),
-                                e
-                            ),
-                        });
-                    }
-                }
-            }
-        }
-
         // Load .h files from include/constants/ (simple defines only)
         let include_constants = root.join("include").join("constants");
         if include_constants.exists() && include_constants.is_dir() {
@@ -739,7 +719,236 @@ impl ConstantDb {
             }
         }
 
+        // Load text bank constants from res/text/*.json
+        let text_json = root.join("res").join("text");
+        if text_json.exists() && text_json.is_dir() {
+            if let Ok(count) = self.load_text_bank_json_dir(&text_json) {
+                total += count;
+            }
+        }
+
+        // Load enum/mask constants from generated/*.txt using metang if available
+        let generated_txt = root.join("generated");
+        if generated_txt.exists() && generated_txt.is_dir() {
+            if let Ok(count) = self.load_generated_via_metang(&generated_txt) {
+                total += count;
+            } else {
+                // Fallback to simple loader if metang fails or is not available
+                let entries = std::fs::read_dir(&generated_txt).map_err(|e| CompileError::Database {
+                    message: format!(
+                        "Failed to read directory '{}': {}",
+                        generated_txt.display(),
+                        e
+                    ),
+                })?;
+
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map(|e| e == "txt").unwrap_or(false) {
+                        if let Ok(count) = self.load_enum_txt(&path) {
+                            total += count;
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(total)
+    }
+
+    /// Load constants from generated/*.txt using the local metang tool
+    fn load_generated_via_metang<P: AsRef<Path>>(&mut self, dir: P) -> Result<usize, CompileError> {
+        use std::process::Command;
+
+        let dir = dir.as_ref();
+        let metang_script = Path::new("C:/dev/metang/metang.py");
+        if !metang_script.exists() {
+            return Err(CompileError::Database {
+                message: "metang.py not found at C:/dev/metang/metang.py".to_string(),
+            });
+        }
+
+        // List of files and their types from test_all_json.py
+        let configs = [
+            ("abilities", "enum", "Ability", vec![]),
+            ("accessories", "enum", "Accessory", vec![]),
+            ("ai_action_choices", "enum", "AIActionChoice", vec![]),
+            ("ai_flags", "mask", "AIFlag", vec!["--no-auto"]),
+            ("ai_load_type_targets", "enum", "AILoadTypeTarget", vec![]),
+            ("ai_weather_types", "enum", "AIWeatherType", vec![]),
+            ("backdrops", "enum", "Backdrop", vec![]),
+            ("badges", "enum", "Badge", vec![]),
+            ("battle_actions", "enum", "BattleAction", vec![]),
+            ("battle_backgrounds", "enum", "BattleBackground", vec![]),
+            ("battle_boot_states", "enum", "BattleBootState", vec![]),
+            ("battle_context_params", "enum", "BattleContextParam", vec![]),
+            ("battle_message_tags", "enum", "BattleMessageTag", vec![]),
+            ("battle_mon_params", "enum", "BattleMonParam", vec![]),
+            ("battle_move_effects", "enum", "BattleMoveEffect", vec![]),
+            ("battle_move_subscript_ptrs", "enum", "BattleMoveSubscriptPtr", vec![]),
+            ("battle_script_battlers", "enum", "Battler", vec![]),
+            ("battle_script_check_side_condition_ops", "enum", "BattleScriptCheckSideConditionOp", vec![]),
+            ("battle_script_opcodes", "enum", "BattleScriptOpCode", vec![]),
+            ("battle_script_side_conditions", "enum", "BattleScriptSideCondition", vec![]),
+            ("battle_script_turn_flags", "enum", "BattleScriptTurnFlag", vec![]),
+            ("battle_script_vars", "enum", "BattleScriptVars", vec![]),
+            ("battle_side_effect_types", "enum", "BattleSideEffectType", vec![]),
+            ("battle_stats", "enum", "BattleStat", vec![]),
+            ("battle_sub_animations", "enum", "BattleSubAnimation", vec![]),
+            ("battle_subscripts", "enum", "BattleSubscript", vec![]),
+            ("battle_terrains", "enum", "BattleTerrain", vec![]),
+            ("battle_tower_functions", "enum", "BattleTowerFunction", vec![]),
+            ("battle_tower_modes", "enum", "BattleTowerMode", vec![]),
+            ("berry_growth_stages", "enum", "BerryGrowthStage", vec![]),
+            ("bg_event_dirs", "enum", "BgEventDir", vec![]),
+            ("bg_event_types", "enum", "BgEventType", vec![]),
+            ("catching_show_points_category", "enum", "CatchingShowPointsCategory", vec![]),
+            ("contest_effects", "enum", "ContestEffects", vec![]),
+            ("comm_club_ret_codes", "enum", "CommClubRetCode", vec![]),
+            ("days_of_week", "enum", "DayOfWeek", vec![]),
+            ("distribution_events", "enum", "DistributionEvent", vec![]),
+            ("egg_groups", "enum", "EggGroup", vec![]),
+            ("evolution_methods", "enum", "EvolutionMethod", vec![]),
+            ("exp_rates", "enum", "ExpRate", vec![]),
+            ("game_records", "enum", "GameRecord", vec![]),
+            ("fade_types", "enum", "FadeType", vec![]),
+            ("first_arrival_to_zones", "enum", "FirstArrivalToZone", vec![]),
+            ("footprint_sizes", "enum", "FootprintSize", vec![]),
+            ("frontier_trainers", "enum", "FrontierTrainerID", vec![]),
+            ("gender_ratios", "enum", "GenderRatio", vec![]),
+            ("genders", "enum", "Gender", vec![]),
+            ("giratina_shadow_animations", "enum", "GiratinaShadowAnimation", vec![]),
+            ("hidden_locations", "enum", "HiddenLocation", vec![]),
+            ("item_ai_categories", "enum", "ItemAICategory", vec![]),
+            ("item_battle_categories", "enum", "ItemBattleCategory", vec![]),
+            ("item_hold_effects", "enum", "ItemHoldEffect", vec![]),
+            ("items", "enum", "Item", vec![]),
+            ("journal_location_events", "enum", "JournalLocationEventType", vec![]),
+            ("journal_online_events", "enum", "JournalOnlineEventType", vec![]),
+            ("map_headers", "enum", "MapHeader", vec![]),
+            ("maps", "enum", "MapID", vec![]),
+            ("move_attributes", "enum", "MoveAttribute", vec![]),
+            ("move_classes", "enum", "MoveClass", vec![]),
+            ("move_flags", "mask", "MoveFlag", vec![]),
+            ("move_ranges", "mask", "MoveRange", vec!["--no-auto"]),
+            ("movement_actions", "enum", "MovementAction", vec![]),
+            ("movement_types", "enum", "MovementType", vec![]),
+            ("moves", "enum", "Move", vec![]),
+            ("natures", "enum", "Nature", vec![]),
+            ("npc_trades", "enum", "NpcTradeID", vec![]),
+            ("object_events", "enum", "ObjectEventGfx", vec![]),
+            ("pal_park_land_area", "enum", "PalParkLandArea", vec![]),
+            ("pal_park_water_area", "enum", "PalParkWaterArea", vec![]),
+            ("player_transitions", "mask", "PlayerTransition", vec![]),
+            ("pokemon_anim_constants", "enum", "PokemonAnimConstants", vec![]),
+            ("pokemon_body_shapes", "enum", "PokemonBodyShape", vec![]),
+            ("pokemon_colors", "enum", "PokemonColor", vec![]),
+            ("pokemon_contest_ranks", "enum", "PokemonContestRank", vec![]),
+            ("pokemon_contest_types", "enum", "PokemonContestType", vec![]),
+            ("pokemon_data_params", "enum", "PokemonDataParam", vec![]),
+            ("pokemon_stats", "enum", "PokemonStat", vec![]),
+            ("pokemon_types", "enum", "PokemonType", vec![]),
+            ("poketch_apps", "enum", "PoketchAppID", vec![]),
+            ("ribbons", "enum", "RibbonID", vec![]),
+            ("roaming_slots", "enum", "RoamingSlot", vec![]),
+            ("save_types", "enum", "SaveType", vec![]),
+            ("sdat", "enum", "SDATID", vec![]),
+            ("seals", "enum", "Seal", vec![]),
+            ("signpost_commands", "enum", "SignpostCommand", vec![]),
+            ("signpost_types", "enum", "SignpostType", vec![]),
+            ("size_contest_results", "enum", "SizeContestResult", vec![]),
+            ("shadow_sizes", "enum", "ShadowSize", vec![]),
+            ("species", "enum", "Species", vec![]),
+            ("species_data_params", "enum", "SpeciesDataParam", vec![]),
+            ("string_padding_mode", "enum", "PaddingMode", vec![]),
+            ("text_banks", "enum", "TextBank", vec![]),
+            ("time_of_day", "enum", "TimeOfDay", vec![]),
+            ("town_map_description_flag_types", "enum", "TownMapDescriptionFlagType", vec![]),
+            ("trainers", "enum", "TrainerID", vec![]),
+            ("trainer_classes", "enum", "TrainerClass", vec![]),
+            ("trainer_message_types", "enum", "TrainerMessageType", vec![]),
+            ("trainer_score_events", "enum", "TrainerScoreEvent", vec![]),
+            ("trainer_types", "enum", "TrainerType", vec![]),
+            ("tutor_locations", "enum", "TutorLocation", vec![]),
+            ("vars_flags", "enum", "VarFlag", vec![]),
+            ("versions", "enum", "Version", vec![]),
+            ("villa_furnitures", "enum", "VillaFurniture", vec![]),
+            ("mart_specialties_id", "enum", "MartSpecialtiesID", vec![]),
+            ("mart_decor_id", "enum", "MartDecorID", vec![]),
+            ("mart_seal_id", "enum", "MartSealID", vec![]),
+            ("mart_frontier_id", "enum", "MartFrontierId", vec![]),
+            ("mystery_gift_delivery_stages", "enum", "MysteryGiftDeliveryStage", vec![]),
+        ];
+
+        let mut total_loaded = 0;
+        for (filename, cmd_type, tag, extra_args) in configs {
+            let file_path = dir.join(format!("{}.txt", filename));
+            if !file_path.exists() {
+                continue;
+            }
+
+            let mut cmd = Command::new("python");
+            cmd.arg(metang_script)
+                .arg(cmd_type)
+                .arg("--lang")
+                .arg("json")
+                .arg("--tag-name")
+                .arg(tag)
+                .env("PYTHONPATH", "C:/dev/metang");
+            
+            for arg in extra_args {
+                cmd.arg(arg);
+            }
+            
+            cmd.arg(&file_path);
+
+            let output = cmd.output().map_err(|e| {
+                eprintln!("Failed to execute metang for {}: {}", filename, e);
+                CompileError::Database {
+                    message: format!("Failed to run metang for {}: {}", filename, e),
+                }
+            })?;
+
+            if !output.status.success() {
+                eprintln!(
+                    "metang failed for {} with status {}. Stderr: {}",
+                    filename,
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                continue; // Skip failed ones
+            }
+
+            let json: std::collections::HashMap<String, serde_json::Value> = serde_json::from_slice(&output.stdout).map_err(|e| {
+                eprintln!(
+                    "Failed to parse metang JSON for {}: {}. Output: {}",
+                    filename,
+                    e,
+                    String::from_utf8_lossy(&output.stdout)
+                );
+                CompileError::Database {
+                    message: format!("Failed to parse metang JSON for {}: {}", filename, e),
+                }
+            })?;
+
+            for (name, value) in json {
+                if let Some(val) = value.as_i64() {
+                    self.constants.insert(name, val as i32);
+                    total_loaded += 1;
+                } else if let Some(val) = value.as_u64() {
+                    self.constants.insert(name, val as i32);
+                    total_loaded += 1;
+                }
+            }
+        }
+
+        if total_loaded == 0 {
+            return Err(CompileError::Database {
+                message: "No constants were loaded via metang".to_string(),
+            });
+        }
+
+        Ok(total_loaded)
     }
 
     /// Load per-map object event constants for a specific script
@@ -788,6 +997,95 @@ impl ConstantDb {
         }
 
         self.load_c_defines(&events_header)
+    }
+
+    /// Load enum constants from a generated/*.txt file
+    ///
+    /// Each line in the file is a constant name, and its value is
+    /// the 0-based line index (matching how metang generates Python enums).
+    fn load_enum_txt<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, CompileError> {
+        let path = path.as_ref();
+        let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
+            message: format!("Failed to read enum file '{}': {}", path.display(), e),
+        })?;
+
+        let mut count = 0;
+        for (index, line) in contents.lines().enumerate() {
+            let name = line.trim();
+            // Skip empty lines and comments
+            if name.is_empty() || name.starts_with('#') || name.starts_with("//") {
+                continue;
+            }
+            // Only accept valid identifier names
+            if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                self.constants.insert(name.to_string(), index as i32);
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Load text bank constants from JSON files in res/text/
+    ///
+    /// Each JSON file has a `"messages"` array where each entry contains:
+    /// - `"id"`: The constant name (e.g., "CommonStrings_Text_PokecenterGreeting_Day")
+    /// - The constant value is the index in the array (0, 1, 2, ...)
+    ///
+    /// This allows loading text message references without requiring
+    /// the decomp project to be built first.
+    pub fn load_text_bank_json_dir<P: AsRef<Path>>(&mut self, dir: P) -> Result<usize, CompileError> {
+        let dir = dir.as_ref();
+        let mut total = 0;
+
+        let entries = std::fs::read_dir(dir).map_err(|e| CompileError::Database {
+            message: format!("Failed to read text bank directory '{}': {}", dir.display(), e),
+        })?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                match self.load_text_bank_json(&path) {
+                    Ok(count) => total += count,
+                    Err(_) => {
+                        // Silently skip files that don't match the expected format
+                    }
+                }
+            }
+        }
+
+        Ok(total)
+    }
+
+    /// Load text bank constants from a single JSON file
+    fn load_text_bank_json<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, CompileError> {
+        let path = path.as_ref();
+        let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
+            message: format!("Failed to read text bank file '{}': {}", path.display(), e),
+        })?;
+
+        let json: serde_json::Value = serde_json::from_str(&contents).map_err(|e| {
+            CompileError::Database {
+                message: format!("Failed to parse JSON '{}': {}", path.display(), e),
+            }
+        })?;
+
+        let messages = json
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| CompileError::Database {
+                message: format!("No 'messages' array in '{}'", path.display()),
+            })?;
+
+        let mut count = 0;
+        for (index, msg) in messages.iter().enumerate() {
+            if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
+                self.constants.insert(id.to_string(), index as i32);
+                count += 1;
+            }
+        }
+
+        Ok(count)
     }
 
     /// Look up a constant by name

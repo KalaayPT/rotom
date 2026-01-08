@@ -81,7 +81,9 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_script_file(&mut self) -> ParseResult<ScriptFile> {
         let mut aliases = Vec::new();
-        let mut items = Vec::new();
+        let mut items: Vec<Statement> = Vec::new();
+        let mut function_headers_by_name: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        
         while !self.current_token_is(TokenType::EOF) {
             if self.current_token_is(TokenType::Newline) {
                 self.advance();
@@ -89,7 +91,28 @@ impl<'a> Parser<'a> {
             }
             let stmt = self.parse_top_level_stmt()?;
             match &stmt.node {
-                StatementKind::Function { .. } | StatementKind::Action { .. } => items.push(stmt),
+                StatementKind::Function { headers, .. } => {
+                    // Check if we already have a function with the same name
+                    if let Some(first_header) = headers.first() {
+                        if function_headers_by_name.contains_key(&first_header.name) {
+                            // Already exists - this is a duplicate body definition
+                            return Err(parse_error(
+                                stmt.span.clone(),
+                                format!(
+                                    "Duplicate definition for function '{}'. All headers for a function must be stacked together before the body.",
+                                    first_header.name
+                                ),
+                            ));
+                        } else {
+                            // New function - add it
+                            function_headers_by_name.insert(first_header.name.clone(), items.len());
+                            items.push(stmt);
+                        }
+                    } else {
+                        items.push(stmt);
+                    }
+                }
+                StatementKind::Action { .. } => items.push(stmt),
                 StatementKind::AliasStatement { .. } => aliases.push(stmt),
                 _ => unreachable!("top_level_stmt should prevent other statements or errors"),
             }
@@ -561,9 +584,6 @@ impl<'a> Parser<'a> {
             _ => Precedence::Lowest,
         }
     }
-    fn peek_precedence(&self) -> Precedence {
-        Self::get_precedence(&self.peek_token.kind)
-    }
     fn cur_precedence(&self) -> Precedence {
         Self::get_precedence(&self.current_token.kind)
     }
@@ -660,6 +680,52 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_stacked_function_headers() {
+        let source = r#"
+function TestFunc #1:
+function TestFunc #2:
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        
+        // Should be merged into ONE function item
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        assert_eq!(functions.len(), 1);
+        
+        match &functions[0].node {
+            StatementKind::Function { headers, body } => {
+                assert_eq!(headers.len(), 2);
+                assert_eq!(headers[0].id, Some(1));
+                assert_eq!(headers[1].id, Some(2));
+                assert_eq!(headers[0].name, "TestFunc");
+                assert_eq!(headers[1].name, "TestFunc");
+                assert_eq!(body.len(), 1); // Just "End"
+            }
+            _ => panic!("Expected function statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_duplicate_function_error() {
+        // Test that defining the same function name in separate blocks is an error
+        let source = r#"
+function TestFunc #1:
+    Message 1
+
+function TestFunc #2:
+    Message 2
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let result = parser.parse_script_file();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Duplicate definition for function 'TestFunc'"));
+    }
+
+    #[test]
     fn test_parse_function_with_return() {
         let source = "function TestFunc #1:\nReturn";
         let lexer = Lexer::new(source);
@@ -692,7 +758,7 @@ mod tests {
         assert_eq!(functions.len(), 1);
         let function = functions[0];
         match &function.node {
-            StatementKind::Function { headers, body } => {
+            StatementKind::Function { headers, .. } => {
                 assert_eq!(headers.len(), 1);
                 assert_eq!(headers[0].name, "MyLabel");
                 assert_eq!(headers[0].id, None);

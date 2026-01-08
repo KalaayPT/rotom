@@ -45,7 +45,7 @@ impl<'a> Emitter<'a> {
             relocations: Vec::new(),
         }
     }
-    pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec<u8>> {
+pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec<u8>> {
         // Collect jump table slots from all functions
         // Sort by slot ID to match game expectations (jump table entries are indexed by slot ID)
         self.jump_table_slots = items
@@ -71,7 +71,7 @@ impl<'a> Emitter<'a> {
         }
         self.output.extend_from_slice(&JUMP_TABLE_END_MARKER);
         self.pc += JUMP_TABLE_END_MARKER.len();
-
+    
         // Emit all items in order (functions and actions interleaved)
         for item in items {
             match item {
@@ -203,8 +203,8 @@ impl<'a> Emitter<'a> {
 mod tests {
     use super::*;
     use crate::compiler::ir::{IrOpcode, IrAction, IrFunction, TopLevelItem};
-    use crate::compiler::ast::{FunctionHeader, ScriptFile};
-    use crate::database::{DatabaseV2, ConstantDb};
+    use crate::compiler::ast::FunctionHeader;
+    use crate::database::DatabaseV2;
 
     /// Helper function to create a test database
     fn create_test_db() -> DatabaseV2 {
@@ -614,5 +614,53 @@ mod tests {
         
         // Output length should be even (final alignment)
         assert_eq!(output.len() % 2, 0, "Final output should be 2-byte aligned");
+    }
+
+    #[test]
+    fn test_emit_stacked_headers_jump_table() {
+        let db = create_test_db();
+        let mut emitter = Emitter::new(&db);
+        
+        // Create an IR function with two headers
+        let ir_func = IrFunction {
+            headers: vec![
+                FunctionHeader {
+                    name: "TestFunc".to_string(),
+                    id: Some(1),
+                    is_public: true,
+                },
+                FunctionHeader {
+                    name: "TestFunc".to_string(),
+                    id: Some(2),
+                    is_public: true,
+                },
+            ],
+            instructions: vec![
+                IrOpcode::Command { name: "End".to_string(), args: vec![] },
+            ],
+        };
+        
+        let items = vec![TopLevelItem::Function(ir_func)];
+        let output = emitter.emit_script_file(&items).unwrap();
+        
+        // Jump table should have two entries (sorted by ID)
+        // Entry 1 (ID 1) -> Pointer to End
+        // Entry 2 (ID 2) -> Pointer to End
+        // JUMP_TABLE_END_MARKER (0xFD13)
+        // End (opcode 0x0002)
+        
+        // Entry 1: 4 bytes
+        // Entry 2: 4 bytes
+        // End Marker: 2 bytes
+        // End Command: 2 bytes
+        assert_eq!(output.len(), 4 + 4 + 2 + 2);
+        
+        // Check End Marker at correct position
+        assert_eq!(output[8], 0x13);
+        assert_eq!(output[9], 0xFD);
+        
+        // Check End command (opcode 2) at end
+        assert_eq!(output[10], 0x02);
+        assert_eq!(output[11], 0x00);
     }
 }
