@@ -329,7 +329,7 @@ impl<'a> Lowerer<'a> {
         let params = &cmd.params;
         let arg_count = args.len();
         let param_count = params.len();
-        
+
         if arg_count == param_count {
             return Ok(args.to_vec());
         }
@@ -411,11 +411,11 @@ impl<'a> Lowerer<'a> {
                     
                     // Evaluate condition
                     if self.evaluate_condition(condition, &args_with_defaults, params)? {
-                        matched_expansion = variant.expansion.as_ref();
-                        break;
-                    }
+                    matched_expansion = variant.expansion.as_ref();
+                    break;
                 }
             }
+        }
             
             // If no match found in variants, fall back to base expansion?
             matched_expansion.or(cmd.expansion.as_ref())
@@ -798,6 +798,262 @@ impl<'a> Lowerer<'a> {
             TokenType::GreaterEqual => Less,       // >= -> Jump if <
             TokenType::LesserEqual => Greater,     // <= -> Jump if >
             _ => Different,                        // Default/Error case
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::ast::{Expression, ExpressionKind};
+    use crate::compiler::lexer::Lexer;
+    use crate::compiler::parser::Parser;
+    use crate::compiler::analysis::Analyzer;
+    use crate::database::{DatabaseV2, ConstantDb};
+
+    /// Helper function to create a test database
+    fn create_test_db() -> DatabaseV2 {
+        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).unwrap_or_else(|_| {
+            // Create a minimal test database if the real one isn't available
+            DatabaseV2 {
+                meta: crate::database::DatabaseMeta {
+                    version: "Test".to_string(),
+                    generated_at: None,
+                    generated_from: None,
+                },
+                commands: std::collections::HashMap::new(),
+                sounds: std::collections::HashMap::new(),
+                comparison_operators: std::collections::HashMap::new(),
+                overworld_directions: std::collections::HashMap::new(),
+                special_overworlds: std::collections::HashMap::new(),
+            }
+        })
+    }
+
+    /// Helper function to parse and analyze a simple script
+    fn parse_and_analyze(source: &str) -> (ScriptFile, SymbolTable) {
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        
+        let mut constants = ConstantDb::new();
+        let db = create_test_db();
+        constants.load_from_db(&db);
+        
+        let mut analyzer = Analyzer::with_constants(&constants);
+        analyzer.analyze(&script_file).unwrap();
+        
+        (script_file, analyzer.symbols)
+    }
+
+    #[test]
+    fn test_lower_simple_function() {
+        let source = r#"
+function TestFunc #1:
+    Message 1
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        let functions: Vec<_> = items.iter().filter(|i| matches!(i, TopLevelItem::Function(_))).collect();
+        
+        assert_eq!(functions.len(), 1);
+        match &functions[0] {
+            TopLevelItem::Function(ir_func) => {
+                assert_eq!(ir_func.name(), "TestFunc");
+                assert_eq!(ir_func.headers.len(), 1);
+                assert_eq!(ir_func.headers[0].id, Some(1));
+                assert!(ir_func.is_public());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_simple_command() {
+        let source = r#"
+function TestFunc #1:
+    Message 42
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                assert_eq!(ir_func.instructions.len(), 2); // Message + End
+                match &ir_func.instructions[0] {
+                    IrOpcode::Command { name, args } => {
+                        assert_eq!(name, "Message");
+                        assert_eq!(args.len(), 1);
+                        assert_eq!(args[0].unwrap_value(), 42);
+                    }
+                    _ => panic!("Expected command"),
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_label() {
+        let source = r#"
+function TestFunc #1:
+    Message 1
+    Jump .skip
+    Message 2
+.skip:
+    Message 3
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                // Should have: Message, Jump, Message, Label, Message, End
+                assert!(ir_func.instructions.len() >= 5);
+                
+                // Check that we have a label
+                let label_count = ir_func.instructions.iter()
+                    .filter(|op| matches!(op, IrOpcode::Label(_)))
+                    .count();
+                assert_eq!(label_count, 1);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_action() {
+        let source = r#"
+action TestAction
+    WalkNormalNorth 3
+    EndMovement
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        let actions: Vec<_> = items.iter().filter(|i| matches!(i, TopLevelItem::Action(_))).collect();
+        
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            TopLevelItem::Action(ir_action) => {
+                assert_eq!(ir_action.name, "TestAction");
+                assert_eq!(ir_action.instructions.len(), 2); // WalkNormalNorth + EndMovement
+            }
+            _ => panic!("Expected action"),
+        }
+    }
+
+    #[test]
+    fn test_lower_expression_number() {
+        let source = "";
+        let (_script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let lowerer = Lowerer::new(&symbols, &db);
+        
+        // Test direct value
+        let expr = Expression {
+            span: 0..1,
+            node: ExpressionKind::Number(42),
+        };
+        let arg = lowerer.resolve_arg(&expr).unwrap();
+        assert_eq!(arg.unwrap_value(), 42);
+    }
+
+    #[test]
+    fn test_lower_expression_hex_number() {
+        let source = "";
+        let (_script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let lowerer = Lowerer::new(&symbols, &db);
+        
+        // Test hex value
+        let expr = Expression {
+            span: 0..1,
+            node: ExpressionKind::Number(0x42),
+        };
+        let arg = lowerer.resolve_arg(&expr).unwrap();
+        assert_eq!(arg.unwrap_value(), 0x42);
+    }
+
+    #[test]
+    fn test_lower_if_statement() {
+        let source = r#"
+function TestFunc #1:
+    if 0x8000 == 1 then
+        Message 1
+    endif
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                // Should generate: CompareVarValue, GoToIf, Message, Label
+                assert!(ir_func.instructions.len() >= 4);
+                
+                // Check that we have conditional logic
+                let has_compare = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } 
+                        if name == "CompareVarValue" || name == "CompareVars")
+                });
+                let has_jump_if = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf")
+                });
+                
+                assert!(has_compare, "Should have CompareVarValue instruction");
+                assert!(has_jump_if, "Should have GoToIf instruction");
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_while_loop() {
+        let source = r#"
+function TestFunc #1:
+    while 0x8000 != 0 do
+        SubVar 0x8000, 1
+    endwhile
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                // Should generate loop logic with labels and jumps
+                assert!(ir_func.instructions.len() >= 4);
+                
+                // Check for loop constructs
+                let has_compare = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } 
+                        if name == "CompareVarValue" || name == "CompareVars")
+                });
+                let has_jump_if = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf")
+                });
+                
+                assert!(has_compare, "Should have CompareVarValue instruction");
+                assert!(has_jump_if, "Should have GoToIf instruction");
+            }
+            _ => panic!("Expected function"),
         }
     }
 }
