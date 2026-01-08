@@ -2,15 +2,11 @@ use std::path::PathBuf;
 
 use clap::{Parser as ClapParser, Subcommand};
 
-mod compiler;
-mod database;
-mod transpiler;
-
-use compiler::parse_error::{CompileError, print_error};
-use compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
-use database::{ConstantDb, DatabaseV2, GameFamily};
-
-use crate::compiler::codegen::Emitter;
+// Use the library crate
+use rotom::compiler::codegen::Emitter;
+use rotom::compiler::parse_error::{CompileError, print_error};
+use rotom::compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
+use rotom::database::{ConstantDb, DatabaseV2, GameFamily};
 
 #[derive(Debug, ClapParser)]
 #[command(name = "rotom")]
@@ -82,9 +78,9 @@ fn main() {
             }
         }
         Commands::Decompile {
-            database,
-            input,
-            output,
+            database: _database,
+            input: _input,
+            output: _output,
         } => {
             eprintln!("Decompilation not yet implemented");
             std::process::exit(1);
@@ -245,10 +241,10 @@ EndMovement
     // DSPRE-derived test script (0013)
     let dspre = std::fs::read_to_string(r"C:\Users\micro\Desktop\Pokémon - Platinum Version (USA) (Rev 1)_DSPRE_contents\expanded\scripts\0002.script").unwrap();
     let decomp =
-        std::fs::read_to_string(r"C:\dev\pokeplatinum\res\field\scripts\scripts_jubilife_city.s")
+        std::fs::read_to_string(r"C:\dev\pokeplatinum\res\field\scripts\scripts_unk_0406.s")
             .unwrap();
-    let input = transpiler::DSPRE::transpile(&dspre);
-    let input = transpiler::decomp::transpile(&decomp);
+    let input = rotom::transpiler::DSPRE::transpile(&dspre);
+    let input = rotom::transpiler::decomp::transpile(&decomp);
     println!("{input}");
     std::fs::write("test_input.rotom", &input).unwrap();
     let input = input.as_str();
@@ -295,7 +291,7 @@ EndMovement
     }
 
     // Load per-map event constants for the jubilife city script
-    let script_path = std::path::Path::new("scripts_jubilife_city.s");
+    let script_path = std::path::Path::new("scripts_common.s");
     match constants.load_map_events(decomp_root, script_path) {
         Ok(count) if count > 0 => println!("Loaded {} map-specific event constants", count),
         Ok(_) => println!("No map-specific event constants found"),
