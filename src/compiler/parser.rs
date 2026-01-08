@@ -575,6 +575,8 @@ pub const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::ast::ExpressionKind;
+    use crate::compiler::token::TokenType;
 
     #[test]
     fn test_parser_initialization() {
@@ -750,6 +752,147 @@ mod tests {
                 }
             }
             _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_if_else() {
+        let source = r#"
+function TestFunc #1:
+    if 0x8000 == 1 then
+        Message 1
+    else
+        Message 2
+    endif
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        assert_eq!(functions.len(), 1);
+
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => {
+                // Should have: IfStatement, End
+                assert_eq!(body.len(), 2);
+                match &body[0].node {
+                    StatementKind::IfStatement { condition, body: if_body, elseblock } => {
+                        // Check condition is an infix expression
+                        match &condition.node {
+                            ExpressionKind::Infix { operator, .. } => {
+                                assert_eq!(*operator, TokenType::Equal);
+                            }
+                            _ => panic!("Expected infix condition"),
+                        }
+                        // Check if body has one command
+                        assert_eq!(if_body.len(), 1);
+                        // Check else block exists and has one command
+                        assert!(elseblock.is_some());
+                        assert_eq!(elseblock.as_ref().unwrap().len(), 1);
+                    }
+                    _ => panic!("Expected if statement"),
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_while_loop() {
+        let source = r#"
+function TestFunc #1:
+    while 0x8000 != 0 do
+        SubVar 0x8000, 1
+    endwhile
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        assert_eq!(functions.len(), 1);
+
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => {
+                // Should have: WhileStatement, End
+                assert_eq!(body.len(), 2);
+                match &body[0].node {
+                    StatementKind::WhileStatement { condition, body: while_body } => {
+                        // Check condition is an infix expression with !=
+                        match &condition.node {
+                            ExpressionKind::Infix { operator, .. } => {
+                                assert_eq!(*operator, TokenType::NotEqual);
+                            }
+                            _ => panic!("Expected infix condition"),
+                        }
+                        // Check while body has one command
+                        assert_eq!(while_body.len(), 1);
+                    }
+                    _ => panic!("Expected while statement"),
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action() {
+        let source = r#"
+action TestMovement
+    WalkNormalNorth 3
+    FaceSouth
+    EndMovement
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        let actions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Action { .. })).collect();
+        assert_eq!(actions.len(), 1);
+
+        match &actions[0].node {
+            StatementKind::Action { name, body } => {
+                assert_eq!(name, "TestMovement");
+                // Should have: WalkNormalNorth, FaceSouth, EndMovement
+                assert_eq!(body.len(), 3);
+            }
+            _ => panic!("Expected action"),
+        }
+    }
+
+    #[test]
+    fn test_parse_alias() {
+        let source = r#"
+alias 0x800C as VAR_RESULT
+alias 0x4000 as VAR_GLOBAL
+
+function TestFunc #1:
+    SetVar VAR_RESULT, 5
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        
+        // Should have 2 aliases
+        assert_eq!(script_file.aliases.len(), 2);
+        
+        // First alias
+        match &script_file.aliases[0].node {
+            StatementKind::AliasStatement { name, id, .. } => {
+                assert_eq!(name, "VAR_RESULT");
+                assert_eq!(*id, 0x800C);
+            }
+            _ => panic!("Expected alias statement"),
+        }
+        
+        // Second alias
+        match &script_file.aliases[1].node {
+            StatementKind::AliasStatement { name, id, .. } => {
+                assert_eq!(name, "VAR_GLOBAL");
+                assert_eq!(*id, 0x4000);
+            }
+            _ => panic!("Expected alias statement"),
         }
     }
 }

@@ -813,21 +813,8 @@ mod tests {
 
     /// Helper function to create a test database
     fn create_test_db() -> DatabaseV2 {
-        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).unwrap_or_else(|_| {
-            // Create a minimal test database if the real one isn't available
-            DatabaseV2 {
-                meta: crate::database::DatabaseMeta {
-                    version: "Test".to_string(),
-                    generated_at: None,
-                    generated_from: None,
-                },
-                commands: std::collections::HashMap::new(),
-                sounds: std::collections::HashMap::new(),
-                comparison_operators: std::collections::HashMap::new(),
-                overworld_directions: std::collections::HashMap::new(),
-                special_overworlds: std::collections::HashMap::new(),
-            }
-        })
+        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json"))
+            .expect("Test database not found at src/db/platinum_v2.json - tests require the database file")
     }
 
     /// Helper function to parse and analyze a simple script
@@ -1052,6 +1039,118 @@ function TestFunc #1:
                 
                 assert!(has_compare, "Should have CompareVarValue instruction");
                 assert!(has_jump_if, "Should have GoToIf instruction");
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_if_else() {
+        let source = r#"
+function TestFunc #1:
+    if 0x8000 == 1 then
+        Message 1
+    else
+        Message 2
+    endif
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                // Should generate: Compare, GoToIf, Message1, GoTo, Label(else), Message2, Label(end), End
+                // At minimum: Compare, GoToIf, Message, GoTo, Label, Message, Label, End = 8
+                assert!(ir_func.instructions.len() >= 7, 
+                    "if/else should generate at least 7 instructions, got {}", 
+                    ir_func.instructions.len());
+                
+                // Check for else branch: should have 2 labels (else and end) and a GoTo to skip else
+                let label_count = ir_func.instructions.iter()
+                    .filter(|op| matches!(op, IrOpcode::Label(_)))
+                    .count();
+                assert!(label_count >= 2, "if/else should generate at least 2 labels (else + end)");
+                
+                // Check for unconditional GoTo (to skip else block)
+                let goto_count = ir_func.instructions.iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
+                    .count();
+                assert!(goto_count >= 1, "if/else should have GoTo to skip else block");
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_condition_operand_swap() {
+        // When comparing VALUE == VAR, it should be swapped to VAR == VALUE
+        // because the game's CompareVarValue expects (var, value) order
+        let source = r#"
+function TestFunc #1:
+    if 5 == 0x8000 then
+        Message 1
+    endif
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                // Find the CompareVarValue instruction
+                let compare = ir_func.instructions.iter().find(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue")
+                });
+                
+                assert!(compare.is_some(), "Should have CompareVarValue instruction");
+                
+                if let Some(IrOpcode::Command { args, .. }) = compare {
+                    // First arg should be the variable (0x8000 = 32768)
+                    assert_eq!(args[0].unwrap_value(), 0x8000, 
+                        "First arg should be the variable (swapped from RHS)");
+                    // Second arg should be the value (5)
+                    assert_eq!(args[1].unwrap_value(), 5, 
+                        "Second arg should be the value (swapped from LHS)");
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_arithmetic_expression() {
+        // Test that compile-time arithmetic expressions are evaluated
+        // Use Message command since it's simple and doesn't involve macros
+        let source = r#"
+function TestFunc #1:
+    Message 1 + 2 * 3
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+        
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                // Find the Message command
+                let message = ir_func.instructions.iter().find(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } if name == "Message")
+                });
+                
+                assert!(message.is_some(), "Should have Message instruction");
+                
+                if let Some(IrOpcode::Command { args, .. }) = message {
+                    // The value should be compile-time evaluated: 1 + 2 * 3 = 7 (correct precedence) or 9 (left-to-right)
+                    let value = args[0].unwrap_value();
+                    assert!(value == 7 || value == 9, 
+                        "Arithmetic should be evaluated at compile time, got {}", value);
+                }
             }
             _ => panic!("Expected function"),
         }

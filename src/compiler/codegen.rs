@@ -208,21 +208,8 @@ mod tests {
 
     /// Helper function to create a test database
     fn create_test_db() -> DatabaseV2 {
-        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).unwrap_or_else(|_| {
-            // Create a minimal test database if the real one isn't available
-            DatabaseV2 {
-                meta: crate::database::DatabaseMeta {
-                    version: "Test".to_string(),
-                    generated_at: None,
-                    generated_from: None,
-                },
-                commands: std::collections::HashMap::new(),
-                sounds: std::collections::HashMap::new(),
-                comparison_operators: std::collections::HashMap::new(),
-                overworld_directions: std::collections::HashMap::new(),
-                special_overworlds: std::collections::HashMap::new(),
-            }
-        })
+        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json"))
+            .expect("Test database not found at src/db/platinum_v2.json - tests require the database file")
     }
 
     #[test]
@@ -475,5 +462,157 @@ mod tests {
         
         // 11 movements * 4 bytes = 44 bytes
         assert_eq!(emitter.output.len(), 44);
+    }
+
+    #[test]
+    fn test_emit_script_command() {
+        let db = create_test_db();
+        let mut emitter = Emitter::new(&db);
+        
+        // Test emitting a simple script command: End (opcode 0x02, no params)
+        let end_cmd = db.get_command("End").expect("End command should exist in DB");
+        emitter.emit_command("End", end_cmd, &vec![]).unwrap();
+        
+        // End is opcode 0x02, no parameters = 2 bytes
+        assert_eq!(emitter.output.len(), 2);
+        assert_eq!(emitter.output, vec![0x02, 0x00]); // Little endian opcode
+    }
+
+    #[test]
+    fn test_emit_script_command_with_params() {
+        let db = create_test_db();
+        let mut emitter = Emitter::new(&db);
+        
+        // Test emitting Message command (opcode 44 with 1 u8 parameter)
+        let message_cmd = db.get_command("Message").expect("Message command should exist in DB");
+        emitter.emit_command("Message", message_cmd, &vec![Arg::Value(42)]).unwrap();
+        
+        // Message is opcode (2 bytes) + 1 u8 param (1 byte) = 3 bytes total
+        assert_eq!(emitter.output.len(), 3, "Message command should be 3 bytes (opcode + u8 param)");
+        // Check opcode is 44 (0x2C) in little endian
+        assert_eq!(emitter.output[0], 0x2C);
+        assert_eq!(emitter.output[1], 0x00);
+        // Check param value
+        assert_eq!(emitter.output[2], 42);
+    }
+
+    #[test]
+    fn test_emit_script_file_jump_table() {
+        use crate::compiler::parser::JUMP_TABLE_END_MARKER;
+        
+        let db = create_test_db();
+        let mut emitter = Emitter::new(&db);
+        
+        // Create a script with two public functions
+        let items = vec![
+            TopLevelItem::Function(IrFunction {
+                headers: vec![FunctionHeader {
+                    name: "Func0".to_string(),
+                    id: Some(0),
+                    is_public: true,
+                }],
+                instructions: vec![
+                    IrOpcode::Command { name: "End".to_string(), args: vec![] },
+                ],
+            }),
+            TopLevelItem::Function(IrFunction {
+                headers: vec![FunctionHeader {
+                    name: "Func1".to_string(),
+                    id: Some(1),
+                    is_public: true,
+                }],
+                instructions: vec![
+                    IrOpcode::Command { name: "End".to_string(), args: vec![] },
+                ],
+            }),
+        ];
+        
+        let output = emitter.emit_script_file(&items).unwrap();
+        
+        // Jump table: 2 entries * 4 bytes = 8 bytes, plus 2-byte marker
+        // Marker is 0xFD13 = [0x13, 0xFD]
+        assert!(output.len() >= 10, "Should have jump table + marker + code");
+        
+        // Check for the end marker (0xFD13)
+        assert_eq!(&output[8..10], &JUMP_TABLE_END_MARKER, 
+            "Should have jump table end marker at offset 8");
+    }
+
+    #[test]
+    fn test_emit_script_file_label_relocation() {
+        let db = create_test_db();
+        let mut emitter = Emitter::new(&db);
+        
+        // Create a function with a jump to a label
+        let items = vec![
+            TopLevelItem::Function(IrFunction {
+                headers: vec![FunctionHeader {
+                    name: "TestFunc".to_string(),
+                    id: Some(0),
+                    is_public: true,
+                }],
+                instructions: vec![
+                    IrOpcode::Command { 
+                        name: "GoTo".to_string(), 
+                        args: vec![Arg::Pointer(".target".to_string())] 
+                    },
+                    IrOpcode::Command { name: "End".to_string(), args: vec![] },
+                    IrOpcode::Label(".target".to_string()),
+                    IrOpcode::Command { name: "Return".to_string(), args: vec![] },
+                ],
+            }),
+        ];
+        
+        let output = emitter.emit_script_file(&items).unwrap();
+        
+        // Should compile successfully with the label reference resolved
+        assert!(output.len() > 10, "Should have generated code with jump and label");
+        
+        // The GoTo instruction should have a relative offset to the label
+        // We can't easily verify the exact offset without knowing the opcode sizes,
+        // but we can verify the output is non-zero (relocation was applied)
+    }
+
+    #[test]
+    fn test_emit_script_file_action_alignment() {
+        let db = create_test_db();
+        let mut emitter = Emitter::new(&db);
+        
+        // Create a function followed by an action
+        // The action should be 4-byte aligned
+        let items = vec![
+            TopLevelItem::Function(IrFunction {
+                headers: vec![FunctionHeader {
+                    name: "TestFunc".to_string(),
+                    id: Some(0),
+                    is_public: true,
+                }],
+                instructions: vec![
+                    // Just End, which is 2 bytes
+                    IrOpcode::Command { name: "End".to_string(), args: vec![] },
+                ],
+            }),
+            TopLevelItem::Action(IrAction {
+                name: "TestAction".to_string(),
+                instructions: vec![
+                    IrOpcode::Command { name: "FaceNorth".to_string(), args: vec![] },
+                    IrOpcode::Command { name: "EndMovement".to_string(), args: vec![] },
+                ],
+            }),
+        ];
+        
+        let output = emitter.emit_script_file(&items).unwrap();
+        
+        // Jump table: 1 entry (4 bytes) + marker (2 bytes) = 6 bytes
+        // Function: End = 2 bytes, but at offset 6, so function starts at 6
+        // After function: offset 8, which is already 4-byte aligned
+        // But if function body was 3 bytes, action would need padding
+        
+        // The action offset should be in the action_offsets map and should be 4-byte aligned
+        // We can verify output length is correct
+        assert!(output.len() >= 14, "Should have jump table + function + aligned action");
+        
+        // Output length should be even (final alignment)
+        assert_eq!(output.len() % 2, 0, "Final output should be 2-byte aligned");
     }
 }

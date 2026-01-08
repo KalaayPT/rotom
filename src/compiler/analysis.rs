@@ -421,4 +421,91 @@ mod tests {
             _ => panic!("Local label not found in symbol table"),
         }
     }
+
+    #[test]
+    fn test_analyze_full_script() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r#"
+alias 0x800C as VAR_RESULT
+
+function MainFunc #0:
+    SetVar VAR_RESULT, 5
+    if VAR_RESULT == 5 then
+        Message 1
+    endif
+    Jump .done
+.done:
+    End
+
+action TestMovement
+    WalkNormalNorth 3
+    EndMovement
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_ok(), "Full script analysis should succeed: {:?}", result);
+        
+        // Check that symbols were registered
+        assert!(analyzer.symbols.resolve("VAR_RESULT").is_some());
+        assert!(analyzer.symbols.resolve("MainFunc").is_some());
+        assert!(analyzer.symbols.resolve("TestMovement").is_some());
+    }
+
+    #[test]
+    fn test_duplicate_symbol_error() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r#"
+function DuplicateName #0:
+    End
+
+function DuplicateName #1:
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_err(), "Duplicate symbol should cause error");
+        
+        // Check error message mentions the duplicate
+        if let Err(e) = result {
+            let msg = format!("{}", e);
+            assert!(msg.contains("already defined") || msg.contains("DuplicateName"), 
+                    "Error should mention duplicate: {}", msg);
+        }
+    }
+
+    #[test]
+    fn test_control_flow_in_action_error() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r#"
+function Dummy #0:
+    End
+
+action BadAction
+    if 0x8000 == 1 then
+        WalkNorth
+    endif
+    EndMovement
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_err(), "Control flow in action should cause error");
+    }
 }
