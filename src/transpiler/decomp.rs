@@ -31,7 +31,62 @@
 //! EndMovement
 //! ```
 
-use regex::Regex;
+
+/// Maps command names to argument reordering indices.
+/// Used when decomp macro format has different argument order than game binary expects.
+///
+/// Example: [0, 1, 2, 4, 3] means:
+/// - arg 0 stays at position 0
+/// - arg 1 stays at position 1
+/// - arg 2 stays at position 2
+/// - arg 4 moves to position 3
+/// - arg 3 moves to position 4
+const PARAM_REORDER_MAP: &[(&str, &[usize])] = &[
+    // InitGlobalTextListMenu: decomp macro has (x, y, cursor, selection, cancel)
+    // but game binary expects (x, y, cursor, cancel, selection)
+    ("InitGlobalTextListMenu", &[0, 1, 2, 4, 3]),
+    // InitLocalTextListMenu: same issue
+    ("InitLocalTextListMenu", &[0, 1, 2, 4, 3]),
+];
+
+/// Reorder command arguments according to PARAM_REORDER_MAP
+fn reorder_args(command: &str, args: &str) -> String {
+    // Find if this command has a reordering map
+    let reorder_map = PARAM_REORDER_MAP
+        .iter()
+        .find(|(name, _)| *name == command)
+        .map(|(_, map)| *map);
+
+    if let Some(map) = reorder_map {
+        // Parse arguments into a Vec
+        let arg_vec: Vec<&str> = args.split(',').map(|s| s.trim()).collect();
+        let arg_count = arg_vec.len();
+        let map_len = map.len();
+
+        if arg_count == map_len {
+            // Args match map length - direct reordering
+            let mut reordered = Vec::with_capacity(map_len);
+            for &idx in map {
+                reordered.push(arg_vec[idx]);
+            }
+            return reordered.join(", ");
+        } else if arg_count < map_len {
+            // Fewer args than map - reorder available args
+            let mut reordered = Vec::with_capacity(map_len);
+            for &idx in map {
+                if idx < arg_count {
+                    reordered.push(arg_vec[idx]);
+                } else {
+                    // Missing arg - use placeholder (will be caught by compiler)
+                    reordered.push("0");
+                }
+            }
+            return reordered.join(", ");
+        }
+    }
+    // No reordering needed
+    args.to_string()
+}
 
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(input: &str) -> String {
@@ -167,10 +222,29 @@ pub fn transpile(input: &str) -> String {
             continue;
         }
 
-        // Handle commands
-        // Decomp format is already comma-separated, so we just need to indent
+        // Handle commands - parse and optionally reorder arguments
+        // Decomp format: CommandName arg1, arg2, arg3
         output.push_str("    ");
-        output.push_str(trimmed);
+        if let Some(cmd_end_idx) = trimmed.find(|c| c == ' ' || c == '\t') {
+            let cmd_name = &trimmed[..cmd_end_idx];
+            let args = trimmed[cmd_end_idx..].trim();
+
+            if args.is_empty() {
+                // Command with no arguments
+                output.push_str(cmd_name);
+            } else {
+                // Command with arguments - check if reordering is needed
+                let reordered_args = reorder_args(cmd_name, args);
+                output.push_str(cmd_name);
+                if !reordered_args.is_empty() {
+                    output.push(' ');
+                    output.push_str(&reordered_args);
+                }
+            }
+        } else {
+            // No arguments, just the command name
+            output.push_str(trimmed);
+        }
         output.push('\n');
     }
 

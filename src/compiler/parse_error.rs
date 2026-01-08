@@ -126,7 +126,7 @@ pub fn print_error(filename: &str, source: &str, error: &CompileError) {
             .with_labels(vec![Label::primary(file_id, span).with_message(message)]);
         let writer = StandardStream::stderr(ColorChoice::Always);
         let config = term::Config::default();
-        if let Err(e) = term::emit(&mut writer.lock(), &config, &files, &diagnostic) {
+        if let Err(e) = term::emit_to_io_write(&mut writer.lock(), &config, &files, &diagnostic) {
             eprintln!(
                 "Internal Compiler Error: Could not print diagnostics: {}",
                 e

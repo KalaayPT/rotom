@@ -2,6 +2,8 @@
 //!
 //! Supports the normalized V2 JSON schema from scrcmd-database.
 
+#![allow(dead_code)]
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;

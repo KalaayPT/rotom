@@ -11,7 +11,6 @@ use compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
 use database::{ConstantDb, DatabaseV2, GameFamily};
 
 use crate::compiler::codegen::Emitter;
-use crate::compiler::ir;
 
 #[derive(Debug, ClapParser)]
 #[command(name = "rotom")]
@@ -122,7 +121,10 @@ fn compile(
 
     // Load constants from decomp project if specified
     if let Some(decomp) = decomp_root {
-        println!("\nLoading constants from decomp project: {}", decomp.display());
+        println!(
+            "\nLoading constants from decomp project: {}",
+            decomp.display()
+        );
         let decomp_count = constants.load_decomp_project(decomp)?;
         println!("Loaded {} constants from decomp project", decomp_count);
 
@@ -142,8 +144,16 @@ fn compile(
     let lexer = Lexer::new(&source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
-    let func_count = file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).count();
-    let action_count = file.items.iter().filter(|s| matches!(s.node, StatementKind::Action { .. })).count();
+    let func_count = file
+        .items
+        .iter()
+        .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+        .count();
+    let action_count = file
+        .items
+        .iter()
+        .filter(|s| matches!(s.node, StatementKind::Action { .. }))
+        .count();
     println!(
         "Parsed: {} aliases, {} functions, {} actions",
         file.aliases.len(),
@@ -170,6 +180,7 @@ fn compile(
 }
 
 fn run_test(db_path: &PathBuf) {
+    let start = std::time::Instant::now();
     let _old_input = r#"
 // === Global Aliases ===
 alias 0x800C as RESULT
@@ -321,8 +332,16 @@ EndMovement
             return;
         }
     };
-    let func_count = file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).count();
-    let action_count = file.items.iter().filter(|s| matches!(s.node, StatementKind::Action { .. })).count();
+    let func_count = file
+        .items
+        .iter()
+        .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+        .count();
+    let action_count = file
+        .items
+        .iter()
+        .filter(|s| matches!(s.node, StatementKind::Action { .. }))
+        .count();
     println!(
         "Parsed: {} aliases, {} functions, {} actions",
         file.aliases.len(),
@@ -374,6 +393,7 @@ EndMovement
             return;
         }
     };
-    println!("Output: {:?}", byte_output);
+    // println!("Output: {:?}", byte_output);
+    println!("finished in {}ms", start.elapsed().as_millis());
     std::fs::write("test_output.bin", &byte_output).unwrap();
 }

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::{
     compiler::{
-        IrFunction, ParseResult,
-        ir::{Arg, IrAction, IrOpcode, TopLevelItem},
+        ParseResult,
+        ir::{Arg, IrOpcode, TopLevelItem},
         parse_error::codegen_error,
         parser::JUMP_TABLE_END_MARKER,
     },
@@ -47,6 +47,7 @@ impl<'a> Emitter<'a> {
     }
     pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec<u8>> {
         // Collect jump table slots from all functions
+        // Sort by slot ID to match game expectations (jump table entries are indexed by slot ID)
         self.jump_table_slots = items
             .iter()
             .filter_map(|item| {
@@ -58,6 +59,8 @@ impl<'a> Emitter<'a> {
             })
             .flatten()
             .collect();
+        // Sort by slot ID to ensure correct ordering
+        self.jump_table_slots.sort_by_key(|(slot_id, _)| *slot_id);
         for (_, func_name) in self.jump_table_slots.clone() {
             // Placeholder for function offset
             self.relocations.push(Relocation {
@@ -133,8 +136,15 @@ impl<'a> Emitter<'a> {
                 let cmd = self.db.get_movement(name)?;
                 let opcode = cmd.id.unwrap();
                 self.emit_u16(opcode);
-                // Movement always has exactly one u16 param (default 0)
-                let param = args.first().map(|a| a.unwrap_value() as u16).unwrap_or(0);
+                // If script provides an arg, use it. Otherwise use default.
+                // EndMovement defaults to 0, all other movements default to 1.
+                let param = if let Some(arg) = args.first() {
+                    arg.unwrap_value() as u16
+                } else if name == "EndMovement" {
+                    0
+                } else {
+                    1
+                };
                 self.emit_u16(param);
             }
         }

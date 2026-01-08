@@ -327,14 +327,31 @@ error: Undefined symbol: 'undefined_var'
 
 The compiled script binary consists of:
 1. **Jump Table:** Array of 4-byte offsets pointing to public function entry points
+    * Sorted by slot number (not source order)
     * Terminated by `0xFD13` marker
-    * Order matches function slot numbers
 2. **Script Data:** Concatenated function and label bytecode
     * Commands are 2-byte IDs followed by parameters
     * Parameters are 2 or 4 bytes depending on command definition
     * Code emitted in source order (fall-through preserved)
 3. **Movement Data:** Separate section for action bytecode
     * Movement commands are 2-byte ID + 2-byte parameter
+    * Actions are interleaved with functions in binary (preserving source order)
+    * Default parameter for most movements is 1 (e.g., `WalkNorth` = `WalkNorth 1`)
+    * Movements also accept explicit arguments even when DB says 0 params (e.g., `Delay8 4`)
+
+### 8.1 Movement Command Behavior
+
+Movement commands have special handling for parameters:
+
+| Command | DB Params | User Args | Behavior |
+|---------|-----------|-----------|----------|
+| `WalkNorth` | 0 | 0 | Defaults to 1 step |
+| `WalkNorth 3` | 0 | 1 | Walks 3 steps |
+| `Delay8` | 0 | 0 | Defaults to 1 frame (0x01) |
+| `Delay8 4` | 0 | 1 | Waits 4 frames (0x04) |
+| `EndMovement` | 0 | 0 | No parameter emitted |
+
+This allows natural syntax while maintaining binary compatibility with the game engine.
 
 ## 9. DSPRE Compatibility
 
@@ -351,21 +368,31 @@ Rotom includes a transpiler for DSPRE script format:
 | `Overworld.0` | `0` (descriptor stripped) |
 | `arg1 arg2 arg3` | `arg1, arg2, arg3` (comma-separated) |
 
-## 10. Future Work (TODO)
+## 10. Completed Features & Roadmap
 
-- [x] Codegen
+### Completed
+
+- [x] Codegen (byte-matching achieved for first scripts)
 - [x] DSPRE transpiler
+- [x] Jump table ordering (sorted by slot ID)
+- [x] Movement default parameters (1 when not specified)
+- [x] Action/function interleaving (preserves source order)
+- [x] Parameter reordering for commands with different arg order in decomps
+- [x] Macro support
+
+### In Progress
+
+- [ ] Binary matching against pokeplatinum decompiled scripts
 - [ ] Simple decompilation
+- [ ] Decompilation into high-level logic
+
+### Future Work
+
 - [ ] Tests
   - [x] Lexer tests
   - [x] Parser tests
   - [x] Semantic analysis tests
-  - [ ] Codegen tests
-- [ ] Binary matching against known scripts
-  - [x] DSPRE
-  - [ ] Pokeplatinum
-- [ ] Macro support
-- [ ] Decompilation into high-level logic
+  - [ ] Codegen tests (byte-matching verification)
 - [ ] Register allocation for automatic variable assignment
 - [ ] Constant folding for compile-time arithmetic
 - [ ] Complex expressions in conditions (`if x + 1 == 5`)

@@ -14,5 +14,5 @@ pub use analysis::Analyzer;
 pub use ast::StatementKind;
 pub use ir::{IrFunction, Lowerer};
 pub use lexer::Lexer;
-pub use parse_error::{CompileError, ParseResult};
+pub use parse_error::ParseResult;
 pub use parser::Parser;

@@ -6,7 +6,7 @@ use crate::database::{Command, DatabaseV2, ParamDef};
 
 use super::{
     analysis::{SymbolTable, SymbolType},
-    ast::{Expression, ExpressionKind, Statement, StatementKind, Spanned},
+    ast::{Expression, ExpressionKind, Statement, StatementKind},
     parse_error::{ParseResult, lowering_error},
     token::TokenType,
     Lexer, Parser,
@@ -163,10 +163,8 @@ impl<'a> Lowerer<'a> {
         self.label_counter += 1;
         format!(".{}_gen_{}", prefix, self.label_counter)
     }
-    pub fn lower_script_file(
-        &mut self,
-        scr_file: &ScriptFile,
-    ) -> ParseResult<Vec<TopLevelItem>> {
+
+    pub fn lower_script_file(&mut self, scr_file: &ScriptFile) -> ParseResult<Vec<TopLevelItem>> {
         let mut items = Vec::new();
         for item in &scr_file.items {
             match &item.node {
@@ -201,8 +199,12 @@ impl<'a> Lowerer<'a> {
     fn lower_statement(&mut self, stmt: &Statement) -> ParseResult<()> {
         self.lower_statement_with_depth(stmt, 0)
     }
-    
-    fn lower_statement_with_depth(&mut self, stmt: &Statement, macro_depth: usize) -> ParseResult<()> {
+
+    fn lower_statement_with_depth(
+        &mut self,
+        stmt: &Statement,
+        macro_depth: usize,
+    ) -> ParseResult<()> {
         match &stmt.node {
             StatementKind::IfStatement {
                 condition,
@@ -284,7 +286,12 @@ impl<'a> Lowerer<'a> {
     }
     
     /// Lower a command, expanding macros if needed
-    fn lower_command(&mut self, command: &str, args: &[Expression], macro_depth: usize) -> ParseResult<()> {
+    fn lower_command(
+        &mut self,
+        command: &str,
+        args: &[Expression],
+        macro_depth: usize,
+    ) -> ParseResult<()> {
         // Check if this is a macro by looking it up in the database
         if let Ok(cmd) = self.db.get_command(command) {
             if cmd.is_macro() {
@@ -313,7 +320,12 @@ impl<'a> Lowerer<'a> {
     /// Apply default parameter values to fill in missing arguments
     /// Arguments map to required parameter positions. Optional parameters with defaults
     /// are filled in when there are fewer arguments than parameters.
-    fn apply_defaults(&self, command: &str, cmd: &Command, args: &[Expression]) -> ParseResult<Vec<Expression>> {
+    fn apply_defaults(
+        &self,
+        command: &str,
+        cmd: &Command,
+        args: &[Expression],
+    ) -> ParseResult<Vec<Expression>> {
         let params = &cmd.params;
         let arg_count = args.len();
         let param_count = params.len();
@@ -358,7 +370,12 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Expand a macro by substituting parameters and recursively lowering
-    fn expand_macro(&mut self, macro_name: &str, args: &[Expression], depth: usize) -> ParseResult<()> {
+    fn expand_macro(
+        &mut self,
+        macro_name: &str,
+        args: &[Expression],
+        depth: usize,
+    ) -> ParseResult<()> {
         if depth > MAX_MACRO_DEPTH {
             return Err(lowering_error(format!(
                 "Macro expansion depth exceeded (max {}) while expanding '{}'. Possible infinite recursion.",
@@ -375,7 +392,9 @@ impl<'a> Lowerer<'a> {
         if args_with_defaults.len() != params.len() {
             return Err(lowering_error(format!(
                 "Macro '{}' expects {} arguments, got {}",
-                macro_name, params.len(), args_with_defaults.len()
+                macro_name,
+                params.len(),
+                args_with_defaults.len()
             )));
         }
         
@@ -405,7 +424,10 @@ impl<'a> Lowerer<'a> {
         };
 
         let expansion = expansion.ok_or_else(|| {
-            lowering_error(format!("Macro '{}' has no expansion defined (and no matching variant)", macro_name))
+            lowering_error(format!(
+                "Macro '{}' has no expansion defined (and no matching variant)",
+                macro_name
+            ))
         })?;
         
         let mut param_map: HashMap<String, String> = HashMap::new();
@@ -430,7 +452,12 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Evaluate a macro condition string (e.g., "\value < VARS_START")
-    fn evaluate_condition(&self, condition: &str, args: &[Expression], params: &[crate::database::ParamDef]) -> ParseResult<bool> {
+    fn evaluate_condition(
+        &self,
+        condition: &str,
+        args: &[Expression],
+        params: &[crate::database::ParamDef],
+    ) -> ParseResult<bool> {
         use regex::Regex;
         
         // 1. Substitute \paramName with the integer value of the argument
@@ -475,17 +502,27 @@ impl<'a> Lowerer<'a> {
                 } else if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
                     Ok(*val)
                 } else {
-                    Err(lowering_error(format!("Could not resolve '{}' to an integer for macro condition", name)))
+                    Err(lowering_error(format!(
+                        "Could not resolve '{}' to an integer for macro condition",
+                        name
+                    )))
                 }
             }
-            _ => Err(lowering_error(format!("Unsupported argument type for macro condition: {:?}", expr.node))),
+            _ => Err(lowering_error(format!(
+                "Unsupported argument type for macro condition: {:?}",
+                expr.node
+            ))),
         }
     }
     
     /// Evaluate an expression AST to a boolean
     fn eval_bool_expr(&self, expr: &Expression) -> ParseResult<bool> {
         match &expr.node {
-            ExpressionKind::Infix { left, operator, right } => {
+            ExpressionKind::Infix {
+                left,
+                operator,
+                right,
+            } => {
                 let left_val = self.eval_int_expr(left)?;
                 let right_val = self.eval_int_expr(right)?;
                 
@@ -496,10 +533,16 @@ impl<'a> Lowerer<'a> {
                     TokenType::GreaterEqual => Ok(left_val >= right_val),
                     TokenType::Equal => Ok(left_val == right_val),
                     TokenType::NotEqual => Ok(left_val != right_val),
-                    _ => Err(lowering_error(format!("Unsupported operator {:?} in macro condition", operator))),
+                    _ => Err(lowering_error(format!(
+                        "Unsupported operator {:?} in macro condition",
+                        operator
+                    ))),
                 }
             }
-            _ => Err(lowering_error(format!("Expected comparison expression in macro condition, got {:?}", expr.node))),
+            _ => Err(lowering_error(format!(
+                "Expected comparison expression in macro condition, got {:?}",
+                expr.node
+            ))),
         }
     }
     
@@ -507,10 +550,12 @@ impl<'a> Lowerer<'a> {
     fn eval_int_expr(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
-            ExpressionKind::Identifier(_) => {
-                self.resolve_arg_to_int(expr)
-            }
-            ExpressionKind::Infix { left, operator, right } => {
+            ExpressionKind::Identifier(_) => self.resolve_arg_to_int(expr),
+            ExpressionKind::Infix {
+                left,
+                operator,
+                right,
+            } => {
                 let left_val = self.eval_int_expr(left)?;
                 let right_val = self.eval_int_expr(right)?;
                 match operator {
@@ -518,10 +563,16 @@ impl<'a> Lowerer<'a> {
                     TokenType::Minus => Ok(left_val - right_val),
                     TokenType::Mul => Ok(left_val * right_val),
                     // TokenType::Slash => Ok(left_val / right_val),
-                    _ => Err(lowering_error(format!("Unsupported arithmetic operator {:?} in macro condition", operator))),
+                    _ => Err(lowering_error(format!(
+                        "Unsupported arithmetic operator {:?} in macro condition",
+                        operator
+                    ))),
                 }
             }
-            _ => Err(lowering_error(format!("Cannot evaluate expression to integer: {:?}", expr.node))),
+            _ => Err(lowering_error(format!(
+                "Cannot evaluate expression to integer: {:?}",
+                expr.node
+            ))),
         }
     }
     
@@ -538,27 +589,38 @@ impl<'a> Lowerer<'a> {
                 let inner = self.format_arg_for_substitution(id)?;
                 let op_str = match operator {
                     TokenType::Minus => "-",
-                    _ => return Err(lowering_error(format!(
-                        "Unsupported prefix operator {:?} in macro argument", operator
-                    ))),
+                    _ => {
+                        return Err(lowering_error(format!(
+                            "Unsupported prefix operator {:?} in macro argument",
+                            operator
+                        )));
+                    }
                 };
                 Ok(format!("{}{}", op_str, inner))
             }
-            ExpressionKind::Infix { left, operator, right } => {
+            ExpressionKind::Infix {
+                left,
+                operator,
+                right,
+            } => {
                 let left_str = self.format_arg_for_substitution(left)?;
                 let right_str = self.format_arg_for_substitution(right)?;
                 let op_str = match operator {
                     TokenType::Plus => "+",
                     TokenType::Minus => "-",
                     TokenType::Mul => "*",
-                    _ => return Err(lowering_error(format!(
-                        "Unsupported operator {:?} in macro argument", operator
-                    ))),
+                    _ => {
+                        return Err(lowering_error(format!(
+                            "Unsupported operator {:?} in macro argument",
+                            operator
+                        )));
+                    }
                 };
                 Ok(format!("{} {} {}", left_str, op_str, right_str))
             }
             _ => Err(lowering_error(format!(
-                "Unsupported expression type in macro argument: {:?}", expr.node
+                "Unsupported expression type in macro argument: {:?}",
+                expr.node
             ))),
         }
     }
