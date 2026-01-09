@@ -102,7 +102,7 @@ impl<'a> Analyzer<'a> {
             constants: None,
         }
     }
-    
+
     /// Create an analyzer with a constants database
     pub fn with_constants(constants: &'a ConstantDb) -> Analyzer<'a> {
         Analyzer {
@@ -110,19 +110,8 @@ impl<'a> Analyzer<'a> {
             constants: Some(constants),
         }
     }
-    
+
     pub fn analyze(&mut self, file: &ScriptFile) -> ParseResult<()> {
-        // First, register all constants from the database into the symbol table
-        if let Some(const_db) = self.constants {
-            for (name, value) in const_db.iter() {
-                let _ = self.symbols.define_global(
-                    name.clone(),
-                    SymbolType::Constant(*value),
-                    0..0,
-                );
-            }
-        }
-        
         for alias in &file.aliases {
             self.register_global_alias(alias)?;
         }
@@ -163,8 +152,9 @@ impl<'a> Analyzer<'a> {
     fn register_function_names(&mut self, func: &Statement) -> ParseResult<()> {
         if let StatementKind::Function { headers, .. } = &func.node {
             // Track which function names we've already registered
-            let mut registered_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-            
+            let mut registered_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+
             for header in headers {
                 // Only define the function name once (even if it has multiple headers)
                 if !registered_names.contains(&header.name) {
@@ -295,10 +285,28 @@ impl<'a> Analyzer<'a> {
         }
         Ok(())
     }
+
+    /// Check if a symbol exists (in symbol table OR constants db)
+    fn resolve_symbol(&self, name: &str) -> Option<SymbolType> {
+        // 1. Check local/global symbols
+        if let Some(kind) = self.symbols.resolve(name) {
+            return Some(kind.clone());
+        }
+
+        // 2. Fallback: Check constants DB
+        if let Some(db) = self.constants {
+            if let Some(value) = db.get(name) {
+                return Some(SymbolType::Constant(value));
+            }
+        }
+
+        None
+    }
+
     fn validate_expression(&self, expr: &Expression) -> ParseResult<()> {
         match &expr.node {
             ExpressionKind::Identifier(name) => {
-                if self.symbols.resolve(name).is_none() {
+                if self.resolve_symbol(name).is_none() {
                     return Err(analysis_error(
                         expr.span.clone(),
                         format!("Undefined symbol: '{}'", name),
@@ -328,7 +336,7 @@ impl<'a> Analyzer<'a> {
             ExpressionKind::Identifier(n) => n, // Jump Global
             _ => return Ok(()), // Jump 100 is also valid in case anyone ever needs it
         };
-        match self.symbols.resolve(name) {
+        match self.resolve_symbol(name) {
             Some(_) => Ok(()),
             None => Err(analysis_error(
                 expr.span.clone(),
@@ -450,11 +458,15 @@ action TestMovement
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        
+
         let mut analyzer = Analyzer::new();
         let result = analyzer.analyze(&script_file);
-        assert!(result.is_ok(), "Full script analysis should succeed: {:?}", result);
-        
+        assert!(
+            result.is_ok(),
+            "Full script analysis should succeed: {:?}",
+            result
+        );
+
         // Check that symbols were registered
         assert!(analyzer.symbols.resolve("VAR_RESULT").is_some());
         assert!(analyzer.symbols.resolve("MainFunc").is_some());
@@ -476,7 +488,7 @@ function Dummy #0:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        
+
         let mut analyzer = Analyzer::new();
         let result = analyzer.analyze(&script_file);
         assert!(result.is_err(), "Duplicate alias should cause error");
@@ -500,7 +512,7 @@ action BadAction
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        
+
         let mut analyzer = Analyzer::new();
         let result = analyzer.analyze(&script_file);
         assert!(result.is_err(), "Control flow in action should cause error");
@@ -521,15 +533,17 @@ function TestFunc #2:
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
-        
+
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        
+
         let mut analyzer = Analyzer::with_constants(&constants);
         let result = analyzer.analyze(&script_file);
-        assert!(result.is_ok(), "Analyzer failed to handle stacked headers: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Analyzer failed to handle stacked headers: {:?}",
+            result.err()
+        );
     }
-
-
 }

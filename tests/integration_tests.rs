@@ -39,7 +39,7 @@ fn compile_to_binary(
     analyzer.analyze(&file).map_err(|e| format!("Analysis error: {}", e))?;
 
     // Lower to IR
-    let mut lowerer = Lowerer::new(&analyzer.symbols, db);
+    let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, constants);
     let items = lowerer.lower_script_file(&file).map_err(|e| format!("Lowering error: {}", e))?;
 
     // Emit binary

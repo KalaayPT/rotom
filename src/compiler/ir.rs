@@ -158,6 +158,7 @@ pub struct Lowerer<'a> {
     global_symbols: &'a SymbolTable,
     local_aliases: HashMap<String, i32>,
     db: &'a DatabaseV2,
+    constants: Option<&'a crate::database::ConstantDb>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -168,8 +169,21 @@ impl<'a> Lowerer<'a> {
             global_symbols: symbols,
             local_aliases: HashMap::new(),
             db,
+            constants: None,
         }
     }
+    
+    pub fn with_constants(symbols: &'a SymbolTable, db: &'a DatabaseV2, constants: &'a crate::database::ConstantDb) -> Self {
+        Self {
+            label_counter: 0,
+            output: Vec::new(),
+            global_symbols: symbols,
+            local_aliases: HashMap::new(),
+            db,
+            constants: Some(constants),
+        }
+    }
+
     fn new_label(&mut self, prefix: &str) -> String {
         self.label_counter += 1;
         format!(".{}_gen_{}", prefix, self.label_counter)
@@ -553,15 +567,22 @@ impl<'a> Lowerer<'a> {
             ExpressionKind::Identifier(name) => {
                 // Resolve identifier using global symbols (constants)
                 if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
-                    Ok(*val)
+                    return Ok(*val);
                 } else if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
-                    Ok(*val)
-                } else {
-                    Err(lowering_error(format!(
-                        "Could not resolve '{}' to an integer for macro condition",
-                        name
-                    )))
+                    return Ok(*val);
                 }
+                
+                // Fallback: Check constants DB
+                if let Some(db) = self.constants {
+                    if let Some(val) = db.get(name) {
+                        return Ok(val);
+                    }
+                }
+                
+                Err(lowering_error(format!(
+                    "Could not resolve '{}' to an integer for macro condition",
+                    name
+                )))
             }
             _ => Err(lowering_error(format!(
                 "Unsupported argument type for macro condition: {:?}",
@@ -758,17 +779,28 @@ impl<'a> Lowerer<'a> {
                 if let Some(&val) = self.local_aliases.get(name) {
                     return Ok(Arg::Value(val));
                 }
+                
+                // 1. Check symbol table
                 match self.global_symbols.resolve(name) {
-                    Some(SymbolType::Variable(id)) => Ok(Arg::Value(*id)),
-                    Some(SymbolType::Constant(id)) => Ok(Arg::Value(*id)),
+                    Some(SymbolType::Variable(id)) => return Ok(Arg::Value(*id)),
+                    Some(SymbolType::Constant(id)) => return Ok(Arg::Value(*id)),
                     Some(SymbolType::Function(_))
                     | Some(SymbolType::Label)
-                    | Some(SymbolType::Action) => Ok(Arg::Pointer(name.clone())),
-                    None => Err(lowering_error(format!(
-                        "Symbol '{}' could not be resolved (analysis should have caught this)",
-                        name
-                    ))),
+                    | Some(SymbolType::Action) => return Ok(Arg::Pointer(name.clone())),
+                    None => {} // Try constants db
                 }
+                
+                // 2. Check constants DB
+                if let Some(db) = self.constants {
+                    if let Some(val) = db.get(name) {
+                        return Ok(Arg::Value(val));
+                    }
+                }
+                
+                Err(lowering_error(format!(
+                    "Symbol '{}' could not be resolved (analysis should have caught this)",
+                    name
+                )))
             }
             ExpressionKind::Number(val) => Ok(Arg::Value(*val)),
             ExpressionKind::Label(name) => Ok(Arg::Pointer(name.clone())),

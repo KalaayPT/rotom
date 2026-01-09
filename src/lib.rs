@@ -67,17 +67,22 @@ pub fn compile_to_bytes(
     let mut analyzer = Analyzer::with_constants(constants);
     analyzer.analyze(&file)?;
 
-    let mut lowerer = Lowerer::new(&analyzer.symbols, db);
+    let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, constants);
     let items = lowerer.lower_script_file(&file)?;
 
     let mut emitter = Emitter::new(db);
     emitter.emit_script_file(&items)
 }
 
-/// Compile a single .rotom file and write the output to disk.
+/// Compile a single file to binary bytes, handling transpilation if needed.
+///
+/// Supports:
+/// - .rotom (Native Rotoscript)
+/// - .script (legacy DSPRE script)
+/// - .s (Decomp assembly)
 ///
 /// # Arguments
-/// * `input` - Path to the input .rotom file
+/// * `input` - Path to the input file
 /// * `output` - Path to the output .bin file
 /// * `db` - The command database
 /// * `constants` - The constant database (with decomp constants loaded if needed)
@@ -87,11 +92,32 @@ pub fn compile_file(
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> Result<CompileResult, CompileError> {
+    let start = std::time::Instant::now();
     let source = std::fs::read_to_string(input).map_err(|e| CompileError::Io {
         message: format!("Failed to read input file '{}': {}", input.display(), e),
     })?;
+    let read_time = start.elapsed();
 
-    let bytes = compile_to_bytes(&source, db, constants)?;
+    let extension = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let transpile_start = std::time::Instant::now();
+    let rotom_source = match extension.as_str() {
+        "rotom" => source,
+        "script" => transpiler::transpile_dspre(&source),
+        "s" => transpiler::transpile_decomp(&source, Some(db)),
+        _ => return Err(CompileError::Io {
+            message: format!("Unsupported file extension: .{}", extension),
+        }),
+    };
+    let transpile_time = transpile_start.elapsed();
+
+    let compile_start = std::time::Instant::now();
+    let bytes = compile_to_bytes(&rotom_source, db, constants)?;
+    let compile_time = compile_start.elapsed();
     let size = bytes.len();
 
     std::fs::write(output, &bytes).map_err(|e| CompileError::Io {
@@ -105,8 +131,8 @@ pub fn compile_file(
     })
 }
 
-/// Generate output path for a .rotom file.
-/// Replaces .rotom extension with .bin, or appends .bin if no .rotom extension.
+/// Generate output path for a compiled file.
+/// Replaces input extension with .bin, or appends .bin if no extension.
 fn generate_output_path(input: &Path, output_dir: &Path) -> PathBuf {
     let stem = input.file_stem().unwrap_or_default();
     output_dir.join(format!("{}.bin", stem.to_string_lossy()))
@@ -115,10 +141,11 @@ fn generate_output_path(input: &Path, output_dir: &Path) -> PathBuf {
 /// Compile a path which can be either a single file or a directory.
 ///
 /// If `input` is a file, compiles just that file.
-/// If `input` is a directory, compiles all .rotom files in it (in parallel).
+/// If `input` is a directory, compiles all supported files in it (in parallel).
+/// Supported extensions: .rotom, .script, .s
 ///
 /// # Arguments
-/// * `input` - Path to a .rotom file or directory containing .rotom files
+/// * `input` - Path to input file or directory
 /// * `output` - Path to output .bin file or directory for outputs
 /// * `db` - The command database
 /// * `constants` - The constant database
@@ -170,29 +197,35 @@ pub fn compile_path(
             })?;
         }
 
-        // Collect all .rotom files in the directory
-        let rotom_files: Vec<PathBuf> = std::fs::read_dir(input)
+        // Collect all supported files in the directory
+        let files: Vec<PathBuf> = std::fs::read_dir(input)
             .map_err(|e| CompileError::Io {
                 message: format!("Failed to read directory '{}': {}", input.display(), e),
             })?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("rotom"))
+                if !path.is_file() {
+                    return false;
+                }
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| {
+                        let ext = ext.to_lowercase();
+                        ext == "rotom" || ext == "script" || ext == "s"
+                    })
+                    .unwrap_or(false)
             })
             .collect();
 
-        if rotom_files.is_empty() {
+        if files.is_empty() {
             return Err(CompileError::Io {
-                message: format!("No .rotom files found in directory: {}", input.display()),
+                message: format!("No supported script files (.rotom, .script, .s) found in directory: {}", input.display()),
             });
         }
 
         // Compile all files in parallel
-        let results: Vec<Result<CompileResult, (PathBuf, CompileError)>> = rotom_files
+        let results: Vec<Result<CompileResult, (PathBuf, CompileError)>> = files
             .par_iter()
             .map(|input_file| {
                 let output_path = generate_output_path(input_file, output);

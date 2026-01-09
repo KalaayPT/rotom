@@ -112,6 +112,7 @@ fn compile(
     decomp_root: Option<&PathBuf>,
     json: bool,
 ) -> Result<(), CompileError> {
+    let start_total = std::time::Instant::now();
     if !json {
         println!("Loading database from: {}", db_path.display());
     }
@@ -178,6 +179,9 @@ fn compile(
     }
 
     let result = compile_path(input, &output_path, &db, &constants)?;
+    if !json {
+        println!("Total time: {}ms", start_total.elapsed().as_millis());
+    }
 
     if json {
         let json_output =
@@ -414,7 +418,7 @@ EndMovement
     println!("\n=== Lowering Functions to IR ===");
 
     // println!("{:#?}", file);
-    let mut lowerer = Lowerer::new(&analyzer.symbols, &db);
+    let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
     let items = match lowerer.lower_script_file(&file) {
         Ok(result) => result,
         Err(e) => {
