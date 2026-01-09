@@ -152,12 +152,24 @@ pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec
     }
     pub fn emit_command(&mut self, name: &str, cmd: &Command, args: &Vec<Arg>) -> ParseResult<()> {
         self.emit_u16(cmd.id.unwrap());
-        for (i, param) in cmd.params.clone().into_iter().enumerate() {
+        
+        // Find the matching variant if it exists, otherwise use base params
+        let params = if let Some(first_arg) = args.first() {
+            if let Arg::Value(mode) = first_arg {
+                cmd.get_variant_params(*mode as u8)
+            } else {
+                &cmd.params
+            }
+        } else {
+            &cmd.params
+        };
+
+        for (i, param) in params.iter().enumerate() {
             let arg = args.get(i).ok_or_else(|| {
                 codegen_error(format!(
                     "Not enough arguments for command '{}', expected {}, got {}",
                     name,
-                    cmd.params.len(),
+                    params.len(),
                     args.len()
                 ))
             })?;

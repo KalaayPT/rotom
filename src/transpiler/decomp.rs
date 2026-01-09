@@ -33,7 +33,7 @@
 
 
 /// Transpile a decomp script to Rotoscript format
-pub fn transpile(input: &str) -> String {
+pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> String {
     let mut output = String::new();
 
     // Track jump table entries: name -> slot number
@@ -201,8 +201,19 @@ pub fn transpile(input: &str) -> String {
         // Decomp format: CommandName arg1, arg2, arg3
         output.push_str("    ");
         if let Some(cmd_end_idx) = trimmed.find(|c| c == ' ' || c == '\t') {
-            let cmd_name = &trimmed[..cmd_end_idx];
+            let mut cmd_name = &trimmed[..cmd_end_idx];
             let args = trimmed[cmd_end_idx..].trim();
+
+            // Resolve ScrCmd_XXX to canonical names if database is provided
+            if let Some(db) = db {
+                if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
+                    if let Ok(id) = u16::from_str_radix(id_str, 16) {
+                        if let Some((name, _)) = db.commands.iter().find(|(_, c)| c.id == Some(id)) {
+                            cmd_name = name;
+                        }
+                    }
+                }
+            }
 
             if args.is_empty() {
                 // Command with no arguments
@@ -218,7 +229,17 @@ pub fn transpile(input: &str) -> String {
             }
         } else {
             // No arguments, just the command name
-            output.push_str(trimmed);
+            let mut cmd_name = trimmed;
+            if let Some(db) = db {
+                if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
+                    if let Ok(id) = u16::from_str_radix(id_str, 16) {
+                        if let Some((name, _)) = db.commands.iter().find(|(_, c)| c.id == Some(id)) {
+                            cmd_name = name;
+                        }
+                    }
+                }
+            }
+            output.push_str(cmd_name);
         }
         output.push('\n');
     }
@@ -267,7 +288,7 @@ Function1:
 Function2:
     End
 "#;
-        let output = transpile(input);
+        let output = transpile(input, None);
         assert!(output.contains("function Function1 #0:"));
         assert!(output.contains("function Function2 #1:"));
     }
@@ -285,7 +306,7 @@ MainFunc:
 HelperLabel:
     Return
 "#;
-        let output = transpile(input);
+        let output = transpile(input, None);
         assert!(output.contains("function MainFunc #0:"));
         assert!(output.contains("HelperLabel:"));
         assert!(!output.contains("function HelperLabel"));
@@ -306,7 +327,7 @@ TestMovement:
     WalkNorth
     EndMovement
 "#;
-        let output = transpile(input);
+        let output = transpile(input, None);
         assert!(output.contains("function MainFunc #0:"));
         assert!(output.contains("action TestMovement"));
         assert!(output.contains("    WalkNorth"));
@@ -327,7 +348,7 @@ TestMovement:
     WalkNorth
     EndMovement
 "#;
-        let output = transpile(input);
+        let output = transpile(input, None);
         assert!(output.contains("function MainFunc #0:"));
         assert!(output.contains("action TestMovement"));
         assert!(output.contains("    WalkNorth"));
@@ -345,7 +366,7 @@ TestMovement:
 Test:
     End
 "#;
-        let output = transpile(input);
+        let output = transpile(input, None);
         assert!(!output.contains("#include"));
         assert!(output.contains("function Test #0:"));
     }
@@ -362,7 +383,7 @@ Test:
     ShowYesNoMenu VAR_RESULT
     End
 "#;
-        let output = transpile(input);
+        let output = transpile(input, None);
         assert!(output.contains("    SetVar VAR_RESULT, 5"));
         assert!(output.contains("    Message 0"));
         assert!(output.contains("    ShowYesNoMenu VAR_RESULT"));
@@ -387,7 +408,7 @@ Move2:
     WalkSouth
     EndMovement
 "#;
-        let output = transpile(input);
+        let output = transpile(input, None);
         assert!(output.contains("action Move1"));
         assert!(output.contains("action Move2"));
     }
@@ -398,7 +419,7 @@ Move2:
         let input = std::fs::read_to_string(fixture_path);
         
         if let Ok(content) = input {
-            let output = transpile(&content);
+            let output = transpile(&content, None);
             assert!(output.contains("function _0012 #1:"));
             assert!(output.contains("function _004E #0:"));
             assert!(output.contains("action _00E8"));

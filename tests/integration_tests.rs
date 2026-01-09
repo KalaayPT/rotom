@@ -49,6 +49,9 @@ fn compile_to_binary(
     Ok(binary)
 }
 
+/// DEBUG: Default path to pokeplatinum decomp project (used when POKEPLATINUM_ROOT is not set)
+const DEFAULT_POKEPLATINUM_ROOT: &str = "C:/dev/pokeplatinum";
+
 /// Load database and constants for testing
 fn load_test_db_and_constants() -> (DatabaseV2, ConstantDb) {
     let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
@@ -57,12 +60,25 @@ fn load_test_db_and_constants() -> (DatabaseV2, ConstantDb) {
     let mut constants = ConstantDb::new();
     constants.load_from_db(&db);
 
-    // Try to load decomp constants if POKEPLATINUM_ROOT is set
-    if let Ok(decomp_root) = std::env::var("POKEPLATINUM_ROOT") {
-        let decomp_path = Path::new(&decomp_root);
-        if decomp_path.exists() {
-            constants.load_decomp_project(decomp_path).expect("Failed to load decomp project constants");
-        }
+    // Try to load decomp constants from POKEPLATINUM_ROOT env var, falling back to default path
+    let decomp_root = std::env::var("POKEPLATINUM_ROOT")
+        .unwrap_or_else(|_| DEFAULT_POKEPLATINUM_ROOT.to_string());
+    let decomp_path = Path::new(&decomp_root);
+    
+    if decomp_path.exists() {
+        constants.load_decomp_project(decomp_path)
+            .expect(&format!(
+                "Failed to load decomp project constants from '{}'. \
+                 Set POKEPLATINUM_ROOT env var or ensure {} exists.",
+                decomp_path.display(),
+                DEFAULT_POKEPLATINUM_ROOT
+            ));
+    } else {
+        panic!(
+            "Decomp project not found at '{}'. \
+             Set POKEPLATINUM_ROOT env var to the path of your pokeplatinum checkout.",
+            decomp_path.display()
+        );
     }
 
     (db, constants)
@@ -86,7 +102,7 @@ fn test_script_hash(script_name: &str) {
     let (db, constants) = load_test_db_and_constants();
 
     // Transpile decomp script to rotoscript
-    let rotoscript = transpile_decomp(&decomp_source);
+    let rotoscript = transpile_decomp(&decomp_source, Some(&db));
 
     if std::env::var("ROTOM_DUMP").is_ok() {
         println!("--- Rotoscript for {} ---\n{}\n---", script_name, rotoscript);

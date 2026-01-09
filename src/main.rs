@@ -237,18 +237,7 @@ action WalkPattern
     FaceNorth
 EndMovement
 "#;
-
-    // DSPRE-derived test script (0013)
-    let dspre = std::fs::read_to_string(r"C:\Users\micro\Desktop\Pokémon - Platinum Version (USA) (Rev 1)_DSPRE_contents\expanded\scripts\0002.script").unwrap();
-    let decomp =
-        std::fs::read_to_string(r"C:\dev\pokeplatinum\res\field\scripts\scripts_unk_0406.s")
-            .unwrap();
-    let input = rotom::transpiler::DSPRE::transpile(&dspre);
-    let input = rotom::transpiler::decomp::transpile(&decomp);
-    println!("{input}");
-    std::fs::write("test_input.rotom", &input).unwrap();
-    let input = input.as_str();
-    println!("=== Loading Database ===");
+    // load db
     let db = match DatabaseV2::load(db_path) {
         Ok(db) => db,
         Err(e) => {
@@ -256,11 +245,26 @@ EndMovement
             return;
         }
     };
+    
+    // DSPRE-derived test script (0013)
+    let dspre = std::fs::read_to_string(r"C:\Users\micro\Desktop\Pokémon - Platinum Version (USA) (Rev 1)_DSPRE_contents\expanded\scripts\0002.script").unwrap();
+    let decomp =
+        std::fs::read_to_string(r"C:\dev\pokeplatinum\res\field\scripts\scripts_unk_0406.s")
+            .unwrap();
+    let input = rotom::transpiler::DSPRE::transpile(&dspre);
+    let input = rotom::transpiler::decomp::transpile(&decomp, Some(&db));
+    println!("{input}");
+    std::fs::write("test_input.rotom", &input).unwrap();
+    let input = input.as_str();
+    println!("=== Loading Database ===");
+
     println!(
         "Loaded {} commands for {}",
         db.commands.len(),
         db.meta.version
     );
+
+
 
     // Load constants from the database
     let mut constants = ConstantDb::new();

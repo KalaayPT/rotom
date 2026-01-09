@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::compiler::ast::{FunctionHeader, ScriptFile};
-use crate::database::{Command, DatabaseV2};
+use crate::database::{Command, DatabaseV2, ParamDef};
 
 use super::{
     analysis::{SymbolTable, SymbolType},
@@ -328,55 +328,33 @@ impl<'a> Lowerer<'a> {
         args: &[Expression],
     ) -> ParseResult<Vec<Expression>> {
         // Find the matching variant if it exists, otherwise use base params
-        let params = if let Some(variants) = &cmd.variants {
-            let mut matched = &cmd.params;
-            for variant in variants {
-                let mut matches = false;
-                
-                // 1. Try matching by condition (Macro style)
-                if let Some(condition) = &variant.condition {
-                    if condition == "else" {
-                        matches = true;
-                    } else {
-                        // Use base params for name mapping during evaluation
-                        if let Ok(b) = self.evaluate_condition(condition, args, &cmd.params) {
-                            matches = b;
-                        }
+        let params: &[ParamDef] = if let Some(variants) = &cmd.variants {
+            let mut matched: &[ParamDef] = &cmd.params;
+            
+            // Try matching by first argument (mode) if it's a constant
+            if let Some(first_arg) = args.first() {
+                if let Ok(mode) = self.resolve_arg_to_int(first_arg) {
+                    let variant_params = cmd.get_variant_params(mode as u8);
+                    if !variant_params.is_empty() {
+                        matched = variant_params;
                     }
-                } 
-                // 2. Try matching by const values (UnionGroup style)
-                else if !variant.params.is_empty() {
-                    let mut all_consts_match = true;
-                    let mut had_const = false;
-                    for (i, param) in variant.params.iter().enumerate() {
-                        if let Some(const_val_str) = &param.const_value {
-                            had_const = true;
-                            if let Some(arg) = args.get(i) {
-                                if let Ok(arg_val) = self.resolve_arg_to_int(arg) {
-                                    if let Ok(const_val) = const_val_str.parse::<i32>() {
-                                        if arg_val != const_val {
-                                            all_consts_match = false;
-                                            break;
-                                        }
-                                    }
-                                } else {
-                                    all_consts_match = false;
-                                    break;
-                                }
-                            } else {
-                                all_consts_match = false;
+                }
+            }
+
+            // Fallback: If still base params, try matching by condition (Macro style)
+            if std::ptr::eq(matched, &cmd.params as &[ParamDef]) {
+                for variant in variants {
+                    if let Some(condition) = &variant.condition {
+                        if condition == "else" {
+                            matched = if variant.params.is_empty() { &cmd.params } else { &variant.params };
+                            break;
+                        } else {
+                            if let Ok(true) = self.evaluate_condition(condition, args, &cmd.params) {
+                                matched = if variant.params.is_empty() { &cmd.params } else { &variant.params };
                                 break;
                             }
                         }
                     }
-                    matches = had_const && all_consts_match;
-                }
-
-                if matches {
-                    if !variant.params.is_empty() {
-                        matched = &variant.params;
-                    }
-                    break;
                 }
             }
             matched
