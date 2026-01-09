@@ -9,15 +9,40 @@ use codespan_reporting::{
         termcolor::{ColorChoice, StandardStream},
     },
 };
+use serde::{Serialize, Serializer};
+
+fn serialize_range<S>(range: &Range<usize>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    #[derive(Serialize)]
+    struct RangeHelper {
+        start: usize,
+        end: usize,
+    }
+    RangeHelper {
+        start: range.start,
+        end: range.end,
+    }.serialize(serializer)
+}
 
 /// Unified error type for the compiler
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", content = "details")]
 pub enum CompileError {
     /// Error during lexing/parsing with source location
-    Parse { span: Range<usize>, message: String },
+    Parse {
+        #[serde(serialize_with = "serialize_range")]
+        span: Range<usize>,
+        message: String
+    },
 
     /// Error during semantic analysis
-    Analysis { span: Range<usize>, message: String },
+    Analysis {
+        #[serde(serialize_with = "serialize_range")]
+        span: Range<usize>,
+        message: String
+    },
 
     /// Error during IR lowering
     Lowering { message: String },

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser as ClapParser, Subcommand};
 
 // Use the library crate
+use rotom::compile_path;
 use rotom::compiler::codegen::Emitter;
 use rotom::compiler::parse_error::{CompileError, print_error};
 use rotom::compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
@@ -24,11 +25,11 @@ enum Commands {
         #[arg(short, long)]
         database: PathBuf,
 
-        /// Input .rotom script file
+        /// Input .rotom script file or directory containing .rotom files
         #[arg(short, long)]
         input: PathBuf,
 
-        /// Output binary file (defaults to input with .bin extension)
+        /// Output binary file or directory (defaults to input path with .bin extension)
         #[arg(short, long)]
         output: Option<PathBuf>,
 
@@ -37,6 +38,10 @@ enum Commands {
         /// Requires the project to have been built at least once.
         #[arg(long)]
         decomp_root: Option<PathBuf>,
+
+        /// Output results as JSON to stdout (suppresses other output)
+        #[arg(long)]
+        json: bool,
     },
 
     /// Decompile a binary script to .rotom source
@@ -71,9 +76,18 @@ fn main() {
             input,
             output,
             decomp_root,
+            json,
         } => {
-            if let Err(e) = compile(&database, &input, output.as_ref(), decomp_root.as_ref()) {
-                eprintln!("Compilation failed: {}", e);
+            if let Err(e) = compile(
+                &database,
+                &input,
+                output.as_ref(),
+                decomp_root.as_ref(),
+                json,
+            ) {
+                if !json {
+                    eprintln!("Compilation failed: {}", e);
+                }
                 std::process::exit(1);
             }
         }
@@ -94,85 +108,127 @@ fn main() {
 fn compile(
     db_path: &PathBuf,
     input: &PathBuf,
-    _output: Option<&PathBuf>,
+    output: Option<&PathBuf>,
     decomp_root: Option<&PathBuf>,
+    json: bool,
 ) -> Result<(), CompileError> {
-    println!("Loading database from: {}", db_path.display());
+    if !json {
+        println!("Loading database from: {}", db_path.display());
+    }
     let db = DatabaseV2::load(db_path)?;
-    println!(
-        "Loaded {} commands for {}",
-        db.commands.len(),
-        db.meta.version
-    );
+    if !json {
+        println!(
+            "Loaded {} commands for {}",
+            db.commands.len(),
+            db.meta.version
+        );
 
-    // Auto-detect game family from database version
-    if let Some(family) = GameFamily::from_db_version(&db.meta.version) {
-        println!("Detected game family: {}", family.as_str());
+        // Auto-detect game family from database version
+        if let Some(family) = GameFamily::from_db_version(&db.meta.version) {
+            println!("Detected game family: {}", family.as_str());
+        }
     }
 
     // Load constants from the database
     let mut constants = ConstantDb::new();
     let const_count = constants.load_from_db(&db);
-    println!("Loaded {} built-in constants", const_count);
+    if !json {
+        println!("Loaded {} built-in constants", const_count);
+    }
 
     // Load constants from decomp project if specified
     if let Some(decomp) = decomp_root {
-        println!(
-            "\nLoading constants from decomp project: {}",
-            decomp.display()
-        );
+        if !json {
+            println!(
+                "\nLoading constants from decomp project: {}",
+                decomp.display()
+            );
+        }
         let decomp_count = constants.load_decomp_project(decomp)?;
-        println!("Loaded {} constants from decomp project", decomp_count);
+        if !json {
+            println!("Loaded {} constants from decomp project", decomp_count);
+        }
 
-        // Load per-map event constants based on script filename
-        let map_count = constants.load_map_events(decomp, input)?;
-        if map_count > 0 {
-            println!("Loaded {} map-specific event constants", map_count);
+        // Load per-map event constants based on script filename (only for single file)
+        if input.is_file() {
+            let map_count = constants.load_map_events(decomp, input)?;
+            if !json && map_count > 0 {
+                println!("Loaded {} map-specific event constants", map_count);
+            }
         }
     }
 
-    println!("\nReading script from: {}", input.display());
-    let source = std::fs::read_to_string(input).map_err(|e| CompileError::Io {
-        message: format!("Failed to read input file '{}': {}", input.display(), e),
-    })?;
+    // Determine output path
+    let output_path = match output {
+        Some(p) => p.clone(),
+        None => {
+            if input.is_dir() {
+                // Default to same directory for directory input
+                input.clone()
+            } else {
+                // Default to .bin extension for single file
+                input.with_extension("bin")
+            }
+        }
+    };
 
-    println!("Parsing...");
-    let lexer = Lexer::new(&source);
-    let mut parser = Parser::new(lexer);
-    let file = parser.parse_script_file()?;
-    let func_count = file
-        .items
-        .iter()
-        .filter(|s| matches!(s.node, StatementKind::Function { .. }))
-        .count();
-    let action_count = file
-        .items
-        .iter()
-        .filter(|s| matches!(s.node, StatementKind::Action { .. }))
-        .count();
-    println!(
-        "Parsed: {} aliases, {} functions, {} actions",
-        file.aliases.len(),
-        func_count,
-        action_count
-    );
+    if !json {
+        println!("\nCompiling: {}", input.display());
+        println!("Output to: {}", output_path.display());
+    }
 
-    println!("Analyzing...");
-    let mut analyzer = Analyzer::with_constants(&constants);
-    analyzer.analyze(&file)?;
-    println!("Analysis passed!");
+    let result = compile_path(input, &output_path, &db, &constants)?;
 
-    println!("\nLowering to IR...");
+    if json {
+        let json_output =
+            serde_json::to_string_pretty(&result).map_err(|e| CompileError::Database {
+                message: e.to_string(),
+            })?;
+        println!("{}", json_output);
+    } else {
+        // Report results
+        for success in &result.successes {
+            println!(
+                "  ✓ {} -> {} ({} bytes)",
+                success
+                    .input
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                success
+                    .output
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                success.size
+            );
+        }
 
-    let mut lowerer = Lowerer::new(&analyzer.symbols, &db);
-    let items = lowerer.lower_script_file(&file)?;
+        for (path, error) in &result.failures {
+            eprintln!(
+                "  ✗ {}: {}",
+                path.file_name().unwrap_or_default().to_string_lossy(),
+                error
+            );
+        }
 
-    let mut emitter = Emitter::new(&db);
-    let byte_output = emitter.emit_script_file(&items)?;
-    println!("Output: {:?}", byte_output);
+        println!(
+            "\nCompilation complete: {}/{} succeeded",
+            result.successes.len(),
+            result.total()
+        );
+    }
 
-    // println!("Codegen not yet implemented - stopping at IR");
-    Ok(())
+    if result.is_success() {
+        Ok(())
+    } else {
+        // Even if we output JSON, we should probably exit with error code if something failed
+        // But for JSON consumers, the JSON itself tells the story.
+        // Let's keep the standard behavior: error code 1 if any failure.
+        Err(CompileError::Io {
+            message: format!("{} file(s) failed to compile", result.failures.len()),
+        })
+    }
 }
 
 fn run_test(db_path: &PathBuf) {
