@@ -4,9 +4,41 @@
 
 #![allow(dead_code)]
 
+use rayon::prelude::*;
+use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
+
+// ============================================================================
+// Cached Regexes (compiled once, reused across all calls)
+// ============================================================================
+
+/// Python enum: "    CONSTANT_NAME = 123" or "    CONSTANT_NAME = -1"
+static RE_PYTHON_SIMPLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s+(\w+)\s*=\s*(-?\d+)\s*$").unwrap()
+});
+
+/// Python enum bitshift: "    CONSTANT_NAME = (1 << 8)"
+static RE_PYTHON_BITSHIFT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s+(\w+)\s*=\s*\((\d+)\s*<<\s*(\d+)\)\s*$").unwrap()
+});
+
+/// C define numeric: "#define NAME 123" or "#define NAME 0xFF" (with optional trailing comment)
+static RE_C_DEFINE_NUMERIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*#define\s+(\w+)\s+((?:0[xX][0-9a-fA-F]+)|(?:-?\d+))(?:\s*//.*)?$").unwrap()
+});
+
+/// C define RGB: "#define NAME RGB(31, 31, 31)"
+static RE_C_DEFINE_RGB: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*#define\s+(\w+)\s+RGB\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)(?:\s*//.*)?$").unwrap()
+});
+
+/// C define const ref: "#define NAME OTHER_CONST" (with optional trailing comment)
+static RE_C_DEFINE_CONST_REF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*#define\s+(\w+)\s+([A-Z_][A-Z0-9_]*)(?:\s*//.*)?$").unwrap()
+});
 
 use crate::compiler::ParseResult;
 use crate::compiler::parse_error::{CompileError, database_error};
@@ -17,11 +49,10 @@ use crate::compiler::parse_error::{CompileError, database_error};
 
 /// Pokemon Gen 4 game families
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum GameFamily {
-    DP = 1,      // Diamond, Pearl
-    Platinum = 2, // Platinum
-    HGSS = 3,    // HeartGold, SoulSilver
+    DP,       // Diamond, Pearl
+    Platinum, // Platinum
+    HGSS,     // HeartGold, SoulSilver
 }
 
 impl GameFamily {
@@ -292,7 +323,7 @@ impl DatabaseV2 {
         if let Some(cmd) = self.commands.get(name) {
             return Ok(cmd);
         }
-        
+
         // Try legacy_name lookup
         if let Some((_, cmd)) = self
             .commands
@@ -301,7 +332,7 @@ impl DatabaseV2 {
         {
             return Ok(cmd);
         }
-        
+
         // Try ID-based lookup for "ScrCmd_N" format (N is hex)
         if let Some(id_str) = name.strip_prefix("ScrCmd_") {
             // Parse as hex (e.g., "131" -> 0x131 = 305)
@@ -315,7 +346,7 @@ impl DatabaseV2 {
                 }
             }
         }
-        
+
         Err(database_error(format!(
             "Command '{}' not found in database",
             name
@@ -557,10 +588,9 @@ impl ConstantDb {
     /// class VarFlag(enum.IntEnum):
     ///     VAR_JUBILIFE_STATE = 16500
     ///     GENDER_MALE = 0
+    ///     PLAYER_TRANSITION_HEALING = (1 << 8)
     /// ```
     pub fn load_python_enum<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, CompileError> {
-        use regex::Regex;
-
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
             message: format!(
@@ -570,12 +600,10 @@ impl ConstantDb {
             ),
         })?;
 
-        // Match lines like: "    CONSTANT_NAME = 123" or "    CONSTANT_NAME = -1"
-        let re = Regex::new(r"^\s+(\w+)\s*=\s*(-?\d+)\s*$").unwrap();
-
         let mut count = 0;
         for (line_num, line) in contents.lines().enumerate() {
-            if let Some(caps) = re.captures(line) {
+            // Try simple integer match first
+            if let Some(caps) = RE_PYTHON_SIMPLE.captures(line) {
                 let name = caps.get(1).unwrap().as_str();
                 let value_str = caps.get(2).unwrap().as_str();
 
@@ -588,6 +616,16 @@ impl ConstantDb {
                     ),
                 })?;
 
+                self.constants.insert(name.to_string(), value);
+                count += 1;
+            }
+            // Try bitshift match
+            else if let Some(caps) = RE_PYTHON_BITSHIFT.captures(line) {
+                let name = caps.get(1).unwrap().as_str();
+                let base: i32 = caps.get(2).unwrap().as_str().parse().unwrap_or(0);
+                let shift: u32 = caps.get(3).unwrap().as_str().parse().unwrap_or(0);
+                
+                let value = base << shift;
                 self.constants.insert(name.to_string(), value);
                 count += 1;
             }
@@ -608,70 +646,11 @@ impl ConstantDb {
     ///
     /// Skips lines with expressions like `(1 << 5)` or complex expressions.
     pub fn load_c_defines<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, CompileError> {
-        use regex::Regex;
-
-        let path = path.as_ref();
-        let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
-            message: format!("Failed to read C header file '{}': {}", path.display(), e),
-        })?;
-
-        // Match lines like: "#define NAME 123" or "#define NAME -1" or "#define NAME 0xFF"
-        // Allow trailing comments (// ...) and whitespace
-        let re_numeric =
-            Regex::new(r"^\s*#define\s+(\w+)\s+((?:0[xX][0-9a-fA-F]+)|(?:-?\d+))(?:\s*//.*)?$")
-                .unwrap();
-
-        // Match lines like: "#define NAME RGB(31, 31, 31)"
-        let re_rgb =
-            Regex::new(r"^\s*#define\s+(\w+)\s+RGB\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)(?:\s*//.*)?$")
-                .unwrap();
-
-        // Match lines like: "#define NAME OTHER_CONST" (simple constant reference)
-        // Allow trailing comments (// ...) and whitespace
-        let re_const_ref =
-            Regex::new(r"^\s*#define\s+(\w+)\s+([A-Z_][A-Z0-9_]*)(?:\s*//.*)?$").unwrap();
-
-        let mut count = 0;
-        let mut pending_refs: Vec<(String, String)> = Vec::new();
-
-        for line in contents.lines() {
-            // First try numeric match
-            if let Some(caps) = re_numeric.captures(line) {
-                let name = caps.get(1).unwrap().as_str();
-                let value_str = caps.get(2).unwrap().as_str();
-
-                // Parse decimal or hex
-                let value = if value_str.starts_with("0x") || value_str.starts_with("0X") {
-                    i32::from_str_radix(&value_str[2..], 16).ok()
-                } else {
-                    value_str.parse::<i32>().ok()
-                };
-
-                if let Some(v) = value {
-                    self.constants.insert(name.to_string(), v);
-                    count += 1;
-                }
-            }
-            // Try RGB match
-            else if let Some(caps) = re_rgb.captures(line) {
-                let name = caps.get(1).unwrap().as_str();
-                let r: i32 = caps.get(2).unwrap().as_str().parse().unwrap_or(0);
-                let g: i32 = caps.get(3).unwrap().as_str().parse().unwrap_or(0);
-                let b: i32 = caps.get(4).unwrap().as_str().parse().unwrap_or(0);
-                
-                // 15-bit color: (b << 10) | (g << 5) | r
-                let value = (b << 10) | (g << 5) | r;
-                self.constants.insert(name.to_string(), value);
-                count += 1;
-            }
-            // Then try constant reference match
-            else if let Some(caps) = re_const_ref.captures(line) {
-                let name = caps.get(1).unwrap().as_str().to_string();
-                let ref_name = caps.get(2).unwrap().as_str().to_string();
-                pending_refs.push((name, ref_name));
-            }
-        }
-
+        let (constants, pending_refs) = Self::parse_c_defines_file(&path)?;
+        
+        let mut count = constants.len();
+        self.constants.extend(constants);
+        
         // Resolve constant references
         for (name, ref_name) in pending_refs {
             if let Some(&value) = self.constants.get(&ref_name) {
@@ -683,19 +662,190 @@ impl ConstantDb {
 
         Ok(count)
     }
+    
+    /// Parse a C header file and return constants and pending references
+    /// 
+    /// Returns (constants, pending_references) for parallel processing.
+    /// Pending references need to be resolved after all files are parsed.
+    fn parse_c_defines_file<P: AsRef<Path>>(path: P) -> Result<(HashMap<String, i32>, Vec<(String, String)>), CompileError> {
+        let path = path.as_ref();
+        let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
+            message: format!("Failed to read C header file '{}': {}", path.display(), e),
+        })?;
+
+        let mut constants = HashMap::new();
+        let mut pending_refs: Vec<(String, String)> = Vec::new();
+
+        for line in contents.lines() {
+            // First try numeric match
+            if let Some(caps) = RE_C_DEFINE_NUMERIC.captures(line) {
+                let name = caps.get(1).unwrap().as_str();
+                let value_str = caps.get(2).unwrap().as_str();
+
+                // Parse decimal or hex
+                let value = if value_str.starts_with("0x") || value_str.starts_with("0X") {
+                    i32::from_str_radix(&value_str[2..], 16).ok()
+                } else {
+                    value_str.parse::<i32>().ok()
+                };
+
+                if let Some(v) = value {
+                    constants.insert(name.to_string(), v);
+                }
+            }
+            // Try RGB match
+            else if let Some(caps) = RE_C_DEFINE_RGB.captures(line) {
+                let name = caps.get(1).unwrap().as_str();
+                let r: i32 = caps.get(2).unwrap().as_str().parse().unwrap_or(0);
+                let g: i32 = caps.get(3).unwrap().as_str().parse().unwrap_or(0);
+                let b: i32 = caps.get(4).unwrap().as_str().parse().unwrap_or(0);
+
+                // 15-bit color: (b << 10) | (g << 5) | r
+                let value = (b << 10) | (g << 5) | r;
+                constants.insert(name.to_string(), value);
+            }
+            // Then try constant reference match
+            else if let Some(caps) = RE_C_DEFINE_CONST_REF.captures(line) {
+                let name = caps.get(1).unwrap().as_str().to_string();
+                let ref_name = caps.get(2).unwrap().as_str().to_string();
+                pending_refs.push((name, ref_name));
+            }
+        }
+
+        Ok((constants, pending_refs))
+    }
+
+    /// List of generated constant files from pokeplatinum
+    /// Format: (base_filename, metang_type, tag_name, extra_args)
+    /// The base_filename is used to find both .py files in build/generated/
+    /// and .txt files in generated/
+    const GENERATED_CONSTANT_FILES: &'static [(&'static str, &'static str, &'static str, &'static [&'static str])] = &[
+        ("abilities", "enum", "Ability", &[]),
+        ("accessories", "enum", "Accessory", &[]),
+        ("ai_action_choices", "enum", "AIActionChoice", &[]),
+        ("ai_flags", "mask", "AIFlag", &["--no-auto"]),
+        ("ai_load_type_targets", "enum", "AILoadTypeTarget", &[]),
+        ("ai_weather_types", "enum", "AIWeatherType", &[]),
+        ("backdrops", "enum", "Backdrop", &[]),
+        ("badges", "enum", "Badge", &[]),
+        ("battle_actions", "enum", "BattleAction", &[]),
+        ("battle_backgrounds", "enum", "BattleBackground", &[]),
+        ("battle_boot_states", "enum", "BattleBootState", &[]),
+        ("battle_context_params", "enum", "BattleContextParam", &[]),
+        ("battle_message_tags", "enum", "BattleMessageTag", &[]),
+        ("battle_mon_params", "enum", "BattleMonParam", &[]),
+        ("battle_move_effects", "enum", "BattleMoveEffect", &[]),
+        ("battle_move_subscript_ptrs", "enum", "BattleMoveSubscriptPtr", &[]),
+        ("battle_script_battlers", "enum", "Battler", &[]),
+        ("battle_script_check_side_condition_ops", "enum", "BattleScriptCheckSideConditionOp", &[]),
+        ("battle_script_opcodes", "enum", "BattleScriptOpCode", &[]),
+        ("battle_script_side_conditions", "enum", "BattleScriptSideCondition", &[]),
+        ("battle_script_turn_flags", "enum", "BattleScriptTurnFlag", &[]),
+        ("battle_script_vars", "enum", "BattleScriptVars", &[]),
+        ("battle_side_effect_types", "enum", "BattleSideEffectType", &[]),
+        ("battle_stats", "enum", "BattleStat", &[]),
+        ("battle_sub_animations", "enum", "BattleSubAnimation", &[]),
+        ("battle_subscripts", "enum", "BattleSubscript", &[]),
+        ("battle_terrains", "enum", "BattleTerrain", &[]),
+        ("battle_tower_functions", "enum", "BattleTowerFunction", &[]),
+        ("battle_tower_modes", "enum", "BattleTowerMode", &[]),
+        ("berry_growth_stages", "enum", "BerryGrowthStage", &[]),
+        ("bg_event_dirs", "enum", "BgEventDir", &[]),
+        ("bg_event_types", "enum", "BgEventType", &[]),
+        ("catching_show_points_category", "enum", "CatchingShowPointsCategory", &[]),
+        ("contest_effects", "enum", "ContestEffects", &[]),
+        ("comm_club_ret_codes", "enum", "CommClubRetCode", &[]),
+        ("days_of_week", "enum", "DayOfWeek", &[]),
+        ("distribution_events", "enum", "DistributionEvent", &[]),
+        ("egg_groups", "enum", "EggGroup", &[]),
+        ("evolution_methods", "enum", "EvolutionMethod", &[]),
+        ("exp_rates", "enum", "ExpRate", &[]),
+        ("game_records", "enum", "GameRecord", &[]),
+        ("fade_types", "enum", "FadeType", &[]),
+        ("first_arrival_to_zones", "enum", "FirstArrivalToZone", &[]),
+        ("footprint_sizes", "enum", "FootprintSize", &[]),
+        ("frontier_trainers", "enum", "FrontierTrainerID", &[]),
+        ("gender_ratios", "enum", "GenderRatio", &[]),
+        ("genders", "enum", "Gender", &[]),
+        ("giratina_shadow_animations", "enum", "GiratinaShadowAnimation", &[]),
+        ("hidden_locations", "enum", "HiddenLocation", &[]),
+        ("item_ai_categories", "enum", "ItemAICategory", &[]),
+        ("item_battle_categories", "enum", "ItemBattleCategory", &[]),
+        ("item_hold_effects", "enum", "ItemHoldEffect", &[]),
+        ("items", "enum", "Item", &[]),
+        ("journal_location_events", "enum", "JournalLocationEventType", &[]),
+        ("journal_online_events", "enum", "JournalOnlineEventType", &[]),
+        ("map_headers", "enum", "MapHeader", &[]),
+        ("maps", "enum", "MapID", &[]),
+        ("move_attributes", "enum", "MoveAttribute", &[]),
+        ("move_classes", "enum", "MoveClass", &[]),
+        ("move_flags", "mask", "MoveFlag", &[]),
+        ("move_ranges", "mask", "MoveRange", &["--no-auto"]),
+        ("movement_actions", "enum", "MovementAction", &[]),
+        ("movement_types", "enum", "MovementType", &[]),
+        ("moves", "enum", "Move", &[]),
+        ("natures", "enum", "Nature", &[]),
+        ("npc_trades", "enum", "NpcTradeID", &[]),
+        ("object_events", "enum", "ObjectEventGfx", &[]),
+        ("pal_park_land_area", "enum", "PalParkLandArea", &[]),
+        ("pal_park_water_area", "enum", "PalParkWaterArea", &[]),
+        ("player_transitions", "mask", "PlayerTransition", &[]),
+        ("pokemon_anim_constants", "enum", "PokemonAnimConstants", &[]),
+        ("pokemon_body_shapes", "enum", "PokemonBodyShape", &[]),
+        ("pokemon_colors", "enum", "PokemonColor", &[]),
+        ("pokemon_contest_ranks", "enum", "PokemonContestRank", &[]),
+        ("pokemon_contest_types", "enum", "PokemonContestType", &[]),
+        ("pokemon_data_params", "enum", "PokemonDataParam", &[]),
+        ("pokemon_stats", "enum", "PokemonStat", &[]),
+        ("pokemon_types", "enum", "PokemonType", &[]),
+        ("poketch_apps", "enum", "PoketchAppID", &[]),
+        ("ribbons", "enum", "RibbonID", &[]),
+        ("roaming_slots", "enum", "RoamingSlot", &[]),
+        ("save_types", "enum", "SaveType", &[]),
+        ("sdat", "enum", "SDATID", &[]),
+        ("seals", "enum", "Seal", &[]),
+        ("signpost_commands", "enum", "SignpostCommand", &[]),
+        ("signpost_types", "enum", "SignpostType", &[]),
+        ("size_contest_results", "enum", "SizeContestResult", &[]),
+        ("shadow_sizes", "enum", "ShadowSize", &[]),
+        ("species", "enum", "Species", &[]),
+        ("species_data_params", "enum", "SpeciesDataParam", &[]),
+        ("string_padding_mode", "enum", "PaddingMode", &[]),
+        ("text_banks", "enum", "TextBank", &[]),
+        ("time_of_day", "enum", "TimeOfDay", &[]),
+        ("town_map_description_flag_types", "enum", "TownMapDescriptionFlagType", &[]),
+        ("trainers", "enum", "TrainerID", &[]),
+        ("trainer_classes", "enum", "TrainerClass", &[]),
+        ("trainer_message_types", "enum", "TrainerMessageType", &[]),
+        ("trainer_score_events", "enum", "TrainerScoreEvent", &[]),
+        ("trainer_types", "enum", "TrainerType", &[]),
+        ("tutor_locations", "enum", "TutorLocation", &[]),
+        ("vars_flags", "enum", "VarFlag", &[]),
+        ("versions", "enum", "Version", &[]),
+        ("villa_furnitures", "enum", "VillaFurniture", &[]),
+        ("mart_specialties_id", "enum", "MartSpecialtiesID", &[]),
+        ("mart_decor_id", "enum", "MartDecorID", &[]),
+        ("mart_seal_id", "enum", "MartSealID", &[]),
+        ("mart_frontier_id", "enum", "MartFrontierId", &[]),
+        ("mystery_gift_delivery_stages", "enum", "MysteryGiftDeliveryStage", &[]),
+    ];
 
     /// Load all constants from a decomp project (e.g., pokeplatinum)
     ///
-    /// Requires the project to have been built at least once.
+    /// Prioritizes pre-built files from `build/generated/*.py` (fast path).
+    /// Falls back to invoking metang on `generated/*.txt` if the project
+    /// hasn't been built yet (slow path, with warning).
     ///
     /// Loads from:
-    /// - `{root}/build/generated/*.py` - Python IntEnum files
+    /// - `{root}/build/generated/*.py` - Python IntEnum files (preferred, fast)
+    /// - `{root}/generated/*.txt` via metang - if build/generated/ doesn't exist
     /// - `{root}/include/constants/*.h` - C header files (simple defines only)
+    /// - `{root}/res/text/*.json` - Text bank message IDs
     pub fn load_decomp_project<P: AsRef<Path>>(&mut self, root: P) -> Result<usize, CompileError> {
         let root = root.as_ref();
         let mut total = 0;
 
-        // Load .h files from include/constants/ (simple defines only)
+        // Load .h files from include/constants/ (simple defines only) - PARALLEL
         let include_constants = root.join("include").join("constants");
         if include_constants.exists() && include_constants.is_dir() {
             let entries =
@@ -707,14 +857,38 @@ impl ConstantDb {
                     ),
                 })?;
 
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "h").unwrap_or(false) {
-                    // These may have expressions we can't parse, so we use the
-                    // lenient load_c_defines which skips unparseable lines
-                    if let Ok(count) = self.load_c_defines(&path) {
-                        total += count;
+            // Collect header file paths
+            let header_paths: Vec<_> = entries
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if path.extension().map(|e| e == "h").unwrap_or(false) {
+                        Some(path)
+                    } else {
+                        None
                     }
+                })
+                .collect();
+            
+            // Parse files in parallel
+            let results: Vec<_> = header_paths
+                .par_iter()
+                .filter_map(|path| Self::parse_c_defines_file(path).ok())
+                .collect();
+            
+            // Merge results and collect pending refs
+            let mut all_pending_refs = Vec::new();
+            for (constants, pending_refs) in results {
+                total += constants.len();
+                self.constants.extend(constants);
+                all_pending_refs.extend(pending_refs);
+            }
+            
+            // Resolve constant references (must be done after all constants are loaded)
+            for (name, ref_name) in all_pending_refs {
+                if let Some(&value) = self.constants.get(&ref_name) {
+                    self.constants.insert(name, value);
+                    total += 1;
                 }
             }
         }
@@ -727,26 +901,41 @@ impl ConstantDb {
             }
         }
 
-        // Load enum/mask constants from generated/*.txt using metang if available
-        let generated_txt = root.join("generated");
-        if generated_txt.exists() && generated_txt.is_dir() {
-            if let Ok(count) = self.load_generated_via_metang(&generated_txt) {
-                total += count;
-            } else {
-                // Fallback to simple loader if metang fails or is not available
-                let entries = std::fs::read_dir(&generated_txt).map_err(|e| CompileError::Database {
-                    message: format!(
-                        "Failed to read directory '{}': {}",
-                        generated_txt.display(),
-                        e
-                    ),
-                })?;
+        // Try the fast path: load pre-built .py files from build/generated/
+        let build_generated = root.join("build").join("generated");
+        if build_generated.exists() && build_generated.is_dir() {
+            let count = self.load_build_generated_py(&build_generated)?;
+            total += count;
+        } else {
+            // Slow path: use metang to process generated/*.txt
+            eprintln!(
+                "Warning: '{}' not found. \
+                 Please build pokeplatinum before running rotom for faster constant loading. \
+                 Falling back to metang (slower)...",
+                build_generated.display()
+            );
+            
+            let generated_txt = root.join("generated");
+            if generated_txt.exists() && generated_txt.is_dir() {
+                if let Ok(count) = self.load_generated_via_metang(&generated_txt) {
+                    total += count;
+                } else {
+                    // Fallback to simple loader if metang fails or is not available
+                    let entries =
+                        std::fs::read_dir(&generated_txt).map_err(|e| CompileError::Database {
+                            message: format!(
+                                "Failed to read directory '{}': {}",
+                                generated_txt.display(),
+                                e
+                            ),
+                        })?;
 
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().map(|e| e == "txt").unwrap_or(false) {
-                        if let Ok(count) = self.load_enum_txt(&path) {
-                            total += count;
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().map(|e| e == "txt").unwrap_or(false) {
+                            if let Ok(count) = self.load_enum_txt(&path) {
+                                total += count;
+                            }
                         }
                     }
                 }
@@ -754,6 +943,97 @@ impl ConstantDb {
         }
 
         Ok(total)
+    }
+
+    /// Load pre-built Python enum files from build/generated/
+    /// 
+    /// This is the fast path - these files are already processed by metang
+    /// during the decomp build, so we just parse the simple Python IntEnum format.
+    /// Uses rayon for parallel file loading.
+    fn load_build_generated_py<P: AsRef<Path>>(&mut self, dir: P) -> Result<usize, CompileError> {
+        let dir = dir.as_ref();
+        
+        // Collect file paths to process
+        let file_paths: Vec<_> = Self::GENERATED_CONSTANT_FILES
+            .iter()
+            .filter_map(|(filename, _, _, _)| {
+                let py_path = dir.join(format!("{}.py", filename));
+                if py_path.exists() {
+                    Some(py_path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Parse files in parallel, collecting results
+        let results: Vec<_> = file_paths
+            .par_iter()
+            .filter_map(|py_path| {
+                match Self::parse_python_enum_file(py_path) {
+                    Ok(constants) => Some(constants),
+                    Err(e) => {
+                        eprintln!("Warning: Failed to load '{}': {}", py_path.display(), e);
+                        None
+                    }
+                }
+            })
+            .collect();
+        
+        // Merge results into self.constants
+        let mut total = 0;
+        for constants in results {
+            total += constants.len();
+            self.constants.extend(constants);
+        }
+
+        Ok(total)
+    }
+    
+    /// Parse a Python IntEnum file and return the constants as a HashMap
+    /// 
+    /// This is a standalone function for parallel processing.
+    fn parse_python_enum_file<P: AsRef<Path>>(path: P) -> Result<HashMap<String, i32>, CompileError> {
+        let path = path.as_ref();
+        let contents = std::fs::read_to_string(path).map_err(|e| CompileError::Database {
+            message: format!(
+                "Failed to read Python enum file '{}': {}",
+                path.display(),
+                e
+            ),
+        })?;
+
+        let mut constants = HashMap::new();
+        
+        for (line_num, line) in contents.lines().enumerate() {
+            // Try simple integer match first
+            if let Some(caps) = RE_PYTHON_SIMPLE.captures(line) {
+                let name = caps.get(1).unwrap().as_str();
+                let value_str = caps.get(2).unwrap().as_str();
+
+                let value: i32 = value_str.parse().map_err(|_| CompileError::Database {
+                    message: format!(
+                        "Invalid integer value '{}' at {}:{}",
+                        value_str,
+                        path.display(),
+                        line_num + 1
+                    ),
+                })?;
+
+                constants.insert(name.to_string(), value);
+            }
+            // Try bitshift match
+            else if let Some(caps) = RE_PYTHON_BITSHIFT.captures(line) {
+                let name = caps.get(1).unwrap().as_str();
+                let base: i32 = caps.get(2).unwrap().as_str().parse().unwrap_or(0);
+                let shift: u32 = caps.get(3).unwrap().as_str().parse().unwrap_or(0);
+                
+                let value = base << shift;
+                constants.insert(name.to_string(), value);
+            }
+        }
+
+        Ok(constants)
     }
 
     /// Load constants from generated/*.txt using the local metang tool
@@ -768,120 +1048,8 @@ impl ConstantDb {
             });
         }
 
-        // List of files and their types from test_all_json.py
-        let configs = [
-            ("abilities", "enum", "Ability", vec![]),
-            ("accessories", "enum", "Accessory", vec![]),
-            ("ai_action_choices", "enum", "AIActionChoice", vec![]),
-            ("ai_flags", "mask", "AIFlag", vec!["--no-auto"]),
-            ("ai_load_type_targets", "enum", "AILoadTypeTarget", vec![]),
-            ("ai_weather_types", "enum", "AIWeatherType", vec![]),
-            ("backdrops", "enum", "Backdrop", vec![]),
-            ("badges", "enum", "Badge", vec![]),
-            ("battle_actions", "enum", "BattleAction", vec![]),
-            ("battle_backgrounds", "enum", "BattleBackground", vec![]),
-            ("battle_boot_states", "enum", "BattleBootState", vec![]),
-            ("battle_context_params", "enum", "BattleContextParam", vec![]),
-            ("battle_message_tags", "enum", "BattleMessageTag", vec![]),
-            ("battle_mon_params", "enum", "BattleMonParam", vec![]),
-            ("battle_move_effects", "enum", "BattleMoveEffect", vec![]),
-            ("battle_move_subscript_ptrs", "enum", "BattleMoveSubscriptPtr", vec![]),
-            ("battle_script_battlers", "enum", "Battler", vec![]),
-            ("battle_script_check_side_condition_ops", "enum", "BattleScriptCheckSideConditionOp", vec![]),
-            ("battle_script_opcodes", "enum", "BattleScriptOpCode", vec![]),
-            ("battle_script_side_conditions", "enum", "BattleScriptSideCondition", vec![]),
-            ("battle_script_turn_flags", "enum", "BattleScriptTurnFlag", vec![]),
-            ("battle_script_vars", "enum", "BattleScriptVars", vec![]),
-            ("battle_side_effect_types", "enum", "BattleSideEffectType", vec![]),
-            ("battle_stats", "enum", "BattleStat", vec![]),
-            ("battle_sub_animations", "enum", "BattleSubAnimation", vec![]),
-            ("battle_subscripts", "enum", "BattleSubscript", vec![]),
-            ("battle_terrains", "enum", "BattleTerrain", vec![]),
-            ("battle_tower_functions", "enum", "BattleTowerFunction", vec![]),
-            ("battle_tower_modes", "enum", "BattleTowerMode", vec![]),
-            ("berry_growth_stages", "enum", "BerryGrowthStage", vec![]),
-            ("bg_event_dirs", "enum", "BgEventDir", vec![]),
-            ("bg_event_types", "enum", "BgEventType", vec![]),
-            ("catching_show_points_category", "enum", "CatchingShowPointsCategory", vec![]),
-            ("contest_effects", "enum", "ContestEffects", vec![]),
-            ("comm_club_ret_codes", "enum", "CommClubRetCode", vec![]),
-            ("days_of_week", "enum", "DayOfWeek", vec![]),
-            ("distribution_events", "enum", "DistributionEvent", vec![]),
-            ("egg_groups", "enum", "EggGroup", vec![]),
-            ("evolution_methods", "enum", "EvolutionMethod", vec![]),
-            ("exp_rates", "enum", "ExpRate", vec![]),
-            ("game_records", "enum", "GameRecord", vec![]),
-            ("fade_types", "enum", "FadeType", vec![]),
-            ("first_arrival_to_zones", "enum", "FirstArrivalToZone", vec![]),
-            ("footprint_sizes", "enum", "FootprintSize", vec![]),
-            ("frontier_trainers", "enum", "FrontierTrainerID", vec![]),
-            ("gender_ratios", "enum", "GenderRatio", vec![]),
-            ("genders", "enum", "Gender", vec![]),
-            ("giratina_shadow_animations", "enum", "GiratinaShadowAnimation", vec![]),
-            ("hidden_locations", "enum", "HiddenLocation", vec![]),
-            ("item_ai_categories", "enum", "ItemAICategory", vec![]),
-            ("item_battle_categories", "enum", "ItemBattleCategory", vec![]),
-            ("item_hold_effects", "enum", "ItemHoldEffect", vec![]),
-            ("items", "enum", "Item", vec![]),
-            ("journal_location_events", "enum", "JournalLocationEventType", vec![]),
-            ("journal_online_events", "enum", "JournalOnlineEventType", vec![]),
-            ("map_headers", "enum", "MapHeader", vec![]),
-            ("maps", "enum", "MapID", vec![]),
-            ("move_attributes", "enum", "MoveAttribute", vec![]),
-            ("move_classes", "enum", "MoveClass", vec![]),
-            ("move_flags", "mask", "MoveFlag", vec![]),
-            ("move_ranges", "mask", "MoveRange", vec!["--no-auto"]),
-            ("movement_actions", "enum", "MovementAction", vec![]),
-            ("movement_types", "enum", "MovementType", vec![]),
-            ("moves", "enum", "Move", vec![]),
-            ("natures", "enum", "Nature", vec![]),
-            ("npc_trades", "enum", "NpcTradeID", vec![]),
-            ("object_events", "enum", "ObjectEventGfx", vec![]),
-            ("pal_park_land_area", "enum", "PalParkLandArea", vec![]),
-            ("pal_park_water_area", "enum", "PalParkWaterArea", vec![]),
-            ("player_transitions", "mask", "PlayerTransition", vec![]),
-            ("pokemon_anim_constants", "enum", "PokemonAnimConstants", vec![]),
-            ("pokemon_body_shapes", "enum", "PokemonBodyShape", vec![]),
-            ("pokemon_colors", "enum", "PokemonColor", vec![]),
-            ("pokemon_contest_ranks", "enum", "PokemonContestRank", vec![]),
-            ("pokemon_contest_types", "enum", "PokemonContestType", vec![]),
-            ("pokemon_data_params", "enum", "PokemonDataParam", vec![]),
-            ("pokemon_stats", "enum", "PokemonStat", vec![]),
-            ("pokemon_types", "enum", "PokemonType", vec![]),
-            ("poketch_apps", "enum", "PoketchAppID", vec![]),
-            ("ribbons", "enum", "RibbonID", vec![]),
-            ("roaming_slots", "enum", "RoamingSlot", vec![]),
-            ("save_types", "enum", "SaveType", vec![]),
-            ("sdat", "enum", "SDATID", vec![]),
-            ("seals", "enum", "Seal", vec![]),
-            ("signpost_commands", "enum", "SignpostCommand", vec![]),
-            ("signpost_types", "enum", "SignpostType", vec![]),
-            ("size_contest_results", "enum", "SizeContestResult", vec![]),
-            ("shadow_sizes", "enum", "ShadowSize", vec![]),
-            ("species", "enum", "Species", vec![]),
-            ("species_data_params", "enum", "SpeciesDataParam", vec![]),
-            ("string_padding_mode", "enum", "PaddingMode", vec![]),
-            ("text_banks", "enum", "TextBank", vec![]),
-            ("time_of_day", "enum", "TimeOfDay", vec![]),
-            ("town_map_description_flag_types", "enum", "TownMapDescriptionFlagType", vec![]),
-            ("trainers", "enum", "TrainerID", vec![]),
-            ("trainer_classes", "enum", "TrainerClass", vec![]),
-            ("trainer_message_types", "enum", "TrainerMessageType", vec![]),
-            ("trainer_score_events", "enum", "TrainerScoreEvent", vec![]),
-            ("trainer_types", "enum", "TrainerType", vec![]),
-            ("tutor_locations", "enum", "TutorLocation", vec![]),
-            ("vars_flags", "enum", "VarFlag", vec![]),
-            ("versions", "enum", "Version", vec![]),
-            ("villa_furnitures", "enum", "VillaFurniture", vec![]),
-            ("mart_specialties_id", "enum", "MartSpecialtiesID", vec![]),
-            ("mart_decor_id", "enum", "MartDecorID", vec![]),
-            ("mart_seal_id", "enum", "MartSealID", vec![]),
-            ("mart_frontier_id", "enum", "MartFrontierId", vec![]),
-            ("mystery_gift_delivery_stages", "enum", "MysteryGiftDeliveryStage", vec![]),
-        ];
-
         let mut total_loaded = 0;
-        for (filename, cmd_type, tag, extra_args) in configs {
+        for (filename, cmd_type, tag, extra_args) in Self::GENERATED_CONSTANT_FILES {
             let file_path = dir.join(format!("{}.txt", filename));
             if !file_path.exists() {
                 continue;
@@ -895,11 +1063,11 @@ impl ConstantDb {
                 .arg("--tag-name")
                 .arg(tag)
                 .env("PYTHONPATH", "C:/dev/metang");
-            
-            for arg in extra_args {
+
+            for arg in *extra_args {
                 cmd.arg(arg);
             }
-            
+
             cmd.arg(&file_path);
 
             let output = cmd.output().map_err(|e| {
@@ -919,17 +1087,18 @@ impl ConstantDb {
                 continue; // Skip failed ones
             }
 
-            let json: std::collections::HashMap<String, serde_json::Value> = serde_json::from_slice(&output.stdout).map_err(|e| {
-                eprintln!(
-                    "Failed to parse metang JSON for {}: {}. Output: {}",
-                    filename,
-                    e,
-                    String::from_utf8_lossy(&output.stdout)
-                );
-                CompileError::Database {
-                    message: format!("Failed to parse metang JSON for {}: {}", filename, e),
-                }
-            })?;
+            let json: std::collections::HashMap<String, serde_json::Value> =
+                serde_json::from_slice(&output.stdout).map_err(|e| {
+                    eprintln!(
+                        "Failed to parse metang JSON for {}: {}. Output: {}",
+                        filename,
+                        e,
+                        String::from_utf8_lossy(&output.stdout)
+                    );
+                    CompileError::Database {
+                        message: format!("Failed to parse metang JSON for {}: {}", filename, e),
+                    }
+                })?;
 
             for (name, value) in json {
                 if let Some(val) = value.as_i64() {
@@ -1034,12 +1203,19 @@ impl ConstantDb {
     ///
     /// This allows loading text message references without requiring
     /// the decomp project to be built first.
-    pub fn load_text_bank_json_dir<P: AsRef<Path>>(&mut self, dir: P) -> Result<usize, CompileError> {
+    pub fn load_text_bank_json_dir<P: AsRef<Path>>(
+        &mut self,
+        dir: P,
+    ) -> Result<usize, CompileError> {
         let dir = dir.as_ref();
         let mut total = 0;
 
         let entries = std::fs::read_dir(dir).map_err(|e| CompileError::Database {
-            message: format!("Failed to read text bank directory '{}': {}", dir.display(), e),
+            message: format!(
+                "Failed to read text bank directory '{}': {}",
+                dir.display(),
+                e
+            ),
         })?;
 
         for entry in entries.flatten() {
@@ -1064,11 +1240,10 @@ impl ConstantDb {
             message: format!("Failed to read text bank file '{}': {}", path.display(), e),
         })?;
 
-        let json: serde_json::Value = serde_json::from_str(&contents).map_err(|e| {
-            CompileError::Database {
+        let json: serde_json::Value =
+            serde_json::from_str(&contents).map_err(|e| CompileError::Database {
                 message: format!("Failed to parse JSON '{}': {}", path.display(), e),
-            }
-        })?;
+            })?;
 
         let messages = json
             .get("messages")

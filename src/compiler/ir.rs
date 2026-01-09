@@ -1,5 +1,7 @@
+use regex::Regex;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::LazyLock;
 
 use crate::compiler::ast::{FunctionHeader, ScriptFile};
 use crate::database::{Command, DatabaseV2, ParamDef};
@@ -11,6 +13,15 @@ use super::{
     token::TokenType,
     Lexer, Parser,
 };
+
+// ============================================================================
+// Cached Regexes
+// ============================================================================
+
+/// Macro condition parameter substitution: matches \paramName
+static RE_MACRO_PARAM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\(\w+)").unwrap()
+});
 
 #[derive(Debug, Clone)]
 pub enum IrOpcode {
@@ -506,12 +517,8 @@ impl<'a> Lowerer<'a> {
         args: &[Expression],
         params: &[crate::database::ParamDef],
     ) -> ParseResult<bool> {
-        use regex::Regex;
-        
         // 1. Substitute \paramName with the integer value of the argument
-        let re = Regex::new(r"\\(\w+)").unwrap();
-        
-        let substituted = re.replace_all(condition, |caps: &regex::Captures| {
+        let substituted = RE_MACRO_PARAM.replace_all(condition, |caps: &regex::Captures| {
             let param_name = &caps[1];
             // Find the argument corresponding to this param name
             if let Some(pos) = params.iter().position(|p| p.name == param_name) {

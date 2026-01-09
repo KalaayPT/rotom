@@ -37,6 +37,51 @@
 //! ```
 
 use regex::Regex;
+use std::sync::LazyLock;
+
+// ============================================================================
+// Cached Regexes
+// ============================================================================
+
+/// Script header: "Script N:"
+static RE_SCRIPT_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^Script\s+(\d+)\s*:").unwrap()
+});
+
+/// Function header: "Function N:"
+static RE_FUNCTION_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^Function\s+(\d+)\s*:").unwrap()
+});
+
+/// Action header: "Action N:"
+static RE_ACTION_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^Action\s+(\d+)\s*:").unwrap()
+});
+
+/// Script reference in arguments: "Script#N"
+static RE_SCRIPT_REF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Script#(\d+)").unwrap()
+});
+
+/// Function reference in arguments: "Function#N"
+static RE_FUNCTION_REF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Function#(\d+)").unwrap()
+});
+
+/// Action reference in arguments: "Action#N"
+static RE_ACTION_REF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Action#(\d+)").unwrap()
+});
+
+/// UseScript workaround: "UseScript_#N"
+static RE_USE_SCRIPT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*UseScript_#(\d+)\s*$").unwrap()
+});
+
+/// Descriptor pattern: Word.Value -> Value (e.g., "Overworld.0" -> "0")
+static RE_DESCRIPTOR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z0-9_]+)").unwrap()
+});
 
 /// Transpile a DSPRE script to Rotoscript format
 pub fn transpile(input: &str) -> String {
@@ -45,22 +90,6 @@ pub fn transpile(input: &str) -> String {
     
     let mut output = String::new();
     let mut in_action = false; // Track if we're inside an Action block
-
-    // Compile regexes once
-    let script_header = Regex::new(r"^Script\s+(\d+)\s*:").unwrap();
-    let function_header = Regex::new(r"^Function\s+(\d+)\s*:").unwrap();
-    let action_header = Regex::new(r"^Action\s+(\d+)\s*:").unwrap();
-
-    // References in arguments: Script#N, Function#N, Action#N
-    let script_ref = Regex::new(r"Script#(\d+)").unwrap();
-    let function_ref = Regex::new(r"Function#(\d+)").unwrap();
-    let action_ref = Regex::new(r"Action#(\d+)").unwrap();
-
-    // UseScript_#N workaround command
-    let use_script = Regex::new(r"^\s*UseScript_#(\d+)\s*$").unwrap();
-    
-    // Descriptor pattern: Word.Value -> Value (e.g., "Overworld.0" -> "0", "Move.HM01" -> "HM01")
-    let descriptor = Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z0-9_]+)").unwrap();
 
     for line in input.lines() {
         let trimmed = line.trim();
@@ -77,7 +106,7 @@ pub fn transpile(input: &str) -> String {
         }
 
         // Check for Script N: header -> becomes `function script_N #N:`
-        if let Some(caps) = script_header.captures(trimmed) {
+        if let Some(caps) = RE_SCRIPT_HEADER.captures(trimmed) {
             let id: u32 = caps[1].parse().unwrap();
             output.push_str(&format!("function script_{} #{}:\n", id, id));
             in_action = false;
@@ -85,7 +114,7 @@ pub fn transpile(input: &str) -> String {
         }
 
         // Check for Function N: header -> becomes bare label `func_N:`
-        if let Some(caps) = function_header.captures(trimmed) {
+        if let Some(caps) = RE_FUNCTION_HEADER.captures(trimmed) {
             let id: u32 = caps[1].parse().unwrap();
             output.push_str(&format!("func_{}:\n", id));
             in_action = false;
@@ -93,7 +122,7 @@ pub fn transpile(input: &str) -> String {
         }
 
         // Check for Action N: header
-        if let Some(caps) = action_header.captures(trimmed) {
+        if let Some(caps) = RE_ACTION_HEADER.captures(trimmed) {
             let id: u32 = caps[1].parse().unwrap();
             output.push_str(&format!("action action_{}\n", id));
             in_action = true;
@@ -101,7 +130,7 @@ pub fn transpile(input: &str) -> String {
         }
 
         // Check for UseScript_#N (DSPRE workaround for jumping to scripts)
-        if let Some(caps) = use_script.captures(&line) {
+        if let Some(caps) = RE_USE_SCRIPT.captures(&line) {
             let id: u32 = caps[1].parse().unwrap();
             // Preserve leading whitespace
             let leading_ws = &line[..line.len() - line.trim_start().len()];
@@ -121,16 +150,16 @@ pub fn transpile(input: &str) -> String {
         let mut processed = line.to_string();
 
         // Replace Script#N -> script_N
-        processed = script_ref.replace_all(&processed, "script_$1").to_string();
+        processed = RE_SCRIPT_REF.replace_all(&processed, "script_$1").to_string();
 
         // Replace Function#N -> func_N
-        processed = function_ref.replace_all(&processed, "func_$1").to_string();
+        processed = RE_FUNCTION_REF.replace_all(&processed, "func_$1").to_string();
 
         // Replace Action#N -> action_N
-        processed = action_ref.replace_all(&processed, "action_$1").to_string();
+        processed = RE_ACTION_REF.replace_all(&processed, "action_$1").to_string();
         
         // Strip descriptors: Overworld.0 -> 0, Move.HM01 -> HM01
-        processed = descriptor.replace_all(&processed, "$1").to_string();
+        processed = RE_DESCRIPTOR.replace_all(&processed, "$1").to_string();
         
         // Convert DSPRE comparison operators: GREATER/EQUAL -> GREATER_EQUAL, LESS/EQUAL -> LESS_EQUAL
         processed = processed.replace("GREATER/EQUAL", "GREATER_EQUAL");

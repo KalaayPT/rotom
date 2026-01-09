@@ -245,7 +245,7 @@ EndMovement
             return;
         }
     };
-    
+
     // DSPRE-derived test script (0013)
     let dspre = std::fs::read_to_string(r"C:\Users\micro\Desktop\Pokémon - Platinum Version (USA) (Rev 1)_DSPRE_contents\expanded\scripts\0002.script").unwrap();
     let decomp =
@@ -263,8 +263,6 @@ EndMovement
         db.commands.len(),
         db.meta.version
     );
-
-
 
     // Load constants from the database
     let mut constants = ConstantDb::new();
