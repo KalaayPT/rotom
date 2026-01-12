@@ -23,7 +23,7 @@ fn sha256_hex(data: &[u8]) -> String {
     hex::encode(result)
 }
 
-/// Compile a rotoscript source to binary bytes
+    // Compile to binary
 fn compile_to_binary(
     source: &str,
     db: &DatabaseV2,
@@ -109,7 +109,7 @@ fn test_script_hash(script_name: &str) {
     }
 
     // Compile to binary
-    let binary = compile_to_binary(&rotoscript, &db, &constants)
+    let binary = compile_to_binary(&rotoscript, &db, &constants, None)
         .expect(&format!("Failed to compile {}", script_name));
 
     // Compute hash and compare
