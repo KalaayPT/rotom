@@ -175,7 +175,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
                 // Only emit if we haven't seen this function before
                 if functions_with_bodies_emitted.contains(label_name) {
                     // Skip this entire function (headers + body already emitted)
-                    // Set skip_until_label to skip all commands until next label
+                    // Skip all commands until next label
                     skip_until_label = true;
                 } else {
                     // Emit header for EACH slot this function appears in

@@ -130,9 +130,20 @@ fn compile(
         }
     }
 
-    // Load constants from the database
     let mut constants = ConstantDb::new();
     let const_count = constants.load_from_db(&db);
+
+    if let Some(db_dir) = db_path.parent() {
+        let dir_count = constants.load_directory(db_dir)?;
+        if !json && dir_count > 0 {
+            println!(
+                "Loaded {} additional constants from {}",
+                dir_count,
+                db_dir.display()
+            );
+        }
+    }
+
     if !json {
         println!("Loaded {} built-in constants", const_count);
     }
@@ -307,12 +318,12 @@ EndMovement
     };
 
     // DSPRE-derived test script (0013)
-    let dspre = std::fs::read_to_string(r"C:\Users\micro\Desktop\Pokémon - Platinum Version (USA) (Rev 1)_DSPRE_contents\expanded\scripts\0002.script").unwrap();
+    let _dspre = std::fs::read_to_string(r"C:\Users\micro\Desktop\Pokémon - Platinum Version (USA) (Rev 1)_DSPRE_contents\expanded\scripts\0002.script").unwrap();
     let decomp =
         std::fs::read_to_string(r"C:\dev\pokeplatinum\res\field\scripts\scripts_unk_0406.s")
             .unwrap();
-    let input = rotom::transpiler::DSPRE::transpile(&dspre);
-    let input = rotom::transpiler::decomp::transpile(&decomp, Some(&db));
+    let input = rotom::transpiler::DSPRE::transpile(&_dspre);
+    let _input = rotom::transpiler::decomp::transpile(&decomp, Some(&db));
     println!("{input}");
     std::fs::write("test_input.rotom", &input).unwrap();
     let input = input.as_str();

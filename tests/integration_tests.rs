@@ -109,7 +109,7 @@ fn test_script_hash(script_name: &str) {
     }
 
     // Compile to binary
-    let binary = compile_to_binary(&rotoscript, &db, &constants, None)
+    let binary = compile_to_binary(&rotoscript, &db, &constants)
         .expect(&format!("Failed to compile {}", script_name));
 
     // Compute hash and compare

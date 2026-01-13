@@ -96,7 +96,7 @@ pub fn compile_file(
     let source = std::fs::read_to_string(input).map_err(|e| CompileError::Io {
         message: format!("Failed to read input file '{}': {}", input.display(), e),
     })?;
-    let read_time = start.elapsed();
+    let _read_time = start.elapsed();
 
     let extension = input
         .extension()
@@ -113,11 +113,11 @@ pub fn compile_file(
             message: format!("Unsupported file extension: .{}", extension),
         }),
     };
-    let transpile_time = transpile_start.elapsed();
+    let _transpile_time = transpile_start.elapsed();
 
     let compile_start = std::time::Instant::now();
     let bytes = compile_to_bytes(&rotom_source, db, constants)?;
-    let compile_time = compile_start.elapsed();
+    let _compile_time = compile_start.elapsed();
     let size = bytes.len();
 
     std::fs::write(output, &bytes).map_err(|e| CompileError::Io {
