@@ -490,7 +490,9 @@ impl ConstantDb {
                     continue;
                 }
                 match self.load_json(&path) {
-                    Ok(count) => total += count,
+                    Ok(count) => {
+                        total += count;
+                    }
                     Err(e) => eprintln!("Warning: Failed to load '{}': {}", path.display(), e),
                 }
             }
@@ -503,7 +505,7 @@ impl ConstantDb {
         let ws = uxie::Workspace::open_decomp(root).map_err(|e| CompileError::Database {
             message: format!("Failed to open decomp project via Uxie: {}", e),
         })?;
-        
+
         let symbols = (*ws.symbols).clone();
         let count = symbols.get_all_defines().len();
         self.uxie_symbols = Some(symbols);
@@ -526,7 +528,8 @@ impl ConstantDb {
             return Ok(0);
         };
 
-        let events_header = decomp_root.as_ref()
+        let events_header = decomp_root
+            .as_ref()
             .join("res")
             .join("field")
             .join("events")
@@ -538,9 +541,11 @@ impl ConstantDb {
 
         if let Some(symbols) = &mut self.uxie_symbols {
             let start_count = symbols.get_all_defines().len();
-            symbols.load_header(&events_header).map_err(|e| CompileError::Database {
-                message: format!("Failed to load map events header: {}", e),
-            })?;
+            symbols
+                .load_header(&events_header)
+                .map_err(|e| CompileError::Database {
+                    message: format!("Failed to load map events header: {}", e),
+                })?;
             Ok(symbols.get_all_defines().len() - start_count)
         } else {
             // If no workspace loaded yet, we can't easily load map events into a standalone SymbolTable
@@ -553,18 +558,22 @@ impl ConstantDb {
         if let Some(val) = self.constants.get(name) {
             return Some(*val);
         }
-        
+
         if let Some(symbols) = &self.uxie_symbols {
             if let Some(val) = symbols.resolve_constant(name) {
                 return Some(val as i32);
             }
         }
-        
+
         None
     }
 
     pub fn len(&self) -> usize {
-        let uxie_count = self.uxie_symbols.as_ref().map(|s| s.get_all_defines().len()).unwrap_or(0);
+        let uxie_count = self
+            .uxie_symbols
+            .as_ref()
+            .map(|s| s.get_all_defines().len())
+            .unwrap_or(0);
         self.constants.len() + uxie_count
     }
 

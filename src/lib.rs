@@ -107,7 +107,7 @@ pub fn compile_file(
     let transpile_start = std::time::Instant::now();
     let rotom_source = match extension.as_str() {
         "rotom" => source,
-        "script" => transpiler::transpile_dspre(&source),
+        "script" => transpiler::transpile_dspre(&source, Some(db)),
         "s" => transpiler::transpile_decomp(&source, Some(db)),
         _ => return Err(CompileError::Io {
             message: format!("Unsupported file extension: .{}", extension),

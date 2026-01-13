@@ -134,13 +134,14 @@ fn compile(
     let const_count = constants.load_from_db(&db);
 
     if let Some(db_dir) = db_path.parent() {
-        let dir_count = constants.load_directory(db_dir)?;
-        if !json && dir_count > 0 {
-            println!(
-                "Loaded {} additional constants from {}",
-                dir_count,
-                db_dir.display()
-            );
+        if let Ok(dir_count) = constants.load_directory(db_dir) {
+            if !json && dir_count > 0 {
+                println!(
+                    "Loaded {} additional constants from {}",
+                    dir_count,
+                    db_dir.display()
+                );
+            }
         }
     }
 
@@ -322,7 +323,7 @@ EndMovement
     let decomp =
         std::fs::read_to_string(r"C:\dev\pokeplatinum\res\field\scripts\scripts_unk_0406.s")
             .unwrap();
-    let input = rotom::transpiler::DSPRE::transpile(&_dspre);
+    let input = rotom::transpiler::DSPRE::transpile(&_dspre, Some(&db));
     let _input = rotom::transpiler::decomp::transpile(&decomp, Some(&db));
     println!("{input}");
     std::fs::write("test_input.rotom", &input).unwrap();
