@@ -766,8 +766,13 @@ impl<'a> Lowerer<'a> {
                     Arg::Pointer(target_label.to_string()),
                 ],
             });
+            Ok(())
+        } else {
+            Err(lowering_error(format!(
+                "Condition must be a comparison expression (e.g., 'x == 1'), found {:?}. Boolean expressions are not yet supported.",
+                expr.node
+            )))
         }
-        Ok(())
     }
     fn resolve_args(&self, args: &[Expression]) -> ParseResult<Vec<Arg>> {
         args.iter().map(|arg| self.resolve_arg(arg)).collect()
