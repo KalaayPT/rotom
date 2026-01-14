@@ -28,7 +28,7 @@
 //!
 //! action MovementName
 //!     WalkNorth
-//! EndMovement
+//!     EndMovement
 //! ```
 
 
@@ -122,10 +122,10 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
     let mut functions_with_bodies_emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in input.lines() {
-        let trimmed = line.trim();
+        let raw_trimmed = line.trim();
 
         // Skip empty lines in output but preserve them
-        if trimmed.is_empty() {
+        if raw_trimmed.is_empty() {
             if seen_script_entry_end && !skip_until_label {
                 output.push('\n');
             }
@@ -133,19 +133,32 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
         }
 
         // Skip preprocessor directives
-        if trimmed.starts_with("#include") || trimmed.starts_with("#") {
+        if raw_trimmed.starts_with("#include") || raw_trimmed.starts_with("#") {
             continue;
         }
 
-        // Skip assembly comments
-        if trimmed.starts_with("@") || trimmed.starts_with("//") {
-            // Keep regular comments
-            if trimmed.starts_with("//") {
-                output.push_str(trimmed);
-                output.push('\n');
-            }
+        // Handle assembly comments (full line)
+        if raw_trimmed.starts_with("@") || raw_trimmed.starts_with("//") {
+            // Keep regular comments, and convert @ comments to //
+            let comment = if raw_trimmed.starts_with("@") {
+                raw_trimmed.replacen("@", "//", 1)
+            } else {
+                raw_trimmed.to_string()
+            };
+            output.push_str(&comment);
+            output.push('\n');
             continue;
         }
+
+        // Split inline comment
+        let (trimmed, inline_comment) = if let Some(idx) = raw_trimmed.find('@') {
+            (
+                raw_trimmed[..idx].trim(),
+                Some(raw_trimmed[idx..].replace("@", "//")),
+            )
+        } else {
+            (raw_trimmed, None)
+        };
 
         // Skip ScriptEntry/ScriptEntryEnd
         if trimmed.starts_with("ScriptEntry") {
@@ -169,24 +182,39 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
         if let Some(label_name) = trimmed.strip_suffix(':') {
             // Check if this is a movement label
             if movement_labels.contains(label_name) {
-                output.push_str(&format!("action {}\n", label_name));
+                output.push_str(&format!("action {}", label_name));
+                if let Some(ref c) = inline_comment {
+                    output.push(' ');
+                    output.push_str(c);
+                }
+                output.push('\n');
             } else if let Some(slots) = function_to_slots.get(label_name) {
                 // Public function (in jump table)
                 // Only emit if we haven't seen this function before
                 if functions_with_bodies_emitted.contains(label_name) {
                     // Skip this entire function (headers + body already emitted)
                     // Skip all commands until next label
-                    skip_until_label = true;
+                    //skip_until_label = true;
                 } else {
                     // Emit header for EACH slot this function appears in
                     for slot in slots {
-                        output.push_str(&format!("function {} #{}:\n", label_name, slot));
+                        output.push_str(&format!("function {} #{}", label_name, slot));
+                        if let Some(ref c) = inline_comment {
+                            output.push(' ');
+                            output.push_str(c);
+                        }
+                        output.push_str(":\n");
                     }
                     functions_with_bodies_emitted.insert(label_name.to_string());
                 }
             } else {
                 // Private label
-                output.push_str(&format!("{}:\n", label_name));
+                output.push_str(&format!("{}:", label_name));
+                if let Some(ref c) = inline_comment {
+                    output.push(' ');
+                    output.push_str(c);
+                }
+                output.push('\n');
             }
             skip_until_label = false;
             continue;
@@ -208,7 +236,8 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             if let Some(db) = db {
                 if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
                     if let Ok(id) = u16::from_str_radix(id_str, 16) {
-                        if let Some((name, _)) = db.commands.iter().find(|(_, c)| c.id == Some(id)) {
+                        if let Some((name, _)) = db.commands.iter().find(|(_, c)| c.id == Some(id))
+                        {
                             cmd_name = name;
                         }
                     }
@@ -233,13 +262,18 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             if let Some(db) = db {
                 if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
                     if let Ok(id) = u16::from_str_radix(id_str, 16) {
-                        if let Some((name, _)) = db.commands.iter().find(|(_, c)| c.id == Some(id)) {
+                        if let Some((name, _)) = db.commands.iter().find(|(_, c)| c.id == Some(id))
+                        {
                             cmd_name = name;
                         }
                     }
                 }
             }
             output.push_str(cmd_name);
+        }
+        if let Some(ref c) = inline_comment {
+            output.push(' ');
+            output.push_str(c);
         }
         output.push('\n');
     }
