@@ -31,6 +31,7 @@
 //!     EndMovement
 //! ```
 
+use crate::database::CommandType;
 
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> String {
@@ -89,16 +90,18 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
 
     // Create a map from function name to ALL slot numbers it appears in
     // (A function can appear multiple times in the jump table!)
-    let mut function_to_slots: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let mut function_to_slots: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
     for (slot_idx, name) in jump_table.iter().enumerate() {
         function_to_slots
             .entry(name.clone())
             .or_insert_with(Vec::new)
             .push(slot_idx);
     }
-    
+
     // Collect local #define macros for substitution
-    let mut local_defines: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut local_defines: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for line in input.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("#define ") {
@@ -119,7 +122,8 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
     let mut skip_until_label = false; // Skip lines until we hit the first real label (after jump table)
     let mut seen_script_entry_end = false;
     // Track which functions have had their body emitted (to avoid duplicates)
-    let mut functions_with_bodies_emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut functions_with_bodies_emitted: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for line in input.lines() {
         let raw_trimmed = line.trim();
@@ -236,7 +240,10 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             if let Some(db) = db {
                 if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
                     if let Ok(id) = u16::from_str_radix(id_str, 16) {
-                        if let Some((name, _)) = db.commands.iter().find(|(_, c)| c.id == Some(id))
+                        if let Some((name, _)) = db
+                            .commands
+                            .iter()
+                            .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
                         {
                             cmd_name = name;
                         }
@@ -262,7 +269,10 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             if let Some(db) = db {
                 if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
                     if let Ok(id) = u16::from_str_radix(id_str, 16) {
-                        if let Some((name, _)) = db.commands.iter().find(|(_, c)| c.id == Some(id))
+                        if let Some((name, _)) = db
+                            .commands
+                            .iter()
+                            .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
                         {
                             cmd_name = name;
                         }
@@ -451,7 +461,7 @@ Move2:
     fn test_transpile_acuity_lakefront_fixture() {
         let fixture_path = "tests/fixtures/scripts/scripts_acuity_lakefront.s";
         let input = std::fs::read_to_string(fixture_path);
-        
+
         if let Ok(content) = input {
             let output = transpile(&content, None);
             assert!(output.contains("function _0012 #1:"));

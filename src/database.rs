@@ -280,11 +280,9 @@ impl DatabaseV2 {
 
         if let Some(id_str) = name.strip_prefix("ScrCmd_") {
             if let Ok(id) = i32::from_str_radix(id_str, 16) {
-                if let Some((_, cmd)) = self
-                    .commands
-                    .iter()
-                    .find(|(_, cmd)| cmd.id == Some(id as u16))
-                {
+                if let Some((_, cmd)) = self.commands.iter().find(|(_, cmd)| {
+                    cmd.id == Some(id as u16) && cmd.cmd_type == CommandType::ScriptCmd
+                }) {
                     return Ok(cmd);
                 }
             }

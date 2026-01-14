@@ -320,11 +320,12 @@ EndMovement
 
     // DSPRE-derived test script (0013)
     let _dspre = std::fs::read_to_string(r"C:\Users\micro\Desktop\Pokémon - Platinum Version (USA) (Rev 1)_DSPRE_contents\expanded\scripts\0002.script").unwrap();
-    let decomp =
-        std::fs::read_to_string(r"C:\dev\pokeplatinum\res\field\scripts\scripts_unk_0406.s")
-            .unwrap();
-    let input = rotom::transpiler::DSPRE::transpile(&_dspre, Some(&db));
-    let _input = rotom::transpiler::decomp::transpile(&decomp, Some(&db));
+    let decomp = std::fs::read_to_string(
+        r"C:\dev\pokeplatinum\res\field\scripts\scripts_global_terminal_1f.s",
+    )
+    .unwrap();
+    let _input = rotom::transpiler::DSPRE::transpile(&_dspre, Some(&db));
+    let input = rotom::transpiler::decomp::transpile(&decomp, Some(&db));
     println!("{input}");
     std::fs::write("test_input.rotom", &input).unwrap();
     let input = input.as_str();
