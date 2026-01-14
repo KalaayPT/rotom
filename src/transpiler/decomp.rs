@@ -121,6 +121,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
     // Second pass: generate output
     let mut skip_until_label = false; // Skip lines until we hit the first real label (after jump table)
     let mut seen_script_entry_end = false;
+    let mut seen_first_label_after_entry_end = false; // Track if we've seen a real label after ScriptEntryEnd
     // Track which functions have had their body emitted (to avoid duplicates)
     let mut functions_with_bodies_emitted: std::collections::HashSet<String> =
         std::collections::HashSet::new();
@@ -221,11 +222,22 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
                 output.push('\n');
             }
             skip_until_label = false;
+            seen_first_label_after_entry_end = true;
             continue;
         }
 
         // Skip lines before we've seen any real content
         if !seen_script_entry_end {
+            continue;
+        }
+
+        // Handle bare End at top level (before any label has been seen)
+        // Some decomp scripts have an End immediately after ScriptEntryEnd with no label
+        // We need to wrap it in a synthetic label so the parser can handle it
+        if !seen_first_label_after_entry_end && trimmed == "End" {
+            output.push_str("_unused_end:\n");
+            output.push_str("    End\n");
+            seen_first_label_after_entry_end = true;
             continue;
         }
 

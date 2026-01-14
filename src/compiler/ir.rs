@@ -619,6 +619,16 @@ impl<'a> Lowerer<'a> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
             ExpressionKind::Identifier(_) => self.resolve_arg_to_int(expr),
+            ExpressionKind::Prefix { operator, id } => {
+                let val = self.eval_int_expr(id)?;
+                match operator {
+                    TokenType::Minus => Ok(-val),
+                    _ => Err(lowering_error(format!(
+                        "Unsupported prefix operator {:?} in expression",
+                        operator
+                    ))),
+                }
+            }
             ExpressionKind::Infix {
                 left,
                 operator,
