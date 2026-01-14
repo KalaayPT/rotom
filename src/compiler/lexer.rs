@@ -201,7 +201,7 @@ impl<'a> Lexer<'a> {
             "or" => return TokenType::Or,
             "not" => return TokenType::Not,
             "as" => return TokenType::As,
-            id => return TokenType::Identifier(String::from(id)),
+            _ => return TokenType::Identifier(name),
         }
     }
     pub fn read_integer(&mut self, first: char) -> TokenType {

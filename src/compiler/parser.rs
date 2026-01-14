@@ -475,6 +475,9 @@ impl<'a> Parser<'a> {
             && !self.current_token_is(TokenType::End)
             && !self.current_token_is(TokenType::Comma)
             && !self.current_token_is(TokenType::RParen)
+            && !self.current_token_is(TokenType::Then)
+            && !self.current_token_is(TokenType::Do)
+            && !self.current_token_is(TokenType::Newline)
             && precedence < self.cur_precedence()
         {
             left = self.parse_infix(left)?;
