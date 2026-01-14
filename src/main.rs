@@ -220,12 +220,17 @@ fn compile(
             );
         }
 
-        for (path, error) in &result.failures {
-            eprintln!(
-                "  ✗ {}: {}",
-                path.file_name().unwrap_or_default().to_string_lossy(),
-                error
-            );
+        for failure in &result.failures {
+            let filename = failure
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            if failure.source.is_empty() {
+                eprintln!("  ✗ {}: {}", filename, failure.error);
+            } else {
+                print_error(&filename, &failure.source, &failure.error);
+            }
         }
 
         println!(

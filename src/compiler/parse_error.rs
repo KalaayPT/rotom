@@ -158,6 +158,6 @@ pub fn print_error(filename: &str, source: &str, error: &CompileError) {
             );
         }
     } else {
-        eprintln!("{}: {}", error_type, message);
+        eprintln!("{}: {}: {}", filename, error_type, message);
     }
 }

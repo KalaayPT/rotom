@@ -30,13 +30,26 @@ pub struct CompileResult {
     pub size: usize,
 }
 
+/// A compilation failure with enough context for rich error display
+#[derive(Debug, Serialize)]
+pub struct CompileFailure {
+    /// The input file path that failed
+    pub path: PathBuf,
+    /// The compilation error
+    pub error: CompileError,
+    /// The source code (transpiled if applicable) for codespan-reporting
+    /// Skipped in JSON output to avoid bloating machine-readable responses
+    #[serde(skip)]
+    pub source: String,
+}
+
 /// Result of compiling a path (file or directory)
 #[derive(Debug, Serialize)]
 pub struct BatchCompileResult {
     /// Successfully compiled files
     pub successes: Vec<CompileResult>,
-    /// Failed compilations with their errors
-    pub failures: Vec<(PathBuf, CompileError)>,
+    /// Failed compilations with source context for rich error display
+    pub failures: Vec<CompileFailure>,
 }
 
 impl BatchCompileResult {
@@ -74,6 +87,61 @@ pub fn compile_to_bytes(
     emitter.emit_script_file(&items)
 }
 
+enum CompileFileError {
+    IoError(CompileError),
+    CompileError { error: CompileError, source: String },
+}
+
+fn compile_file_internal(
+    input: &Path,
+    output: &Path,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> Result<CompileResult, CompileFileError> {
+    let source = std::fs::read_to_string(input).map_err(|e| {
+        CompileFileError::IoError(CompileError::Io {
+            message: format!("Failed to read input file '{}': {}", input.display(), e),
+        })
+    })?;
+
+    let extension = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let rotom_source = match extension.as_str() {
+        "rotom" => source,
+        "script" => transpiler::transpile_dspre(&source, Some(db)),
+        "s" => transpiler::transpile_decomp(&source, Some(db)),
+        _ => {
+            return Err(CompileFileError::IoError(CompileError::Io {
+                message: format!("Unsupported file extension: .{}", extension),
+            }))
+        }
+    };
+
+    let bytes = compile_to_bytes(&rotom_source, db, constants).map_err(|e| {
+        CompileFileError::CompileError {
+            error: e,
+            source: rotom_source.clone(),
+        }
+    })?;
+    let size = bytes.len();
+
+    std::fs::write(output, &bytes).map_err(|e| {
+        CompileFileError::IoError(CompileError::Io {
+            message: format!("Failed to write output file '{}': {}", output.display(), e),
+        })
+    })?;
+
+    Ok(CompileResult {
+        input: input.to_path_buf(),
+        output: output.to_path_buf(),
+        size,
+    })
+}
+
 /// Compile a single file to binary bytes, handling transpilation if needed.
 ///
 /// Supports:
@@ -92,42 +160,9 @@ pub fn compile_file(
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> Result<CompileResult, CompileError> {
-    let start = std::time::Instant::now();
-    let source = std::fs::read_to_string(input).map_err(|e| CompileError::Io {
-        message: format!("Failed to read input file '{}': {}", input.display(), e),
-    })?;
-    let _read_time = start.elapsed();
-
-    let extension = input
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    let transpile_start = std::time::Instant::now();
-    let rotom_source = match extension.as_str() {
-        "rotom" => source,
-        "script" => transpiler::transpile_dspre(&source, Some(db)),
-        "s" => transpiler::transpile_decomp(&source, Some(db)),
-        _ => return Err(CompileError::Io {
-            message: format!("Unsupported file extension: .{}", extension),
-        }),
-    };
-    let _transpile_time = transpile_start.elapsed();
-
-    let compile_start = std::time::Instant::now();
-    let bytes = compile_to_bytes(&rotom_source, db, constants)?;
-    let _compile_time = compile_start.elapsed();
-    let size = bytes.len();
-
-    std::fs::write(output, &bytes).map_err(|e| CompileError::Io {
-        message: format!("Failed to write output file '{}': {}", output.display(), e),
-    })?;
-
-    Ok(CompileResult {
-        input: input.to_path_buf(),
-        output: output.to_path_buf(),
-        size,
+    compile_file_internal(input, output, db, constants).map_err(|e| match e {
+        CompileFileError::IoError(err) => err,
+        CompileFileError::CompileError { error, .. } => error,
     })
 }
 
@@ -169,14 +204,26 @@ pub fn compile_path(
             output.to_path_buf()
         };
 
-        match compile_file(input, &output_path, db, constants) {
+        match compile_file_internal(input, &output_path, db, constants) {
             Ok(result) => Ok(BatchCompileResult {
                 successes: vec![result],
                 failures: vec![],
             }),
-            Err(e) => Ok(BatchCompileResult {
+            Err(CompileFileError::IoError(e)) => Ok(BatchCompileResult {
                 successes: vec![],
-                failures: vec![(input.to_path_buf(), e)],
+                failures: vec![CompileFailure {
+                    path: input.to_path_buf(),
+                    error: e,
+                    source: String::new(),
+                }],
+            }),
+            Err(CompileFileError::CompileError { error, source }) => Ok(BatchCompileResult {
+                successes: vec![],
+                failures: vec![CompileFailure {
+                    path: input.to_path_buf(),
+                    error,
+                    source,
+                }],
             }),
         }
     } else if input.is_dir() {
@@ -225,12 +272,24 @@ pub fn compile_path(
         }
 
         // Compile all files in parallel
-        let results: Vec<Result<CompileResult, (PathBuf, CompileError)>> = files
+        let results: Vec<Result<CompileResult, CompileFailure>> = files
             .par_iter()
             .map(|input_file| {
                 let output_path = generate_output_path(input_file, output);
-                compile_file(input_file, &output_path, db, constants)
-                    .map_err(|e| (input_file.clone(), e))
+                compile_file_internal(input_file, &output_path, db, constants).map_err(|e| {
+                    match e {
+                        CompileFileError::IoError(error) => CompileFailure {
+                            path: input_file.clone(),
+                            error,
+                            source: String::new(),
+                        },
+                        CompileFileError::CompileError { error, source } => CompileFailure {
+                            path: input_file.clone(),
+                            error,
+                            source,
+                        },
+                    }
+                })
             })
             .collect();
 
@@ -241,7 +300,7 @@ pub fn compile_path(
         for result in results {
             match result {
                 Ok(r) => successes.push(r),
-                Err((path, e)) => failures.push((path, e)),
+                Err(failure) => failures.push(failure),
             }
         }
 
