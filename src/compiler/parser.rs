@@ -568,6 +568,10 @@ impl<'a> Parser<'a> {
     }
     fn get_precedence(kind: &TokenType) -> Precedence {
         match kind {
+            TokenType::Or => Precedence::LogicalOr,
+
+            TokenType::And => Precedence::LogicalAnd,
+
             TokenType::Equal
             | TokenType::NotEqual
             | TokenType::LesserThan

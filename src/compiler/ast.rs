@@ -74,6 +74,8 @@ pub enum ExpressionKind {
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
 pub enum Precedence {
     Lowest,
+    LogicalOr,  // ||, or
+    LogicalAnd, // &&, and
     Comparison, // ==, !=, <, >, <=, >=
     Sum,        // +, -
     Product,    // *, /
