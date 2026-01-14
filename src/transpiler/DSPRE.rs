@@ -73,7 +73,7 @@ static RE_DESCRIPTOR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z0-9_]+)").unwrap());
 
 /// Transpile a DSPRE script to Rotoscript format
-pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> String {
+pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> String {
     // First, strip block comments /* ... */
     let input = strip_block_comments(input);
 

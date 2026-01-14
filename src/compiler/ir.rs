@@ -426,13 +426,13 @@ impl<'a> Lowerer<'a> {
         // 2. Fill optional parameters from the remaining args
         for &idx in &optional_indices {
             if arg_ptr < args.len() {
-                // Use provided arg
                 result_map[idx] = Some(args[arg_ptr].clone());
                 arg_ptr += 1;
             } else {
-                // Use default from DB
                 let default_str = params[idx].default.as_ref().unwrap();
-                let lexer = Lexer::new(default_str);
+                let substituted = self.substitute_default_params(default_str, params, &result_map)?;
+                
+                let lexer = Lexer::new(&substituted);
                 let mut parser = Parser::new(lexer);
                 let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
                 result_map[idx] = Some(expr);
@@ -458,7 +458,7 @@ impl<'a> Lowerer<'a> {
         
         let cmd = self.db.get_command(macro_name)?;
         let params = &cmd.params;
-        // Apply defaults for missing arguments
+        
         let args_with_defaults = self.apply_defaults(macro_name, cmd, args)?;
         
         // Build parameter substitution map: param_name -> formatted value
@@ -509,15 +509,9 @@ impl<'a> Lowerer<'a> {
             param_map.insert(param.name.clone(), formatted);
         }
         
-        // Process each line in expansion
         for line in expansion {
-            // Substitute $paramName with actual values
             let substituted = self.substitute_params(line, &param_map);
-            
-            // Parse as substituted line as a command
             let parsed_stmt = self.parse_expansion_line(&substituted)?;
-            
-            // Recursively lower (which may expand nested macros)
             self.lower_statement_with_depth(&parsed_stmt, depth + 1)?;
         }
         
@@ -551,12 +545,10 @@ impl<'a> Lowerer<'a> {
             }
         });
         
-        // 2. Parse the substituted string as an expression
         let lexer = Lexer::new(&substituted);
         let mut parser = Parser::new(lexer);
         let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
         
-        // 3. Evaluate the expression to a boolean
         self.eval_bool_expr(&expr)
     }
     
@@ -708,6 +700,28 @@ impl<'a> Lowerer<'a> {
             result = result.replace(&format!("${}", name), value);
         }
         result
+    }
+    
+    /// Substitute $paramName references in default values with already-resolved parameter values.
+    fn substitute_default_params(
+        &self,
+        default_str: &str,
+        params: &[ParamDef],
+        result_map: &[Option<Expression>],
+    ) -> ParseResult<String> {
+        let mut result = default_str.to_string();
+        
+        for (i, param) in params.iter().enumerate() {
+            let placeholder = format!("${}", param.name);
+            if result.contains(&placeholder) {
+                if let Some(expr) = &result_map[i] {
+                    let formatted = self.format_arg_for_substitution(expr)?;
+                    result = result.replace(&placeholder, &formatted);
+                }
+            }
+        }
+        
+        Ok(result)
     }
     
     /// Parse a macro expansion line into a Statement
