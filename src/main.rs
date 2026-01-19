@@ -4,6 +4,7 @@ use clap::{Parser as ClapParser, Subcommand};
 
 // Use the library crate
 use rotom::compile_path;
+use rotom::decompile_path;
 use rotom::compiler::codegen::Emitter;
 use rotom::compiler::parse_error::{CompileError, print_error};
 use rotom::compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
@@ -92,12 +93,14 @@ fn main() {
             }
         }
         Commands::Decompile {
-            database: _database,
-            input: _input,
-            output: _output,
+            database,
+            input,
+            output,
         } => {
-            eprintln!("Decompilation not yet implemented");
-            std::process::exit(1);
+            if let Err(e) = decompile(&database, &input, output.as_ref()) {
+                eprintln!("Decompilation failed: {}", e);
+                std::process::exit(1);
+            }
         }
         Commands::Test { database } => {
             run_test(&database);
@@ -248,6 +251,80 @@ fn compile(
         // Let's keep the standard behavior: error code 1 if any failure.
         Err(CompileError::Io {
             message: format!("{} file(s) failed to compile", result.failures.len()),
+        })
+    }
+}
+
+fn decompile(
+    db_path: &PathBuf,
+    input: &PathBuf,
+    output: Option<&PathBuf>,
+) -> Result<(), rotom::decompiler::decomp_error::DecompileError> {
+    println!("Loading database from: {}", db_path.display());
+    let db = DatabaseV2::load(db_path).map_err(|e| rotom::decompiler::decomp_error::DecompileError::Io {
+        message: format!("Failed to load database: {}", e),
+    })?;
+    println!(
+        "Loaded {} commands for {}",
+        db.commands.len(),
+        db.meta.version
+    );
+
+    // Determine output path
+    let output_path = match output {
+        Some(p) => p.clone(),
+        None => {
+            if input.is_dir() {
+                input.clone()
+            } else {
+                input.with_extension("rotom")
+            }
+        }
+    };
+
+    println!("\nDecompiling: {}", input.display());
+    println!("Output to: {}", output_path.display());
+
+    let result = decompile_path(input, &output_path, &db)?;
+
+    // Report results
+    for success in &result.successes {
+        println!(
+            "  ✓ {} -> {} ({} bytes)",
+            success
+                .input
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            success
+                .output
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            success.size
+        );
+    }
+
+    for failure in &result.failures {
+        let filename = failure
+            .path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        eprintln!("  ✗ {}: {}", filename, failure.error);
+    }
+
+    println!(
+        "\nDecompilation complete: {}/{} succeeded",
+        result.successes.len(),
+        result.total()
+    );
+
+    if result.is_success() {
+        Ok(())
+    } else {
+        Err(rotom::decompiler::decomp_error::DecompileError::Io {
+            message: format!("{} file(s) failed to decompile", result.failures.len()),
         })
     }
 }

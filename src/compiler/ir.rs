@@ -417,13 +417,11 @@ impl<'a> Lowerer<'a> {
         let mut result_map: Vec<Option<Expression>> = vec![None; param_count];
         let mut arg_ptr = 0;
 
-        // 1. Fill required parameters from the first part of args
         for &idx in &required_indices {
             result_map[idx] = Some(args[arg_ptr].clone());
             arg_ptr += 1;
         }
 
-        // 2. Fill optional parameters from the remaining args
         for &idx in &optional_indices {
             if arg_ptr < args.len() {
                 result_map[idx] = Some(args[arg_ptr].clone());

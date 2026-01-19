@@ -1,0 +1,679 @@
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+use crate::compiler::ast::FunctionHeader;
+use crate::compiler::ir::{Arg, IrAction, IrFunction, IrOpcode, TopLevelItem};
+use crate::database::{Command, DatabaseV2};
+
+use super::decomp_error::{DecompileResult, invalid_format};
+
+const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
+const END_MOVEMENT_OPCODE: u16 = 0xFE;
+
+#[derive(Debug, Clone, PartialEq)]
+enum LabelKind {
+    Script { slot_ids: Vec<u32> },
+    #[allow(dead_code)]
+    Function { id: u32 },
+    Action { id: u32 },
+    Internal,
+}
+
+#[derive(Debug, Clone)]
+struct LabelInfo {
+    kind: LabelKind,
+    name: String,
+}
+
+pub struct Disassembler<'a> {
+    db: &'a DatabaseV2,
+    bytes: Vec<u8>,
+
+    jump_table_end: usize,
+    script_slots: BTreeMap<usize, Vec<u32>>,
+    symbols: HashMap<usize, LabelInfo>,
+    action_offsets: HashSet<usize>,
+
+    #[allow(dead_code)]
+    func_counter: u32,
+    action_counter: u32,
+}
+
+impl<'a> Disassembler<'a> {
+    pub fn new(db: &'a DatabaseV2, bytes: Vec<u8>) -> Self {
+        Self {
+            db,
+            bytes,
+            jump_table_end: 0,
+            script_slots: BTreeMap::new(),
+            symbols: HashMap::new(),
+            action_offsets: HashSet::new(),
+            func_counter: 1,
+            action_counter: 1,
+        }
+    }
+
+    pub fn disassemble(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
+        if self.bytes.len() < 4 {
+            return Err(invalid_format("File too small to contain a valid script"));
+        }
+
+        self.parse_jump_table()?;
+        self.discover_boundaries()?;
+        self.disassemble_chunks()
+    }
+
+    fn parse_jump_table(&mut self) -> DecompileResult<()> {
+        let marker_pos = self
+            .bytes
+            .windows(2)
+            .position(|w| w == JUMP_TABLE_END_MARKER)
+            .ok_or_else(|| invalid_format("Jump table end marker (0xFD13) not found"))?;
+
+        self.jump_table_end = marker_pos;
+
+        if marker_pos % 4 != 0 {
+            return Err(invalid_format(format!(
+                "Jump table size {} is not a multiple of 4",
+                marker_pos
+            )));
+        }
+
+        let entry_count = marker_pos / 4;
+
+        for i in 0..entry_count {
+            let entry_offset = i * 4;
+            let rel_offset = i32::from_le_bytes([
+                self.bytes[entry_offset],
+                self.bytes[entry_offset + 1],
+                self.bytes[entry_offset + 2],
+                self.bytes[entry_offset + 3],
+            ]);
+
+            let abs_offset = (rel_offset + ((i as i32 + 1) * 4)) as usize;
+            let slot_id = i as u32;
+
+            self.script_slots
+                .entry(abs_offset)
+                .or_insert_with(Vec::new)
+                .push(slot_id);
+        }
+
+        for (&offset, slot_ids) in &self.script_slots {
+            let name = format!("script_{}", slot_ids[0]);
+            self.symbols.insert(
+                offset,
+                LabelInfo {
+                    kind: LabelKind::Script {
+                        slot_ids: slot_ids.clone(),
+                    },
+                    name,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    fn discover_boundaries(&mut self) -> DecompileResult<()> {
+        let code_start = self.jump_table_end + 2;
+        let mut pc = code_start;
+        let mut pending_jump_targets: Vec<usize> = Vec::new();
+
+        while pc < self.bytes.len() {
+            if pc + 2 > self.bytes.len() {
+                break;
+            }
+
+            let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
+
+            if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
+                let cmd_size = self.command_size_at(pc, cmd);
+
+                if self.is_jump_command(name) {
+                    if let Some(target) = self.extract_jump_target(pc, cmd) {
+                        pending_jump_targets.push(target);
+                    }
+                }
+
+                if self.is_action_reference(name) {
+                    if let Some(action_offset) = self.extract_action_offset(pc, cmd) {
+                        if action_offset < self.bytes.len() && action_offset % 4 == 0 {
+                            self.action_offsets.insert(action_offset);
+                        }
+                    }
+                }
+
+                pc += 2 + cmd_size;
+            } else {
+                pc += 2;
+            }
+        }
+
+        for target in pending_jump_targets {
+            if target >= code_start && target < self.bytes.len() {
+                if !self.symbols.contains_key(&target) {
+                    self.symbols.insert(
+                        target,
+                        LabelInfo {
+                            kind: LabelKind::Internal,
+                            name: format!("_L{:04X}", target),
+                        },
+                    );
+                }
+            }
+        }
+
+        for &offset in &self.action_offsets.clone() {
+            if !self.symbols.contains_key(&offset) {
+                let id = self.action_counter;
+                self.action_counter += 1;
+                self.symbols.insert(
+                    offset,
+                    LabelInfo {
+                        kind: LabelKind::Action { id },
+                        name: format!("action_{}", id),
+                    },
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn disassemble_chunks(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
+        let code_start = self.jump_table_end + 2;
+
+        let mut all_offsets: BTreeSet<usize> = self.symbols.keys().cloned().collect();
+        all_offsets.insert(code_start);
+        all_offsets.insert(self.bytes.len());
+
+        let offsets_vec: Vec<usize> = all_offsets.into_iter().collect();
+        let mut items: Vec<TopLevelItem> = Vec::new();
+
+        for i in 0..offsets_vec.len() - 1 {
+            let chunk_start = offsets_vec[i];
+            let chunk_end = offsets_vec[i + 1];
+
+            if chunk_start < code_start {
+                continue;
+            }
+
+            if self.action_offsets.contains(&chunk_start) {
+                let (action_opt, actual_end) = self.disassemble_action_with_span(chunk_start, chunk_end)?;
+                if let Some(action) = action_opt {
+                    items.push(TopLevelItem::Action(action));
+                }
+
+                if actual_end < chunk_end {
+                    let gap_actions = self.scan_gap_for_movements(actual_end, chunk_end)?;
+                    items.extend(gap_actions);
+                }
+            } else {
+                let (func_opt, actual_end) = self.disassemble_function_with_span(chunk_start, chunk_end)?;
+                if let Some(func) = func_opt {
+                    items.push(TopLevelItem::Function(func));
+                }
+
+                if actual_end < chunk_end {
+                    let gap_actions = self.scan_gap_for_movements(actual_end, chunk_end)?;
+                    items.extend(gap_actions);
+                }
+            }
+        }
+
+        Ok(items)
+    }
+
+    fn scan_gap_for_movements(&mut self, gap_start: usize, gap_end: usize) -> DecompileResult<Vec<TopLevelItem>> {
+        let mut items = Vec::new();
+        let mut current_start = gap_start;
+
+        while current_start < gap_end {
+            if let Some(term_pos) = self.find_next_terminator(current_start, gap_end) {
+                let movement_end = term_pos + 4;
+
+                let action_start = if current_start % 4 == 0 {
+                    current_start
+                } else {
+                    (current_start + 3) & !3
+                };
+
+                if action_start <= term_pos {
+                    let id = self.action_counter;
+                    self.action_counter += 1;
+                    let name = format!("action_{}", id);
+
+                    self.action_offsets.insert(action_start);
+                    self.symbols.insert(
+                        action_start,
+                        LabelInfo {
+                            kind: LabelKind::Action { id },
+                            name: name.clone(),
+                        },
+                    );
+
+                    if let Some(action) = self.disassemble_action(action_start, movement_end)? {
+                        items.push(TopLevelItem::Action(action));
+                    }
+                }
+
+                current_start = movement_end;
+            } else {
+                break;
+            }
+        }
+
+        Ok(items)
+    }
+
+    fn find_next_terminator(&self, start: usize, end: usize) -> Option<usize> {
+        const END_MOVEMENT_PATTERN: [u8; 4] = [0xFE, 0x00, 0x00, 0x00];
+
+        if start + 4 > self.bytes.len() || start >= end {
+            return None;
+        }
+
+        let search_end = end.min(self.bytes.len() - 3);
+        for pos in (start..search_end).step_by(4) {
+            if pos + 4 <= self.bytes.len() {
+                let window = &self.bytes[pos..pos + 4];
+                if window == END_MOVEMENT_PATTERN {
+                    return Some(pos);
+                }
+            }
+        }
+        None
+    }
+
+    fn disassemble_function_with_span(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> DecompileResult<(Option<IrFunction>, usize)> {
+        let mut instructions: Vec<IrOpcode> = Vec::new();
+        let mut pc = start;
+
+        let headers = if let Some(info) = self.symbols.get(&start) {
+            match &info.kind {
+                LabelKind::Script { slot_ids } => {
+                    let base_name = format!("script_{}", slot_ids[0]);
+                    slot_ids
+                        .iter()
+                        .map(|&slot_id| FunctionHeader {
+                            name: base_name.clone(),
+                            id: Some(slot_id),
+                            is_public: true,
+                        })
+                        .collect()
+                }
+                LabelKind::Function { id } => vec![FunctionHeader {
+                    name: info.name.clone(),
+                    id: Some(*id),
+                    is_public: false,
+                }],
+                LabelKind::Internal => vec![FunctionHeader {
+                    name: info.name.clone(),
+                    id: None,
+                    is_public: false,
+                }],
+                LabelKind::Action { .. } => return Ok((None, start)),
+            }
+        } else {
+            vec![FunctionHeader {
+                name: format!("func_{:04X}", start),
+                id: None,
+                is_public: false,
+            }]
+        };
+        
+        while pc < end {
+            if let Some(info) = self.symbols.get(&pc) {
+                if pc != start {
+                    instructions.push(IrOpcode::Label(info.name.clone()));
+                }
+            }
+
+            if pc + 2 > self.bytes.len() {
+                break;
+            }
+
+            let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
+
+            if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
+                let (args, bytes_consumed) = self.decode_command_args(pc + 2, cmd)?;
+
+                let is_hard_terminator = name.as_str() == "End";
+                let is_soft_terminator = name.as_str() == "Return";
+                
+                instructions.push(IrOpcode::Command {
+                    name: name.clone(),
+                    args,
+                });
+
+                pc += 2 + bytes_consumed;
+                
+                if is_hard_terminator && !self.symbols.contains_key(&pc) {
+                    break;
+                }
+                
+                if is_soft_terminator && self.should_stop_at_return(pc, end) {
+                    break;
+                }
+            } else {
+                pc += 2;
+            }
+        }
+
+        if instructions.is_empty() {
+            return Ok((None, pc));
+        }
+
+        Ok((Some(IrFunction {
+            headers,
+            instructions,
+        }), pc))
+    }
+
+    #[allow(dead_code)]
+    fn disassemble_function(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> DecompileResult<Option<IrFunction>> {
+        self.disassemble_function_with_span(start, end).map(|(f, _)| f)
+    }
+
+    fn disassemble_action_with_span(&self, start: usize, end: usize) -> DecompileResult<(Option<IrAction>, usize)> {
+        let mut instructions: Vec<IrOpcode> = Vec::new();
+        let mut pc = start;
+
+        let name = self
+            .symbols
+            .get(&start)
+            .map(|info| info.name.clone())
+            .unwrap_or_else(|| format!("action_{:04X}", start));
+
+        while pc + 4 <= end && pc + 4 <= self.bytes.len() {
+            let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
+            let param = u16::from_le_bytes([self.bytes[pc + 2], self.bytes[pc + 3]]);
+
+            if let Some((mov_name, _)) = self.db.get_movement_by_id(opcode) {
+                let args = if opcode == END_MOVEMENT_OPCODE {
+                    vec![]
+                } else {
+                    vec![Arg::Value(param as i32)]
+                };
+
+                instructions.push(IrOpcode::Command {
+                    name: mov_name.clone(),
+                    args,
+                });
+
+                pc += 4;
+
+                if opcode == END_MOVEMENT_OPCODE {
+                    break;
+                }
+            } else {
+                instructions.push(IrOpcode::Command {
+                    name: format!("Movement_0x{:02X}", opcode),
+                    args: vec![Arg::Value(param as i32)],
+                });
+                pc += 4;
+            }
+        }
+
+        if instructions.is_empty() {
+            return Ok((None, pc));
+        }
+
+        Ok((Some(IrAction { name, instructions }), pc))
+    }
+
+    #[allow(dead_code)]
+    fn disassemble_action(&self, start: usize, end: usize) -> DecompileResult<Option<IrAction>> {
+        self.disassemble_action_with_span(start, end).map(|(a, _)| a)
+    }
+
+    fn decode_command_args(
+        &self,
+        start: usize,
+        cmd: &Command,
+    ) -> DecompileResult<(Vec<Arg>, usize)> {
+        let params = self.get_variant_params_at(start, cmd);
+        
+        let mut binary_args: Vec<Arg> = Vec::new();
+        let mut offset = start;
+
+        for param in params {
+            let size = param.param_type.size();
+
+            if offset + size > self.bytes.len() {
+                break;
+            }
+
+            let value = match size {
+                1 => self.bytes[offset] as i32,
+                2 => u16::from_le_bytes([self.bytes[offset], self.bytes[offset + 1]]) as i32,
+                4 => {
+                    if param.name == "relative_jump" {
+                        let rel = i32::from_le_bytes([
+                            self.bytes[offset],
+                            self.bytes[offset + 1],
+                            self.bytes[offset + 2],
+                            self.bytes[offset + 3],
+                        ]);
+                        let target = (offset as i32 + rel + 4) as usize;
+
+                        if let Some(info) = self.symbols.get(&target) {
+                            binary_args.push(Arg::Pointer(info.name.clone()));
+                        } else {
+                            binary_args.push(Arg::Pointer(format!("_L{:04X}", target)));
+                        }
+                        offset += size;
+                        continue;
+                    }
+                    i32::from_le_bytes([
+                        self.bytes[offset],
+                        self.bytes[offset + 1],
+                        self.bytes[offset + 2],
+                        self.bytes[offset + 3],
+                    ])
+                }
+                _ => 0,
+            };
+
+            binary_args.push(Arg::Value(value));
+            offset += size;
+        }
+
+        let bytes_consumed = offset - start;
+
+        let decomp_args = self.reorder_args_to_decomp_order_with_params(&binary_args, params);
+
+        Ok((decomp_args, bytes_consumed))
+    }
+
+    fn get_variant_params_at<'b>(&'b self, start: usize, cmd: &'b Command) -> &'b [crate::database::ParamDef] {
+        if cmd.variants.is_some() && start + 2 <= self.bytes.len() {
+            let mode = u16::from_le_bytes([self.bytes[start], self.bytes[start + 1]]) as u8;
+            let variant_params = cmd.get_variant_params(mode);
+            if !variant_params.is_empty() {
+                return variant_params;
+            }
+        }
+        &cmd.params
+    }
+
+    fn reorder_args_to_decomp_order_with_params(&self, binary_args: &[Arg], params: &[crate::database::ParamDef]) -> Vec<Arg> {
+        let mut required_indices = Vec::new();
+        let mut optional_indices = Vec::new();
+
+        for (i, p) in params.iter().enumerate() {
+            if p.default.is_none() {
+                required_indices.push(i);
+            } else {
+                optional_indices.push(i);
+            }
+        }
+
+        if optional_indices.is_empty() {
+            return binary_args.to_vec();
+        }
+
+        let mut result = Vec::with_capacity(binary_args.len());
+
+        for &idx in &required_indices {
+            if idx < binary_args.len() {
+                result.push(binary_args[idx].clone());
+            }
+        }
+
+        let mut optional_args: Vec<&Arg> = Vec::new();
+        for &idx in &optional_indices {
+            if idx < binary_args.len() {
+                optional_args.push(&binary_args[idx]);
+            }
+        }
+
+        let mut trailing_defaults = 0;
+        for &idx in optional_indices.iter().rev() {
+            if idx >= binary_args.len() {
+                continue;
+            }
+            let arg = &binary_args[idx];
+            let param = &params[idx];
+            
+            let matches_default = if let Some(default_str) = &param.default {
+                if let Arg::Value(v) = arg {
+                    if let Some(default_val) = self.parse_default_value(default_str) {
+                        *v == default_val
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if matches_default {
+                trailing_defaults += 1;
+            } else {
+                break;
+            }
+        }
+
+        let optional_to_keep = optional_args.len().saturating_sub(trailing_defaults);
+        for arg in optional_args.into_iter().take(optional_to_keep) {
+            result.push(arg.clone());
+        }
+
+        result
+    }
+
+    fn parse_default_value(&self, default_str: &str) -> Option<i32> {
+        let s = default_str.trim();
+        if s == "TRUE" || s == "true" {
+            Some(1)
+        } else if s == "FALSE" || s == "false" {
+            Some(0)
+        } else if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+            i32::from_str_radix(hex, 16).ok()
+        } else {
+            s.parse::<i32>().ok()
+        }
+    }
+
+    fn command_size(&self, cmd: &Command) -> usize {
+        cmd.params.iter().map(|p| p.param_type.size()).sum()
+    }
+
+    fn command_size_at(&self, pc: usize, cmd: &Command) -> usize {
+        if cmd.variants.is_some() && pc + 4 <= self.bytes.len() {
+            let mode = u16::from_le_bytes([self.bytes[pc + 2], self.bytes[pc + 3]]) as u8;
+            let variant_params = cmd.get_variant_params(mode);
+            if !variant_params.is_empty() {
+                return variant_params.iter().map(|p| p.param_type.size()).sum();
+            }
+        }
+        self.command_size(cmd)
+    }
+
+    fn is_jump_command(&self, name: &str) -> bool {
+        matches!(name, "GoTo" | "GoToIf" | "Call" | "CallIf" | "Jump")
+    }
+
+    fn is_action_reference(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "ApplyMovement" | "ApplyMovementEx" | "LockForMovement"
+        )
+    }
+
+    fn extract_jump_target(&self, pc: usize, cmd: &Command) -> Option<usize> {
+        let mut offset = pc + 2;
+
+        for param in &cmd.params {
+            let size = param.param_type.size();
+
+            if param.name == "relative_jump" && offset + 4 <= self.bytes.len() {
+                let rel = i32::from_le_bytes([
+                    self.bytes[offset],
+                    self.bytes[offset + 1],
+                    self.bytes[offset + 2],
+                    self.bytes[offset + 3],
+                ]);
+                return Some((offset as i32 + rel + 4) as usize);
+            }
+
+            offset += size;
+        }
+
+        None
+    }
+
+    fn extract_action_offset(&self, pc: usize, cmd: &Command) -> Option<usize> {
+        let mut offset = pc + 2;
+
+        for param in &cmd.params {
+            let size = param.param_type.size();
+
+            if param.name == "relative_jump" && offset + 4 <= self.bytes.len() {
+                let rel = i32::from_le_bytes([
+                    self.bytes[offset],
+                    self.bytes[offset + 1],
+                    self.bytes[offset + 2],
+                    self.bytes[offset + 3],
+                ]);
+                return Some((offset as i32 + rel + 4) as usize);
+            }
+
+            offset += size;
+        }
+
+        None
+    }
+
+    fn should_stop_at_return(&self, pc: usize, end: usize) -> bool {
+        let next_action = self.action_offsets.iter()
+            .filter(|&&off| off > pc && off <= end)
+            .min();
+        
+        match next_action {
+            Some(&action_off) => {
+                let has_code_between = self.symbols.iter().any(|(&off, info)| {
+                    off > pc && off < action_off && !matches!(info.kind, LabelKind::Action { .. })
+                });
+                !has_code_between
+            }
+            None => false,
+        }
+    }
+}
+
+pub fn disassemble_bytes(db: &DatabaseV2, bytes: Vec<u8>) -> DecompileResult<Vec<TopLevelItem>> {
+    let mut disasm = Disassembler::new(db, bytes);
+    disasm.disassemble()
+}

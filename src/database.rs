@@ -355,6 +355,18 @@ impl DatabaseV2 {
             .iter()
             .filter(|(_, cmd)| cmd.cmd_type == CommandType::Movement)
     }
+
+    pub fn get_script_cmd_by_id(&self, id: u16) -> Option<(&String, &Command)> {
+        self.commands
+            .iter()
+            .find(|(_, cmd)| cmd.cmd_type == CommandType::ScriptCmd && cmd.id == Some(id))
+    }
+
+    pub fn get_movement_by_id(&self, id: u16) -> Option<(&String, &Command)> {
+        self.commands
+            .iter()
+            .find(|(_, cmd)| cmd.cmd_type == CommandType::Movement && cmd.id == Some(id))
+    }
 }
 
 impl Command {

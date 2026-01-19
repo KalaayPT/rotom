@@ -5,21 +5,110 @@
 
 pub mod compiler;
 pub mod database;
+pub mod decompiler;
 pub mod transpiler;
 
-// Re-export commonly used types for convenience
+pub use compiler::codegen::Emitter;
 pub use compiler::{
-    Lexer, Parser, Analyzer, Lowerer,
+    Analyzer, Lexer, Lowerer, Parser,
     parse_error::{CompileError, print_error},
 };
-pub use compiler::codegen::Emitter;
-pub use database::{DatabaseV2, ConstantDb, GameFamily};
+pub use database::{ConstantDb, DatabaseV2, GameFamily};
+pub use decompiler::{DecompileError, DecompileResult, Disassembler, disassemble_bytes};
 
 use rayon::prelude::*;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// Result of compiling a single file
+use crate::compiler::ir::TopLevelItem;
+
+pub fn ir_to_source(items: &[TopLevelItem]) -> String {
+    let mut output = String::new();
+
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            output.push('\n');
+        }
+
+        match item {
+            TopLevelItem::Function(func) => {
+                for header in &func.headers {
+                    if header.is_public {
+                        if let Some(id) = header.id {
+                            output.push_str(&format!("function {} #{}:\n", header.name, id));
+                        } else {
+                            output.push_str(&format!("function {}:\n", header.name));
+                        }
+                    } else {
+                        output.push_str(&format!("{}:\n", header.name));
+                    }
+                }
+
+                for instr in &func.instructions {
+                    match instr {
+                        compiler::ir::IrOpcode::Label(name) => {
+                            if name.starts_with('.') || name.starts_with('_') {
+                                output.push_str(&format!("{}:\n", name));
+                            } else {
+                                output.push_str(&format!("{}:\n", name));
+                            }
+                        }
+                        compiler::ir::IrOpcode::Command { name, args } => {
+                            output.push_str(&format!("    {}", name));
+                            if !args.is_empty() {
+                                output.push(' ');
+                                let args_str: Vec<String> = args
+                                    .iter()
+                                    .map(|a| match a {
+                                        compiler::ir::Arg::Value(v) => {
+                                            if *v >= 0x4000 {
+                                                format!("0x{:X}", v)
+                                            } else {
+                                                v.to_string()
+                                            }
+                                        }
+                                        compiler::ir::Arg::Pointer(s) => s.clone(),
+                                    })
+                                    .collect();
+                                output.push_str(&args_str.join(", "));
+                            }
+                            output.push('\n');
+                        }
+                    }
+                }
+            }
+            TopLevelItem::Action(action) => {
+                output.push_str(&format!("action {}\n", action.name));
+
+                for instr in &action.instructions {
+                    match instr {
+                        compiler::ir::IrOpcode::Label(name) => {
+                            output.push_str(&format!("{}:\n", name));
+                        }
+                        compiler::ir::IrOpcode::Command { name, args } => {
+                            output.push_str(&format!("    {}", name));
+                            if !args.is_empty() {
+                                output.push(' ');
+                                let args_str: Vec<String> = args
+                                    .iter()
+                                    .map(|a| match a {
+                                        compiler::ir::Arg::Value(v) => v.to_string(),
+                                        compiler::ir::Arg::Pointer(s) => s.clone(),
+                                    })
+                                    .collect();
+                                output.push_str(&args_str.join(", "));
+                            }
+                            output.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    output
+}
+
 #[derive(Debug, Serialize)]
 pub struct CompileResult {
     /// The input file path
@@ -64,10 +153,35 @@ impl BatchCompileResult {
     }
 }
 
-/// Compile a single .rotom file to binary bytes.
-///
-/// This is the core compilation function that returns the raw bytes.
-/// Use `compile_file` if you want to write directly to disk.
+#[derive(Debug, Serialize)]
+pub struct DecompileFileResult {
+    pub input: PathBuf,
+    pub output: PathBuf,
+    pub size: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DecompileFailure {
+    pub path: PathBuf,
+    pub error: DecompileError,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchDecompileResult {
+    pub successes: Vec<DecompileFileResult>,
+    pub failures: Vec<DecompileFailure>,
+}
+
+impl BatchDecompileResult {
+    pub fn is_success(&self) -> bool {
+        self.failures.is_empty()
+    }
+
+    pub fn total(&self) -> usize {
+        self.successes.len() + self.failures.len()
+    }
+}
+
 pub fn compile_to_bytes(
     source: &str,
     db: &DatabaseV2,
@@ -85,6 +199,10 @@ pub fn compile_to_bytes(
 
     let mut emitter = Emitter::new(db);
     emitter.emit_script_file(&items)
+}
+
+pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<Vec<TopLevelItem>> {
+    disassemble_bytes(db, bytes)
 }
 
 enum CompileFileError {
@@ -117,7 +235,7 @@ fn compile_file_internal(
         _ => {
             return Err(CompileFileError::IoError(CompileError::Io {
                 message: format!("Unsupported file extension: .{}", extension),
-            }))
+            }));
         }
     };
 
@@ -166,30 +284,16 @@ pub fn compile_file(
     })
 }
 
-/// Generate output path for a compiled file.
-/// Replaces input extension with .bin, or appends .bin if no extension.
-fn generate_output_path(input: &Path, output_dir: &Path) -> PathBuf {
+fn generate_output_path_compile(input: &Path, output_dir: &Path) -> PathBuf {
     let stem = input.file_stem().unwrap_or_default();
     output_dir.join(format!("{}.bin", stem.to_string_lossy()))
 }
 
-/// Compile a path which can be either a single file or a directory.
-///
-/// If `input` is a file, compiles just that file.
-/// If `input` is a directory, compiles all supported files in it (in parallel).
-/// Supported extensions: .rotom, .script, .s
-///
-/// # Arguments
-/// * `input` - Path to input file or directory
-/// * `output` - Path to output .bin file or directory for outputs
-/// * `db` - The command database
-/// * `constants` - The constant database
-///
-/// # Output Behavior
-/// - If `input` is a file and `output` is a file: writes to that exact path
-/// - If `input` is a file and `output` is a directory: writes `{stem}.bin` in that directory
-/// - If `input` is a directory and `output` is a directory: writes all `{stem}.bin` files there
-/// - If `input` is a directory and `output` is a file: error
+fn generate_output_path_decompile(input: &Path, output_dir: &Path) -> PathBuf {
+    let stem = input.file_stem().unwrap_or_default();
+    output_dir.join(format!("{}.rotom", stem.to_string_lossy()))
+}
+
 pub fn compile_path(
     input: &Path,
     output: &Path,
@@ -197,9 +301,8 @@ pub fn compile_path(
     constants: &ConstantDb,
 ) -> Result<BatchCompileResult, CompileError> {
     if input.is_file() {
-        // Single file compilation
         let output_path = if output.is_dir() {
-            generate_output_path(input, output)
+            generate_output_path_compile(input, output)
         } else {
             output.to_path_buf()
         };
@@ -227,7 +330,6 @@ pub fn compile_path(
             }),
         }
     } else if input.is_dir() {
-        // Directory compilation
         if output.exists() && !output.is_dir() {
             return Err(CompileError::Io {
                 message: format!(
@@ -237,14 +339,16 @@ pub fn compile_path(
             });
         }
 
-        // Create output directory if it doesn't exist
         if !output.exists() {
             std::fs::create_dir_all(output).map_err(|e| CompileError::Io {
-                message: format!("Failed to create output directory '{}': {}", output.display(), e),
+                message: format!(
+                    "Failed to create output directory '{}': {}",
+                    output.display(),
+                    e
+                ),
             })?;
         }
 
-        // Collect all supported files in the directory
         let files: Vec<PathBuf> = std::fs::read_dir(input)
             .map_err(|e| CompileError::Io {
                 message: format!("Failed to read directory '{}': {}", input.display(), e),
@@ -267,7 +371,10 @@ pub fn compile_path(
 
         if files.is_empty() {
             return Err(CompileError::Io {
-                message: format!("No supported script files (.rotom, .script, .s) found in directory: {}", input.display()),
+                message: format!(
+                    "No supported script files (.rotom, .script, .s) found in directory: {}",
+                    input.display()
+                ),
             });
         }
 
@@ -275,9 +382,9 @@ pub fn compile_path(
         let results: Vec<Result<CompileResult, CompileFailure>> = files
             .par_iter()
             .map(|input_file| {
-                let output_path = generate_output_path(input_file, output);
-                compile_file_internal(input_file, &output_path, db, constants).map_err(|e| {
-                    match e {
+                let output_path = generate_output_path_compile(input_file, output);
+                compile_file_internal(input_file, &output_path, db, constants).map_err(
+                    |e| match e {
                         CompileFileError::IoError(error) => CompileFailure {
                             path: input_file.clone(),
                             error,
@@ -288,12 +395,11 @@ pub fn compile_path(
                             error,
                             source,
                         },
-                    }
-                })
+                    },
+                )
             })
             .collect();
 
-        // Partition into successes and failures
         let mut successes = Vec::new();
         let mut failures = Vec::new();
 
@@ -304,9 +410,148 @@ pub fn compile_path(
             }
         }
 
-        Ok(BatchCompileResult { successes, failures })
+        Ok(BatchCompileResult {
+            successes,
+            failures,
+        })
     } else {
         Err(CompileError::Io {
+            message: format!("Input path does not exist: {}", input.display()),
+        })
+    }
+}
+
+fn decompile_file_internal(
+    input: &Path,
+    output: &Path,
+    db: &DatabaseV2,
+) -> Result<DecompileFileResult, DecompileFailure> {
+    let bytes = std::fs::read(input).map_err(|e| DecompileFailure {
+        path: input.to_path_buf(),
+        error: DecompileError::Io {
+            message: format!("Failed to read input file '{}': {}", input.display(), e),
+        },
+    })?;
+
+    let items = decompile_to_ir(bytes, db).map_err(|e| DecompileFailure {
+        path: input.to_path_buf(),
+        error: e,
+    })?;
+
+    let source_text = ir_to_source(&items);
+    let size = source_text.len();
+
+    std::fs::write(output, &source_text).map_err(|e| DecompileFailure {
+        path: input.to_path_buf(),
+        error: DecompileError::Io {
+            message: format!("Failed to write output file '{}': {}", output.display(), e),
+        },
+    })?;
+
+    Ok(DecompileFileResult {
+        input: input.to_path_buf(),
+        output: output.to_path_buf(),
+        size,
+    })
+}
+
+pub fn decompile_file(
+    input: &Path,
+    output: &Path,
+    db: &DatabaseV2,
+) -> DecompileResult<DecompileFileResult> {
+    decompile_file_internal(input, output, db).map_err(|f| f.error)
+}
+
+pub fn decompile_path(
+    input: &Path,
+    output: &Path,
+    db: &DatabaseV2,
+) -> Result<BatchDecompileResult, DecompileError> {
+    if input.is_file() {
+        let output_path = if output.is_dir() {
+            generate_output_path_decompile(input, output)
+        } else {
+            output.to_path_buf()
+        };
+
+        match decompile_file_internal(input, &output_path, db) {
+            Ok(result) => Ok(BatchDecompileResult {
+                successes: vec![result],
+                failures: vec![],
+            }),
+            Err(failure) => Ok(BatchDecompileResult {
+                successes: vec![],
+                failures: vec![failure],
+            }),
+        }
+    } else if input.is_dir() {
+        if output.exists() && !output.is_dir() {
+            return Err(DecompileError::Io {
+                message: format!(
+                    "Output must be a directory when input is a directory, got: {}",
+                    output.display()
+                ),
+            });
+        }
+
+        if !output.exists() {
+            std::fs::create_dir_all(output).map_err(|e| DecompileError::Io {
+                message: format!(
+                    "Failed to create output directory '{}': {}",
+                    output.display(),
+                    e
+                ),
+            })?;
+        }
+
+        let files: Vec<PathBuf> = std::fs::read_dir(input)
+            .map_err(|e| DecompileError::Io {
+                message: format!("Failed to read directory '{}': {}", input.display(), e),
+            })?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                if !path.is_file() {
+                    return false;
+                }
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.to_lowercase() == "bin")
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if files.is_empty() {
+            return Err(DecompileError::Io {
+                message: format!("No .bin files found in directory: {}", input.display()),
+            });
+        }
+
+        let results: Vec<Result<DecompileFileResult, DecompileFailure>> = files
+            .par_iter()
+            .map(|input_file| {
+                let output_path = generate_output_path_decompile(input_file, output);
+                decompile_file_internal(input_file, &output_path, db)
+            })
+            .collect();
+
+        let mut successes = Vec::new();
+        let mut failures = Vec::new();
+
+        for result in results {
+            match result {
+                Ok(r) => successes.push(r),
+                Err(failure) => failures.push(failure),
+            }
+        }
+
+        Ok(BatchDecompileResult {
+            successes,
+            failures,
+        })
+    } else {
+        Err(DecompileError::Io {
             message: format!("Input path does not exist: {}", input.display()),
         })
     }
