@@ -6,13 +6,13 @@
 //! The tests require the POKEPLATINUM_ROOT environment variable to be set
 //! to the path of the pokeplatinum decomp project for loading constants.
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 // Re-export what we need from the main crate
-use rotom::compiler::{Lexer, Parser, Analyzer, Lowerer};
 use rotom::Emitter;
-use rotom::database::{DatabaseV2, ConstantDb};
+use rotom::compiler::{Analyzer, Lexer, Lowerer, Parser};
+use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::transpiler::decomp::transpile as transpile_decomp;
 
 /// Compute SHA256 hash of data as hex string
@@ -23,7 +23,7 @@ fn sha256_hex(data: &[u8]) -> String {
     hex::encode(result)
 }
 
-    // Compile to binary
+// Compile to binary
 fn compile_to_binary(
     source: &str,
     db: &DatabaseV2,
@@ -32,19 +32,27 @@ fn compile_to_binary(
     // Parse
     let lexer = Lexer::new(source);
     let mut parser = Parser::new(lexer);
-    let file = parser.parse_script_file().map_err(|e| format!("Parse error: {}", e))?;
+    let file = parser
+        .parse_script_file()
+        .map_err(|e| format!("Parse error: {}", e))?;
 
     // Analyze
     let mut analyzer = Analyzer::with_constants(constants);
-    analyzer.analyze(&file).map_err(|e| format!("Analysis error: {}", e))?;
+    analyzer
+        .analyze(&file)
+        .map_err(|e| format!("Analysis error: {}", e))?;
 
     // Lower to IR
     let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, constants);
-    let items = lowerer.lower_script_file(&file).map_err(|e| format!("Lowering error: {}", e))?;
+    let items = lowerer
+        .lower_script_file(&file)
+        .map_err(|e| format!("Lowering error: {}", e))?;
 
     // Emit binary
     let mut emitter = Emitter::new(db);
-    let binary = emitter.emit_script_file(&items).map_err(|e| format!("Codegen error: {}", e))?;
+    let binary = emitter
+        .emit_script_file(&items)
+        .map_err(|e| format!("Codegen error: {}", e))?;
 
     Ok(binary)
 }
@@ -64,15 +72,14 @@ fn load_test_db_and_constants() -> (DatabaseV2, ConstantDb) {
     let decomp_root = std::env::var("POKEPLATINUM_ROOT")
         .unwrap_or_else(|_| DEFAULT_POKEPLATINUM_ROOT.to_string());
     let decomp_path = Path::new(&decomp_root);
-    
+
     if decomp_path.exists() {
-        constants.load_decomp_project(decomp_path)
-            .expect(&format!(
-                "Failed to load decomp project constants from '{}'. \
+        constants.load_decomp_project(decomp_path).expect(&format!(
+            "Failed to load decomp project constants from '{}'. \
                  Set POKEPLATINUM_ROOT env var or ensure {} exists.",
-                decomp_path.display(),
-                DEFAULT_POKEPLATINUM_ROOT
-            ));
+            decomp_path.display(),
+            DEFAULT_POKEPLATINUM_ROOT
+        ));
     } else {
         panic!(
             "Decomp project not found at '{}'. \
@@ -105,7 +112,10 @@ fn test_script_hash(script_name: &str) {
     let rotoscript = transpile_decomp(&decomp_source, Some(&db));
 
     if std::env::var("ROTOM_DUMP").is_ok() {
-        println!("--- Rotoscript for {} ---\n{}\n---", script_name, rotoscript);
+        println!(
+            "--- Rotoscript for {} ---\n{}\n---",
+            script_name, rotoscript
+        );
     }
 
     // Compile to binary
@@ -114,17 +124,21 @@ fn test_script_hash(script_name: &str) {
 
     // Compute hash and compare
     let actual_hash = sha256_hex(&binary);
-    
+
     if actual_hash != expected_hash {
         let actual_path = format!("tests/fixtures/actual_{}.bin", script_name);
         std::fs::write(&actual_path, &binary).unwrap();
         println!("Wrote actual binary to {}", actual_path);
     }
-    
+
     assert_eq!(
-        actual_hash, expected_hash,
+        actual_hash,
+        expected_hash,
         "Hash mismatch for {}.\n\nExpected: {}\nActual:   {}\n\nBinary length: {} bytes",
-        script_name, expected_hash, actual_hash, binary.len()
+        script_name,
+        expected_hash,
+        actual_hash,
+        binary.len()
     );
 }
 

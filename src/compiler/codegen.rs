@@ -45,7 +45,7 @@ impl<'a> Emitter<'a> {
             relocations: Vec::new(),
         }
     }
-pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec<u8>> {
+    pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec<u8>> {
         // Collect jump table slots from all functions
         // Sort by slot ID to match game expectations (jump table entries are indexed by slot ID)
         self.jump_table_slots = items
@@ -71,7 +71,7 @@ pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec
         }
         self.output.extend_from_slice(&JUMP_TABLE_END_MARKER);
         self.pc += JUMP_TABLE_END_MARKER.len();
-    
+
         // Emit all items in order (functions and actions interleaved)
         for item in items {
             match item {
@@ -108,7 +108,7 @@ pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec
             let offset_bytes = (relative as u32).to_le_bytes();
             self.output[reloc.offset..reloc.offset + 4].copy_from_slice(&offset_bytes);
         }
-        while self.output.len() % 2 != 0 {
+        while self.output.len() % 4 != 0 {
             self.emit_u8(0);
         }
         Ok(self.output.clone())
@@ -134,12 +134,20 @@ pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec
             }
             IrOpcode::Command { name, args } => {
                 let cmd = self.db.get_movement(name)?;
-                let opcode = cmd.id.unwrap();
+                let opcode = cmd.id.ok_or_else(|| {
+                    codegen_error(format!("Movement '{}' has no opcode ID in database", name))
+                })?;
                 self.emit_u16(opcode);
-                // If script provides an arg, use it. Otherwise use default.
-                // EndMovement defaults to 0, all other movements default to 1.
                 let param = if let Some(arg) = args.first() {
-                    arg.unwrap_value() as u16
+                    match arg {
+                        Arg::Value(v) => *v as u16,
+                        Arg::Pointer(p) => {
+                            return Err(codegen_error(format!(
+                                "Movement '{}' expected a value argument, got pointer '{}'",
+                                name, p
+                            )));
+                        }
+                    }
                 } else if name == "EndMovement" {
                     0
                 } else {
@@ -151,8 +159,11 @@ pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec
         Ok(())
     }
     pub fn emit_command(&mut self, name: &str, cmd: &Command, args: &Vec<Arg>) -> ParseResult<()> {
-        self.emit_u16(cmd.id.unwrap());
-        
+        let opcode = cmd.id.ok_or_else(|| {
+            codegen_error(format!("Command '{}' has no opcode ID in database", name))
+        })?;
+        self.emit_u16(opcode);
+
         // Find the matching variant if it exists, otherwise use base params
         let params = if let Some(first_arg) = args.first() {
             if let Arg::Value(mode) = first_arg {
@@ -173,20 +184,36 @@ pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec
                     args.len()
                 ))
             })?;
-            if param.name == "relative_jump" && matches!(arg, Arg::Pointer(_)) {
-                // Special handling for relative jump offsets
-                self.relocations.push(Relocation {
-                    offset: self.pc,
-                    target: arg.unwrap_pointer(),
-                });
-                self.emit_u32(0); // Placeholder
-                continue;
+            if param.name == "relative_jump" {
+                match arg {
+                    Arg::Pointer(target) => {
+                        self.relocations.push(Relocation {
+                            offset: self.pc,
+                            target: target.clone(),
+                        });
+                        self.emit_u32(0);
+                        continue;
+                    }
+                    Arg::Value(v) => {
+                        self.emit_u32(*v as u32);
+                        continue;
+                    }
+                }
             }
+            let value = match arg {
+                Arg::Value(v) => *v,
+                Arg::Pointer(p) => {
+                    return Err(codegen_error(format!(
+                        "Command '{}' parameter '{}' expected a value, got pointer '{}'",
+                        name, param.name, p
+                    )));
+                }
+            };
             let param_size = param.param_type.size();
             match param_size {
-                1 => self.emit_u8(arg.unwrap_value() as u8),
-                2 => self.emit_u16(arg.unwrap_value() as u16),
-                4 => self.emit_u32(arg.unwrap_value() as u32),
+                1 => self.emit_u8(value as u8),
+                2 => self.emit_u16(value as u16),
+                4 => self.emit_u32(value as u32),
                 _ => {
                     return Err(codegen_error(format!(
                         "Unsupported parameter size: {}",
@@ -214,23 +241,24 @@ pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::ir::{IrOpcode, IrAction, IrFunction, TopLevelItem};
     use crate::compiler::ast::FunctionHeader;
+    use crate::compiler::ir::{IrAction, IrFunction, IrOpcode, TopLevelItem};
     use crate::database::DatabaseV2;
 
     /// Helper function to create a test database
     fn create_test_db() -> DatabaseV2 {
-        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json"))
-            .expect("Test database not found at src/db/platinum_v2.json - tests require the database file")
+        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).expect(
+            "Test database not found at src/db/platinum_v2.json - tests require the database file",
+        )
     }
 
     #[test]
     fn test_emit_u8() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         emitter.emit_u8(0x42);
-        
+
         assert_eq!(emitter.output, vec![0x42]);
         assert_eq!(emitter.pc, 1);
     }
@@ -239,9 +267,9 @@ mod tests {
     fn test_emit_u16() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         emitter.emit_u16(0x1234);
-        
+
         assert_eq!(emitter.output, vec![0x34, 0x12]); // Little endian
         assert_eq!(emitter.pc, 2);
     }
@@ -250,9 +278,9 @@ mod tests {
     fn test_emit_u32() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         emitter.emit_u32(0x12345678);
-        
+
         assert_eq!(emitter.output, vec![0x78, 0x56, 0x34, 0x12]); // Little endian
         assert_eq!(emitter.pc, 4);
     }
@@ -261,11 +289,11 @@ mod tests {
     fn test_emit_simple_movement() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Emit a simple movement: FaceNorth (opcode 0) with param 1
-        emitter.emit_u16(0);  // opcode for FaceNorth
-        emitter.emit_u16(1);  // param
-        
+        emitter.emit_u16(0); // opcode for FaceNorth
+        emitter.emit_u16(1); // param
+
         assert_eq!(emitter.output.len(), 4);
         assert_eq!(emitter.output, vec![0x00, 0x00, 0x01, 0x00]);
     }
@@ -274,11 +302,11 @@ mod tests {
     fn test_emit_movement_with_custom_param() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Emit a movement with custom parameter: Delay8 (opcode 63) with param 5
-        emitter.emit_u16(63);  // opcode for Delay8
-        emitter.emit_u16(5);   // param
-        
+        emitter.emit_u16(63); // opcode for Delay8
+        emitter.emit_u16(5); // param
+
         assert_eq!(emitter.output.len(), 4);
         assert_eq!(emitter.output, vec![0x3F, 0x00, 0x05, 0x00]);
     }
@@ -287,11 +315,11 @@ mod tests {
     fn test_emit_end_movement() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Emit EndMovement (opcode 0xFE) with param 0
         emitter.emit_u16(0xFE);
         emitter.emit_u16(0);
-        
+
         assert_eq!(emitter.output.len(), 4);
         assert_eq!(emitter.output, vec![0xFE, 0x00, 0x00, 0x00]);
     }
@@ -300,15 +328,15 @@ mod tests {
     fn test_emit_sequence() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Emit a sequence of movements
-        emitter.emit_u16(0);  // FaceNorth
+        emitter.emit_u16(0); // FaceNorth
         emitter.emit_u16(1);
-        emitter.emit_u16(1);  // FaceSouth
+        emitter.emit_u16(1); // FaceSouth
         emitter.emit_u16(1);
-        emitter.emit_u16(2);  // FaceEast
+        emitter.emit_u16(2); // FaceEast
         emitter.emit_u16(1);
-        
+
         assert_eq!(emitter.output.len(), 12);
         assert_eq!(emitter.pc, 12);
     }
@@ -317,23 +345,32 @@ mod tests {
     fn test_emit_ir_movement() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create a simple IR movement action
         let ir_action = IrAction {
             name: "TestAction".to_string(),
             instructions: vec![
-                IrOpcode::Command { name: "FaceNorth".to_string(), args: vec![] },
-                IrOpcode::Command { name: "WalkNormalSouth".to_string(), args: vec![Arg::Value(3)] },
-                IrOpcode::Command { name: "EndMovement".to_string(), args: vec![] },
+                IrOpcode::Command {
+                    name: "FaceNorth".to_string(),
+                    args: vec![],
+                },
+                IrOpcode::Command {
+                    name: "WalkNormalSouth".to_string(),
+                    args: vec![Arg::Value(3)],
+                },
+                IrOpcode::Command {
+                    name: "EndMovement".to_string(),
+                    args: vec![],
+                },
             ],
         };
-        
+
         // Emit the action using the available method
         for op in &ir_action.instructions {
             let result = emitter.emit_movement(op);
             assert!(result.is_ok());
         }
-        
+
         assert!(emitter.output.len() > 0);
         // FaceNorth(1) + WalkNormalSouth(3) + EndMovement(0) = 3 movements * 4 bytes each = 12 bytes
         assert_eq!(emitter.output.len(), 12);
@@ -343,7 +380,7 @@ mod tests {
     fn test_emit_ir_function_with_movements() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create a simple IR function with movements using real movement names
         let ir_func = IrFunction {
             headers: vec![FunctionHeader {
@@ -352,17 +389,23 @@ mod tests {
                 is_public: true,
             }],
             instructions: vec![
-                IrOpcode::Command { name: "FaceNorth".to_string(), args: vec![] },
-                IrOpcode::Command { name: "EndMovement".to_string(), args: vec![] },
+                IrOpcode::Command {
+                    name: "FaceNorth".to_string(),
+                    args: vec![],
+                },
+                IrOpcode::Command {
+                    name: "EndMovement".to_string(),
+                    args: vec![],
+                },
             ],
         };
-        
+
         // Emit the function's instructions using emit_movement (which handles no-arg movements)
         for op in &ir_func.instructions {
             let result = emitter.emit_movement(op);
             assert!(result.is_ok(), "Failed to emit {:?}: {:?}", op, result);
         }
-        
+
         assert!(emitter.output.len() > 0);
         // FaceNorth(1) + EndMovement(0) = 2 movements * 4 bytes each = 8 bytes
         assert_eq!(emitter.output.len(), 8);
@@ -372,25 +415,37 @@ mod tests {
     fn test_emit_multiple_functions() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create multiple IR functions using real movement names
         let func1_instructions = vec![
-            IrOpcode::Command { name: "FaceNorth".to_string(), args: vec![] },
-            IrOpcode::Command { name: "EndMovement".to_string(), args: vec![] },
+            IrOpcode::Command {
+                name: "FaceNorth".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "EndMovement".to_string(),
+                args: vec![],
+            },
         ];
-        
+
         let func2_instructions = vec![
-            IrOpcode::Command { name: "FaceSouth".to_string(), args: vec![] },
-            IrOpcode::Command { name: "EndMovement".to_string(), args: vec![] },
+            IrOpcode::Command {
+                name: "FaceSouth".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "EndMovement".to_string(),
+                args: vec![],
+            },
         ];
-        
+
         for op in &func1_instructions {
             emitter.emit_movement(op).unwrap();
         }
         for op in &func2_instructions {
             emitter.emit_movement(op).unwrap();
         }
-        
+
         // Each function should have 2 movements * 4 bytes = 8 bytes
         assert_eq!(emitter.output.len(), 16);
     }
@@ -399,18 +454,18 @@ mod tests {
     fn test_pc_increments_correctly() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         assert_eq!(emitter.pc, 0);
-        
+
         emitter.emit_u8(0x10);
         assert_eq!(emitter.pc, 1);
-        
+
         emitter.emit_u16(0x20);
         assert_eq!(emitter.pc, 3);
-        
+
         emitter.emit_u8(0x30);
         assert_eq!(emitter.pc, 4);
-        
+
         emitter.emit_u32(0x40);
         assert_eq!(emitter.pc, 8);
     }
@@ -419,11 +474,11 @@ mod tests {
     fn test_output_accumulation() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         emitter.emit_u8(0xAA);
         emitter.emit_u8(0xBB);
         emitter.emit_u16(0xCCDD);
-        
+
         assert_eq!(emitter.output, vec![0xAA, 0xBB, 0xDD, 0xCC]);
     }
 
@@ -431,18 +486,18 @@ mod tests {
     fn test_empty_action() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create an empty IR action
         let ir_action = IrAction {
             name: "EmptyAction".to_string(),
             instructions: vec![],
         };
-        
+
         // Emit the empty action (should do nothing)
         for op in &ir_action.instructions {
             emitter.emit_movement(op).unwrap();
         }
-        
+
         // Empty action should have no output
         assert_eq!(emitter.output.len(), 0);
     }
@@ -451,27 +506,60 @@ mod tests {
     fn test_action_with_many_movements() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create an action with many movements using real movement names
         let instructions = vec![
-            IrOpcode::Command { name: "FaceNorth".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceSouth".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceEast".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceWest".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceNorth".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceSouth".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceEast".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceWest".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceNorth".to_string(), args: vec![] },
-            IrOpcode::Command { name: "FaceSouth".to_string(), args: vec![] },
-            IrOpcode::Command { name: "EndMovement".to_string(), args: vec![] },
+            IrOpcode::Command {
+                name: "FaceNorth".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceSouth".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceEast".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceWest".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceNorth".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceSouth".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceEast".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceWest".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceNorth".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "FaceSouth".to_string(),
+                args: vec![],
+            },
+            IrOpcode::Command {
+                name: "EndMovement".to_string(),
+                args: vec![],
+            },
         ];
-        
+
         // Emit all movements
         for op in &instructions {
             emitter.emit_movement(op).unwrap();
         }
-        
+
         // 11 movements * 4 bytes = 44 bytes
         assert_eq!(emitter.output.len(), 44);
     }
@@ -480,11 +568,13 @@ mod tests {
     fn test_emit_script_command() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Test emitting a simple script command: End (opcode 0x02, no params)
-        let end_cmd = db.get_command("End").expect("End command should exist in DB");
+        let end_cmd = db
+            .get_command("End")
+            .expect("End command should exist in DB");
         emitter.emit_command("End", end_cmd, &vec![]).unwrap();
-        
+
         // End is opcode 0x02, no parameters = 2 bytes
         assert_eq!(emitter.output.len(), 2);
         assert_eq!(emitter.output, vec![0x02, 0x00]); // Little endian opcode
@@ -494,13 +584,21 @@ mod tests {
     fn test_emit_script_command_with_params() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Test emitting Message command (opcode 44 with 1 u8 parameter)
-        let message_cmd = db.get_command("Message").expect("Message command should exist in DB");
-        emitter.emit_command("Message", message_cmd, &vec![Arg::Value(42)]).unwrap();
-        
+        let message_cmd = db
+            .get_command("Message")
+            .expect("Message command should exist in DB");
+        emitter
+            .emit_command("Message", message_cmd, &vec![Arg::Value(42)])
+            .unwrap();
+
         // Message is opcode (2 bytes) + 1 u8 param (1 byte) = 3 bytes total
-        assert_eq!(emitter.output.len(), 3, "Message command should be 3 bytes (opcode + u8 param)");
+        assert_eq!(
+            emitter.output.len(),
+            3,
+            "Message command should be 3 bytes (opcode + u8 param)"
+        );
         // Check opcode is 44 (0x2C) in little endian
         assert_eq!(emitter.output[0], 0x2C);
         assert_eq!(emitter.output[1], 0x00);
@@ -511,10 +609,10 @@ mod tests {
     #[test]
     fn test_emit_script_file_jump_table() {
         use crate::compiler::parser::JUMP_TABLE_END_MARKER;
-        
+
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create a script with two public functions
         let items = vec![
             TopLevelItem::Function(IrFunction {
@@ -523,9 +621,10 @@ mod tests {
                     id: Some(0),
                     is_public: true,
                 }],
-                instructions: vec![
-                    IrOpcode::Command { name: "End".to_string(), args: vec![] },
-                ],
+                instructions: vec![IrOpcode::Command {
+                    name: "End".to_string(),
+                    args: vec![],
+                }],
             }),
             TopLevelItem::Function(IrFunction {
                 headers: vec![FunctionHeader {
@@ -533,53 +632,64 @@ mod tests {
                     id: Some(1),
                     is_public: true,
                 }],
-                instructions: vec![
-                    IrOpcode::Command { name: "End".to_string(), args: vec![] },
-                ],
+                instructions: vec![IrOpcode::Command {
+                    name: "End".to_string(),
+                    args: vec![],
+                }],
             }),
         ];
-        
+
         let output = emitter.emit_script_file(&items).unwrap();
-        
+
         // Jump table: 2 entries * 4 bytes = 8 bytes, plus 2-byte marker
         // Marker is 0xFD13 = [0x13, 0xFD]
         assert!(output.len() >= 10, "Should have jump table + marker + code");
-        
+
         // Check for the end marker (0xFD13)
-        assert_eq!(&output[8..10], &JUMP_TABLE_END_MARKER, 
-            "Should have jump table end marker at offset 8");
+        assert_eq!(
+            &output[8..10],
+            &JUMP_TABLE_END_MARKER,
+            "Should have jump table end marker at offset 8"
+        );
     }
 
     #[test]
     fn test_emit_script_file_label_relocation() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create a function with a jump to a label
-        let items = vec![
-            TopLevelItem::Function(IrFunction {
-                headers: vec![FunctionHeader {
-                    name: "TestFunc".to_string(),
-                    id: Some(0),
-                    is_public: true,
-                }],
-                instructions: vec![
-                    IrOpcode::Command { 
-                        name: "GoTo".to_string(), 
-                        args: vec![Arg::Pointer(".target".to_string())] 
-                    },
-                    IrOpcode::Command { name: "End".to_string(), args: vec![] },
-                    IrOpcode::Label(".target".to_string()),
-                    IrOpcode::Command { name: "Return".to_string(), args: vec![] },
-                ],
-            }),
-        ];
-        
+        let items = vec![TopLevelItem::Function(IrFunction {
+            headers: vec![FunctionHeader {
+                name: "TestFunc".to_string(),
+                id: Some(0),
+                is_public: true,
+            }],
+            instructions: vec![
+                IrOpcode::Command {
+                    name: "GoTo".to_string(),
+                    args: vec![Arg::Pointer(".target".to_string())],
+                },
+                IrOpcode::Command {
+                    name: "End".to_string(),
+                    args: vec![],
+                },
+                IrOpcode::Label(".target".to_string()),
+                IrOpcode::Command {
+                    name: "Return".to_string(),
+                    args: vec![],
+                },
+            ],
+        })];
+
         let output = emitter.emit_script_file(&items).unwrap();
-        
+
         // Should compile successfully with the label reference resolved
-        assert!(output.len() > 10, "Should have generated code with jump and label");
-        
+        assert!(
+            output.len() > 10,
+            "Should have generated code with jump and label"
+        );
+
         // The GoTo instruction should have a relative offset to the label
         // We can't easily verify the exact offset without knowing the opcode sizes,
         // but we can verify the output is non-zero (relocation was applied)
@@ -589,7 +699,7 @@ mod tests {
     fn test_emit_script_file_action_alignment() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create a function followed by an action
         // The action should be 4-byte aligned
         let items = vec![
@@ -601,29 +711,41 @@ mod tests {
                 }],
                 instructions: vec![
                     // Just End, which is 2 bytes
-                    IrOpcode::Command { name: "End".to_string(), args: vec![] },
+                    IrOpcode::Command {
+                        name: "End".to_string(),
+                        args: vec![],
+                    },
                 ],
             }),
             TopLevelItem::Action(IrAction {
                 name: "TestAction".to_string(),
                 instructions: vec![
-                    IrOpcode::Command { name: "FaceNorth".to_string(), args: vec![] },
-                    IrOpcode::Command { name: "EndMovement".to_string(), args: vec![] },
+                    IrOpcode::Command {
+                        name: "FaceNorth".to_string(),
+                        args: vec![],
+                    },
+                    IrOpcode::Command {
+                        name: "EndMovement".to_string(),
+                        args: vec![],
+                    },
                 ],
             }),
         ];
-        
+
         let output = emitter.emit_script_file(&items).unwrap();
-        
+
         // Jump table: 1 entry (4 bytes) + marker (2 bytes) = 6 bytes
         // Function: End = 2 bytes, but at offset 6, so function starts at 6
         // After function: offset 8, which is already 4-byte aligned
         // But if function body was 3 bytes, action would need padding
-        
+
         // The action offset should be in the action_offsets map and should be 4-byte aligned
         // We can verify output length is correct
-        assert!(output.len() >= 14, "Should have jump table + function + aligned action");
-        
+        assert!(
+            output.len() >= 14,
+            "Should have jump table + function + aligned action"
+        );
+
         // Output length should be even (final alignment)
         assert_eq!(output.len() % 2, 0, "Final output should be 2-byte aligned");
     }
@@ -632,7 +754,7 @@ mod tests {
     fn test_emit_stacked_headers_jump_table() {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
-        
+
         // Create an IR function with two headers
         let ir_func = IrFunction {
             headers: vec![
@@ -647,30 +769,31 @@ mod tests {
                     is_public: true,
                 },
             ],
-            instructions: vec![
-                IrOpcode::Command { name: "End".to_string(), args: vec![] },
-            ],
+            instructions: vec![IrOpcode::Command {
+                name: "End".to_string(),
+                args: vec![],
+            }],
         };
-        
+
         let items = vec![TopLevelItem::Function(ir_func)];
         let output = emitter.emit_script_file(&items).unwrap();
-        
+
         // Jump table should have two entries (sorted by ID)
         // Entry 1 (ID 1) -> Pointer to End
         // Entry 2 (ID 2) -> Pointer to End
         // JUMP_TABLE_END_MARKER (0xFD13)
         // End (opcode 0x0002)
-        
+
         // Entry 1: 4 bytes
         // Entry 2: 4 bytes
         // End Marker: 2 bytes
         // End Command: 2 bytes
         assert_eq!(output.len(), 4 + 4 + 2 + 2);
-        
+
         // Check End Marker at correct position
         assert_eq!(output[8], 0x13);
         assert_eq!(output[9], 0xFD);
-        
+
         // Check End command (opcode 2) at end
         assert_eq!(output[10], 0x02);
         assert_eq!(output[11], 0x00);

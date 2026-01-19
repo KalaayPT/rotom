@@ -331,30 +331,32 @@ fn reorder_decomp_args_to_binary(
         return args_str.to_string();
     }
 
-    let all_optional_at_end = optional_indices.iter().all(|&i| i >= required_indices.len());
+    let all_optional_at_end = optional_indices
+        .iter()
+        .all(|&i| i >= required_indices.len());
     if all_optional_at_end {
         return args_str.to_string();
     }
 
     let args: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
-    
+
     let req_count = required_indices.len();
     let total_params = params.len();
-    
+
     if args.len() < req_count || args.len() > total_params {
         return args_str.to_string();
     }
 
     let provided_optional_count = args.len() - req_count;
-    
+
     let mut result: Vec<Option<String>> = vec![None; total_params];
-    
+
     for (decomp_idx, &binary_idx) in required_indices.iter().enumerate() {
         if decomp_idx < args.len() {
             result[binary_idx] = Some(args[decomp_idx].to_string());
         }
     }
-    
+
     for (opt_num, &binary_idx) in optional_indices.iter().enumerate() {
         if opt_num < provided_optional_count {
             let decomp_idx = req_count + opt_num;

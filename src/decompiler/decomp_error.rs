@@ -34,13 +34,21 @@ impl fmt::Display for DecompileError {
                 write!(f, "Invalid binary format: {}", message)
             }
             DecompileError::UnknownOpcode { opcode, offset } => {
-                write!(f, "Unknown opcode 0x{:04X} at offset 0x{:04X}", opcode, offset)
+                write!(
+                    f,
+                    "Unknown opcode 0x{:04X} at offset 0x{:04X}",
+                    opcode, offset
+                )
             }
             DecompileError::InvalidJumpTable { message, offset } => {
                 write!(f, "Invalid jump table at 0x{:04X}: {}", offset, message)
             }
             DecompileError::OutOfBounds { offset, length } => {
-                write!(f, "Offset 0x{:04X} out of bounds (file length: {})", offset, length)
+                write!(
+                    f,
+                    "Offset 0x{:04X} out of bounds (file length: {})",
+                    offset, length
+                )
             }
             DecompileError::Database { message } => {
                 write!(f, "Database error: {}", message)

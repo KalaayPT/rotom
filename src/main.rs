@@ -4,11 +4,11 @@ use clap::{Parser as ClapParser, Subcommand};
 
 // Use the library crate
 use rotom::compile_path;
-use rotom::decompile_path;
 use rotom::compiler::codegen::Emitter;
 use rotom::compiler::parse_error::{CompileError, print_error};
 use rotom::compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
 use rotom::database::{ConstantDb, DatabaseV2, GameFamily};
+use rotom::decompile_path;
 
 #[derive(Debug, ClapParser)]
 #[command(name = "rotom")]
@@ -261,8 +261,10 @@ fn decompile(
     output: Option<&PathBuf>,
 ) -> Result<(), rotom::decompiler::decomp_error::DecompileError> {
     println!("Loading database from: {}", db_path.display());
-    let db = DatabaseV2::load(db_path).map_err(|e| rotom::decompiler::decomp_error::DecompileError::Io {
-        message: format!("Failed to load database: {}", e),
+    let db = DatabaseV2::load(db_path).map_err(|e| {
+        rotom::decompiler::decomp_error::DecompileError::Io {
+            message: format!("Failed to load database: {}", e),
+        }
     })?;
     println!(
         "Loaded {} commands for {}",

@@ -23,7 +23,8 @@ where
     RangeHelper {
         start: range.start,
         end: range.end,
-    }.serialize(serializer)
+    }
+    .serialize(serializer)
 }
 
 /// Unified error type for the compiler
@@ -34,14 +35,14 @@ pub enum CompileError {
     Parse {
         #[serde(serialize_with = "serialize_range")]
         span: Range<usize>,
-        message: String
+        message: String,
     },
 
     /// Error during semantic analysis
     Analysis {
         #[serde(serialize_with = "serialize_range")]
         span: Range<usize>,
-        message: String
+        message: String,
     },
 
     /// Error during IR lowering

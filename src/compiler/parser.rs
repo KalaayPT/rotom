@@ -1,4 +1,3 @@
-
 use super::{
     ast::{
         Expression, ExpressionKind, FunctionHeader, Precedence, ScriptFile, Spanned, Statement,
@@ -82,8 +81,9 @@ impl<'a> Parser<'a> {
     pub fn parse_script_file(&mut self) -> ParseResult<ScriptFile> {
         let mut aliases = Vec::new();
         let mut items: Vec<Statement> = Vec::new();
-        let mut function_headers_by_name: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        
+        let mut function_headers_by_name: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
         while !self.current_token_is(TokenType::EOF) {
             if self.current_token_is(TokenType::Newline) {
                 self.advance();
@@ -117,10 +117,7 @@ impl<'a> Parser<'a> {
                 _ => unreachable!("top_level_stmt should prevent other statements or errors"),
             }
         }
-        Ok(ScriptFile {
-            aliases,
-            items,
-        })
+        Ok(ScriptFile { aliases, items })
     }
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         let statement = match self.current_token.kind.clone() {
@@ -659,8 +656,16 @@ mod tests {
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
         assert!(script_file.aliases.is_empty());
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
-        let actions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Action { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        let actions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Action { .. }))
+            .collect();
         assert!(functions.is_empty());
         assert!(actions.is_empty());
     }
@@ -671,7 +676,11 @@ mod tests {
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
         assert_eq!(functions.len(), 1);
         let function = functions[0];
         match &function.node {
@@ -696,11 +705,15 @@ function TestFunc #2:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        
+
         // Should be merged into ONE function item
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
         assert_eq!(functions.len(), 1);
-        
+
         match &functions[0].node {
             StatementKind::Function { headers, body } => {
                 assert_eq!(headers.len(), 2);
@@ -729,7 +742,12 @@ function TestFunc #2:
         let mut parser = Parser::new(lexer);
         let result = parser.parse_script_file();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Duplicate definition for function 'TestFunc'"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Duplicate definition for function 'TestFunc'")
+        );
     }
 
     #[test]
@@ -738,7 +756,11 @@ function TestFunc #2:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
         assert_eq!(functions.len(), 1);
         let function = functions[0];
         match &function.node {
@@ -761,7 +783,11 @@ function TestFunc #2:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
         assert_eq!(functions.len(), 1);
         let function = functions[0];
         match &function.node {
@@ -781,7 +807,11 @@ function TestFunc #2:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
         assert_eq!(functions.len(), 2);
 
         // First function
@@ -809,7 +839,11 @@ function TestFunc #2:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
         assert_eq!(functions.len(), 2);
 
         // First function has no End in its body
@@ -842,7 +876,11 @@ function TestFunc #1:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
         assert_eq!(functions.len(), 1);
 
         match &functions[0].node {
@@ -850,7 +888,11 @@ function TestFunc #1:
                 // Should have: IfStatement, End
                 assert_eq!(body.len(), 2);
                 match &body[0].node {
-                    StatementKind::IfStatement { condition, body: if_body, elseblock } => {
+                    StatementKind::IfStatement {
+                        condition,
+                        body: if_body,
+                        elseblock,
+                    } => {
                         // Check condition is an infix expression
                         match &condition.node {
                             ExpressionKind::Infix { operator, .. } => {
@@ -883,7 +925,11 @@ function TestFunc #1:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        let functions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Function { .. })).collect();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
         assert_eq!(functions.len(), 1);
 
         match &functions[0].node {
@@ -891,7 +937,10 @@ function TestFunc #1:
                 // Should have: WhileStatement, End
                 assert_eq!(body.len(), 2);
                 match &body[0].node {
-                    StatementKind::WhileStatement { condition, body: while_body } => {
+                    StatementKind::WhileStatement {
+                        condition,
+                        body: while_body,
+                    } => {
                         // Check condition is an infix expression with !=
                         match &condition.node {
                             ExpressionKind::Infix { operator, .. } => {
@@ -920,7 +969,11 @@ action TestMovement
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        let actions: Vec<_> = script_file.items.iter().filter(|s| matches!(s.node, StatementKind::Action { .. })).collect();
+        let actions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Action { .. }))
+            .collect();
         assert_eq!(actions.len(), 1);
 
         match &actions[0].node {
@@ -946,10 +999,10 @@ function TestFunc #1:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        
+
         // Should have 2 aliases
         assert_eq!(script_file.aliases.len(), 2);
-        
+
         // First alias
         match &script_file.aliases[0].node {
             StatementKind::AliasStatement { name, id, .. } => {
@@ -958,7 +1011,7 @@ function TestFunc #1:
             }
             _ => panic!("Expected alias statement"),
         }
-        
+
         // Second alias
         match &script_file.aliases[1].node {
             StatementKind::AliasStatement { name, id, .. } => {

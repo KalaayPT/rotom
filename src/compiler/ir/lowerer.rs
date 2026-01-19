@@ -1,153 +1,30 @@
+//! AST to IR lowering
+//!
+//! The Lowerer transforms parsed AST into IR opcodes, handling:
+//! - Control flow (if/else, while) → CompareVarValue + GoToIf
+//! - Macro expansion with parameter substitution
+//! - Default parameter application
+//! - Symbol resolution (aliases, constants, labels)
+
 use regex::Regex;
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::LazyLock;
 
-use crate::compiler::ast::{FunctionHeader, ScriptFile};
+use crate::compiler::analysis::{SymbolTable, SymbolType};
+use crate::compiler::ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind};
+use crate::compiler::parse_error::{ParseResult, lowering_error};
+use crate::compiler::token::TokenType;
+use crate::compiler::{Lexer, Parser};
 use crate::database::{Command, DatabaseV2, ParamDef};
 
-use super::{
-    Lexer, Parser,
-    analysis::{SymbolTable, SymbolType},
-    ast::{Expression, ExpressionKind, Statement, StatementKind},
-    parse_error::{ParseResult, lowering_error},
-    token::TokenType,
-};
-
-// ============================================================================
-// Cached Regexes
-// ============================================================================
+use super::{Arg, Condition, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
 
 /// Macro condition parameter substitution: matches \paramName
 static RE_MACRO_PARAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(\w+)").unwrap());
 
 /// Macro condition for argument count: matches "1 arg(s)", "2 args", "3 args", etc.
-static RE_ARG_COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)\s+args?\(?s?\)?$").unwrap());
-
-#[derive(Debug, Clone)]
-pub enum IrOpcode {
-    Command { name: String, args: Vec<Arg> },
-    Label(String),
-}
-
-impl fmt::Display for IrOpcode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IrOpcode::Command { name, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-                write!(f, "    {} {}", name, args_str.join(", "))
-            }
-            IrOpcode::Label(name) => write!(f, "{}:", name),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Arg {
-    Value(i32),
-    Pointer(String),
-}
-
-impl fmt::Display for Arg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Arg::Value(v) => write!(f, "0x{:X}", v),
-            Arg::Pointer(s) => write!(f, "Pointer({})", s),
-        }
-    }
-}
-
-impl Arg {
-    pub fn unwrap_value(&self) -> i32 {
-        match self {
-            Arg::Value(v) => *v,
-            _ => panic!("called unwrap_value on {:?}", self),
-        }
-    }
-    pub fn unwrap_pointer(&self) -> String {
-        match self {
-            Arg::Pointer(s) => s.clone(),
-            _ => panic!("called unwrap_pointer on {:?}", self),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct IrFunction {
-    pub headers: Vec<FunctionHeader>,
-    pub instructions: Vec<IrOpcode>,
-}
-#[derive(Debug, Clone)]
-pub struct IrAction {
-    pub name: String,
-    pub instructions: Vec<IrOpcode>,
-}
-
-/// A top-level item in a script (preserves ordering of functions and actions)
-#[derive(Debug, Clone)]
-pub enum TopLevelItem {
-    Function(IrFunction),
-    Action(IrAction),
-}
-
-impl fmt::Display for TopLevelItem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TopLevelItem::Function(func) => write!(f, "{}", func),
-            TopLevelItem::Action(action) => write!(f, "{}", action),
-        }
-    }
-}
-
-impl fmt::Display for IrFunction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "=== IR: {} ===", self.headers[0].name)?;
-        for op in &self.instructions {
-            writeln!(f, "{}", op)?;
-        }
-        Ok(())
-    }
-}
-impl fmt::Display for IrAction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "=== IR Action: {} ===", self.name)?;
-        for op in &self.instructions {
-            writeln!(f, "{}", op)?;
-        }
-        Ok(())
-    }
-}
-impl IrFunction {
-    pub fn name(&self) -> &str {
-        &self.headers[0].name
-    }
-    pub fn is_public(&self) -> bool {
-        self.headers.iter().any(|h| h.is_public)
-    }
-    pub fn jump_table_slots(&self) -> impl Iterator<Item = (u32, String)> {
-        self.headers
-            .iter()
-            .filter(|h| h.is_public && h.id.is_some())
-            .map(|h| (h.id.unwrap(), h.name.clone()))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u8)]
-pub enum Condition {
-    Less = 0,         // 0x00
-    Equal = 1,        // 0x01
-    Greater = 2,      // 0x02
-    LessEqual = 3,    // 0x03
-    GreaterEqual = 4, // 0x04
-    Different = 5,    // 0x05
-}
-
-#[derive(Debug, PartialEq)]
-enum OperandType {
-    Variable, // VarPointer (0x8000)
-    Value,    // raw number (5)
-}
+static RE_ARG_COUNT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\d+)\s+args?\(?s?\)?$").unwrap());
 
 /// Maximum depth for macro expansion to prevent infinite recursion
 const MAX_MACRO_DEPTH: usize = 10;
@@ -219,6 +96,7 @@ impl<'a> Lowerer<'a> {
         }
         Ok(items)
     }
+
     pub fn lower_function(&mut self, body: &[Statement]) -> ParseResult<Vec<IrOpcode>> {
         self.output.clear();
         for stmt in body {
@@ -226,6 +104,7 @@ impl<'a> Lowerer<'a> {
         }
         Ok(std::mem::take(&mut self.output))
     }
+
     fn lower_statement(&mut self, stmt: &Statement) -> ParseResult<()> {
         self.lower_statement_with_depth(stmt, 0)
     }
@@ -305,7 +184,6 @@ impl<'a> Lowerer<'a> {
                 name: "EndMovement".to_string(),
                 args: vec![],
             }),
-            // Register local aliases for resolution during this function's lowering
             StatementKind::AliasStatement { name, id, .. } => {
                 self.local_aliases.insert(name.clone(), *id);
             }
@@ -315,20 +193,17 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// Lower a command, expanding macros if needed
     fn lower_command(
         &mut self,
         command: &str,
         args: &[Expression],
         macro_depth: usize,
     ) -> ParseResult<()> {
-        // Check if this is a macro by looking it up in the database
         if let Ok(cmd) = self.db.get_command(command) {
             if cmd.is_macro() {
                 return self.expand_macro(command, args, macro_depth);
             }
 
-            // Not a macro - apply defaults if needed, then emit directly
             let args_with_defaults = self.apply_defaults(command, &cmd, args)?;
             let resolved_args = self.resolve_args(&args_with_defaults)?;
             self.output.push(IrOpcode::Command {
@@ -337,7 +212,6 @@ impl<'a> Lowerer<'a> {
             });
             Ok(())
         } else {
-            // Command not found in DB - emit as-is (assuming it's valid)
             let resolved_args = self.resolve_args(args)?;
             self.output.push(IrOpcode::Command {
                 name: command.to_string(),
@@ -347,10 +221,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Apply default parameter values to fill in missing arguments.
-    ///
-    /// Decomp-style logic: Arguments are mapped to required parameters first (in order),
-    /// then to optional parameters (those with defaults) in order.
     fn apply_defaults(
         &self,
         command: &str,
@@ -455,7 +325,6 @@ impl<'a> Lowerer<'a> {
         Ok(result)
     }
 
-    /// Expand a macro by substituting parameters and recursively lowering
     fn expand_macro(
         &mut self,
         macro_name: &str,
@@ -484,7 +353,6 @@ impl<'a> Lowerer<'a> {
         }
 
         let expansion = if let Some(variants) = &cmd.variants {
-            // Find the first matching variant
             let mut matched_expansion = None;
             for variant in variants {
                 if let Some(condition) = &variant.condition {
@@ -500,7 +368,6 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // If no match found in variants, fall back to base expansion?
             matched_expansion.or(cmd.expansion.as_ref())
         } else {
             cmd.expansion.as_ref()
@@ -528,29 +395,24 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// Evaluate a macro condition string (e.g., "\value < VARS_START")
     fn evaluate_condition(
         &self,
         condition: &str,
         args: &[Expression],
         params: &[crate::database::ParamDef],
     ) -> ParseResult<bool> {
-        // 1. Substitute \paramName with the integer value of the argument
         let substituted = RE_MACRO_PARAM.replace_all(condition, |caps: &regex::Captures| {
             let param_name = &caps[1];
-            // Find the argument corresponding to this param name
             if let Some(pos) = params.iter().position(|p| p.name == param_name) {
                 if let Some(arg) = args.get(pos) {
-                    // Resolve argument to an integer value
                     match self.resolve_arg_to_int(arg) {
                         Ok(val) => val.to_string(),
-                        Err(_) => "0".to_string(), // Error fallback
+                        Err(_) => "0".to_string(),
                     }
                 } else {
                     "0".to_string()
                 }
             } else {
-                // Unknown param
                 "0".to_string()
             }
         });
@@ -579,14 +441,12 @@ impl<'a> Lowerer<'a> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
             ExpressionKind::Identifier(name) => {
-                // Resolve identifier using global symbols (constants)
                 if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
                     return Ok(*val);
                 } else if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
                     return Ok(*val);
                 }
 
-                // Fallback: Check constants DB
                 if let Some(db) = self.constants {
                     if let Some(val) = db.get(name) {
                         return Ok(val);
@@ -605,7 +465,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Evaluate an expression AST to a boolean
     fn eval_bool_expr(&self, expr: &Expression) -> ParseResult<bool> {
         match &expr.node {
             ExpressionKind::Infix {
@@ -636,7 +495,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Evaluate an expression AST to an integer (helper for eval_bool_expr)
     fn eval_int_expr(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
@@ -662,7 +520,6 @@ impl<'a> Lowerer<'a> {
                     TokenType::Plus => Ok(left_val + right_val),
                     TokenType::Minus => Ok(left_val - right_val),
                     TokenType::Mul => Ok(left_val * right_val),
-                    // TokenType::Slash => Ok(left_val / right_val),
                     _ => Err(lowering_error(format!(
                         "Unsupported arithmetic operator {:?} in macro condition",
                         operator
@@ -676,14 +533,10 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Format an argument expression as a string for macro substitution
     fn format_arg_for_substitution(&self, expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(name) => {
-                // Keep identifiers as-is - they'll be resolved when the expanded line is parsed
-                Ok(name.clone())
-            }
+            ExpressionKind::Identifier(name) => Ok(name.clone()),
             ExpressionKind::Label(name) => Ok(name.clone()),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = self.format_arg_for_substitution(id)?;
@@ -725,7 +578,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Substitute $paramName placeholders with actual values
     fn substitute_params(&self, line: &str, param_map: &HashMap<String, String>) -> String {
         let mut result = line.to_string();
         for (name, value) in param_map {
@@ -734,7 +586,6 @@ impl<'a> Lowerer<'a> {
         result
     }
 
-    /// Substitute $paramName references in default values with already-resolved parameter values.
     fn substitute_default_params(
         &self,
         default_str: &str,
@@ -756,19 +607,15 @@ impl<'a> Lowerer<'a> {
         Ok(result)
     }
 
-    /// Parse a macro expansion line into a Statement
     fn parse_expansion_line(&self, line: &str) -> ParseResult<Statement> {
         if line.trim().is_empty() {
-            // Empty line - skip
             return Err(lowering_error(format!(
                 "Macro expansion produced empty line"
             )));
         }
 
-        // Add newline to ensure proper parsing of commands without params
         let line_with_newline = format!("{}\n", line.trim());
 
-        // Parse as a single statement
         let lexer = Lexer::new(&line_with_newline);
         let mut parser = Parser::new(lexer);
 
@@ -786,12 +633,10 @@ impl<'a> Lowerer<'a> {
         {
             let (left_type, left_val) = self.analyze_operand(left)?;
             let (right_type, right_val) = self.analyze_operand(right)?;
-            // normalization: swapping to match script architecture (Value == Var) -> (Var == Value)
             let (final_left, final_right, swapped) = match (&left_type, &right_type) {
                 (OperandType::Variable, OperandType::Value) => (left_val, right_val, false),
                 (OperandType::Value, OperandType::Variable) => (right_val, left_val, true),
                 (OperandType::Variable, OperandType::Variable) => (left_val, right_val, false),
-                // Value == Value (Should have been constant-folded, but whatever)
                 (OperandType::Value, OperandType::Value) => (left_val, right_val, false),
             };
             let cmd_name =
@@ -820,10 +665,11 @@ impl<'a> Lowerer<'a> {
             )))
         }
     }
+
     fn resolve_args(&self, args: &[Expression]) -> ParseResult<Vec<Arg>> {
         args.iter().map(|arg| self.resolve_arg(arg)).collect()
     }
-    /// Resolve an expression to an Arg (Value or Pointer)
+
     fn resolve_arg(&self, expr: &Expression) -> ParseResult<Arg> {
         match &expr.node {
             ExpressionKind::Identifier(name) => {
@@ -831,17 +677,15 @@ impl<'a> Lowerer<'a> {
                     return Ok(Arg::Value(val));
                 }
 
-                // 1. Check symbol table
                 match self.global_symbols.resolve(name) {
                     Some(SymbolType::Variable(id)) => return Ok(Arg::Value(*id)),
                     Some(SymbolType::Constant(id)) => return Ok(Arg::Value(*id)),
                     Some(SymbolType::Function(_))
                     | Some(SymbolType::Label)
                     | Some(SymbolType::Action) => return Ok(Arg::Pointer(name.clone())),
-                    None => {} // Try constants db
+                    None => {}
                 }
 
-                // 2. Check constants DB
                 if let Some(db) = self.constants {
                     if let Some(val) = db.get(name) {
                         return Ok(Arg::Value(val));
@@ -855,7 +699,6 @@ impl<'a> Lowerer<'a> {
             }
             ExpressionKind::Number(val) => Ok(Arg::Value(*val)),
             ExpressionKind::Label(name) => Ok(Arg::Pointer(name.clone())),
-            // compile-time arithmetic
             ExpressionKind::Infix {
                 left,
                 operator,
@@ -895,7 +738,7 @@ impl<'a> Lowerer<'a> {
             ))),
         }
     }
-    /// Analyze operand for conditions - needs to distinguish Variable vs Value
+
     fn analyze_operand(&self, expr: &Expression) -> ParseResult<(OperandType, i32)> {
         let arg = self.resolve_arg(expr)?;
         match arg {
@@ -912,7 +755,7 @@ impl<'a> Lowerer<'a> {
             ))),
         }
     }
-    // we need to invert conditions here because we are doing "jump if" logic
+
     fn get_inverted_condition(&self, token: &TokenType, swapped: bool) -> Condition {
         use Condition::*;
 
@@ -929,13 +772,13 @@ impl<'a> Lowerer<'a> {
         };
 
         match effective_op {
-            TokenType::Equal => Different,         // == -> Jump if !=
-            TokenType::NotEqual => Equal,          // != -> Jump if ==
-            TokenType::GreaterThan => LessEqual,   // >  -> Jump if <=
-            TokenType::LesserThan => GreaterEqual, // <  -> Jump if >=
-            TokenType::GreaterEqual => Less,       // >= -> Jump if <
-            TokenType::LesserEqual => Greater,     // <= -> Jump if >
-            _ => Different,                        // Default/Error case
+            TokenType::Equal => Different,
+            TokenType::NotEqual => Equal,
+            TokenType::GreaterThan => LessEqual,
+            TokenType::LesserThan => GreaterEqual,
+            TokenType::GreaterEqual => Less,
+            TokenType::LesserEqual => Greater,
+            _ => Different,
         }
     }
 }
@@ -949,14 +792,12 @@ mod tests {
     use crate::compiler::parser::Parser;
     use crate::database::{ConstantDb, DatabaseV2};
 
-    /// Helper function to create a test database
     fn create_test_db() -> DatabaseV2 {
         DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).expect(
             "Test database not found at src/db/platinum_v2.json - tests require the database file",
         )
     }
 
-    /// Helper function to parse and analyze a simple script
     fn parse_and_analyze(source: &str) -> (ScriptFile, SymbolTable) {
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
@@ -1015,7 +856,7 @@ function TestFunc #1:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                assert_eq!(ir_func.instructions.len(), 2); // Message + End
+                assert_eq!(ir_func.instructions.len(), 2);
                 match &ir_func.instructions[0] {
                     IrOpcode::Command { name, args } => {
                         assert_eq!(name, "Message");
@@ -1047,10 +888,8 @@ function TestFunc #1:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                // Should have: Message, Jump, Message, Label, Message, End
                 assert!(ir_func.instructions.len() >= 5);
 
-                // Check that we have a label
                 let label_count = ir_func
                     .instructions
                     .iter()
@@ -1083,7 +922,7 @@ action TestAction
         match &actions[0] {
             TopLevelItem::Action(ir_action) => {
                 assert_eq!(ir_action.name, "TestAction");
-                assert_eq!(ir_action.instructions.len(), 2); // WalkNormalNorth + EndMovement
+                assert_eq!(ir_action.instructions.len(), 2);
             }
             _ => panic!("Expected action"),
         }
@@ -1096,7 +935,6 @@ action TestAction
         let db = create_test_db();
         let lowerer = Lowerer::new(&symbols, &db);
 
-        // Test direct value
         let expr = Expression {
             span: 0..1,
             node: ExpressionKind::Number(42),
@@ -1112,7 +950,6 @@ action TestAction
         let db = create_test_db();
         let lowerer = Lowerer::new(&symbols, &db);
 
-        // Test hex value
         let expr = Expression {
             span: 0..1,
             node: ExpressionKind::Number(0x42),
@@ -1137,10 +974,8 @@ function TestFunc #1:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                // Should generate: CompareVarValue, GoToIf, Message, Label
                 assert!(ir_func.instructions.len() >= 4);
 
-                // Check that we have conditional logic
                 let has_compare = ir_func.instructions.iter().any(|op| {
                     matches!(op, IrOpcode::Command { name, .. }
                         if name == "CompareVarValue" || name == "CompareVars")
@@ -1173,10 +1008,8 @@ function TestFunc #1:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                // Should generate loop logic with labels and jumps
                 assert!(ir_func.instructions.len() >= 4);
 
-                // Check for loop constructs
                 let has_compare = ir_func.instructions.iter().any(|op| {
                     matches!(op, IrOpcode::Command { name, .. }
                         if name == "CompareVarValue" || name == "CompareVars")
@@ -1211,15 +1044,12 @@ function TestFunc #1:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                // Should generate: Compare, GoToIf, Message1, GoTo, Label(else), Message2, Label(end), End
-                // At minimum: Compare, GoToIf, Message, GoTo, Label, Message, Label, End = 8
                 assert!(
                     ir_func.instructions.len() >= 7,
                     "if/else should generate at least 7 instructions, got {}",
                     ir_func.instructions.len()
                 );
 
-                // Check for else branch: should have 2 labels (else and end) and a GoTo to skip else
                 let label_count = ir_func
                     .instructions
                     .iter()
@@ -1230,7 +1060,6 @@ function TestFunc #1:
                     "if/else should generate at least 2 labels (else + end)"
                 );
 
-                // Check for unconditional GoTo (to skip else block)
                 let goto_count = ir_func
                     .instructions
                     .iter()
@@ -1247,8 +1076,6 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_condition_operand_swap() {
-        // When comparing VALUE == VAR, it should be swapped to VAR == VALUE
-        // because the game's CompareVarValue expects (var, value) order
         let source = r#"
 function TestFunc #1:
     if 5 == 0x8000 then
@@ -1263,7 +1090,6 @@ function TestFunc #1:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                // Find the CompareVarValue instruction
                 let compare = ir_func.instructions.iter().find(
                     |op| matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue"),
                 );
@@ -1271,13 +1097,11 @@ function TestFunc #1:
                 assert!(compare.is_some(), "Should have CompareVarValue instruction");
 
                 if let Some(IrOpcode::Command { args, .. }) = compare {
-                    // First arg should be the variable (0x8000 = 32768)
                     assert_eq!(
                         args[0].unwrap_value(),
                         0x8000,
                         "First arg should be the variable (swapped from RHS)"
                     );
-                    // Second arg should be the value (5)
                     assert_eq!(
                         args[1].unwrap_value(),
                         5,
@@ -1291,8 +1115,6 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_arithmetic_expression() {
-        // Test that compile-time arithmetic expressions are evaluated
-        // Use Message command since it's simple and doesn't involve macros
         let source = r#"
 function TestFunc #1:
     Message 1 + 2 * 3
@@ -1305,7 +1127,6 @@ function TestFunc #1:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                // Find the Message command
                 let message = ir_func
                     .instructions
                     .iter()
@@ -1314,7 +1135,6 @@ function TestFunc #1:
                 assert!(message.is_some(), "Should have Message instruction");
 
                 if let Some(IrOpcode::Command { args, .. }) = message {
-                    // The value should be compile-time evaluated: 1 + 2 * 3 = 7 (correct precedence) or 9 (left-to-right)
                     let value = args[0].unwrap_value();
                     assert!(
                         value == 7 || value == 9,

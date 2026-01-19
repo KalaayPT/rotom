@@ -11,10 +11,16 @@ const END_MOVEMENT_OPCODE: u16 = 0xFE;
 
 #[derive(Debug, Clone, PartialEq)]
 enum LabelKind {
-    Script { slot_ids: Vec<u32> },
+    Script {
+        slot_ids: Vec<u32>,
+    },
     #[allow(dead_code)]
-    Function { id: u32 },
-    Action { id: u32 },
+    Function {
+        id: u32,
+    },
+    Action {
+        id: u32,
+    },
     Internal,
 }
 
@@ -199,7 +205,8 @@ impl<'a> Disassembler<'a> {
             }
 
             if self.action_offsets.contains(&chunk_start) {
-                let (action_opt, actual_end) = self.disassemble_action_with_span(chunk_start, chunk_end)?;
+                let (action_opt, actual_end) =
+                    self.disassemble_action_with_span(chunk_start, chunk_end)?;
                 if let Some(action) = action_opt {
                     items.push(TopLevelItem::Action(action));
                 }
@@ -209,7 +216,8 @@ impl<'a> Disassembler<'a> {
                     items.extend(gap_actions);
                 }
             } else {
-                let (func_opt, actual_end) = self.disassemble_function_with_span(chunk_start, chunk_end)?;
+                let (func_opt, actual_end) =
+                    self.disassemble_function_with_span(chunk_start, chunk_end)?;
                 if let Some(func) = func_opt {
                     items.push(TopLevelItem::Function(func));
                 }
@@ -224,7 +232,11 @@ impl<'a> Disassembler<'a> {
         Ok(items)
     }
 
-    fn scan_gap_for_movements(&mut self, gap_start: usize, gap_end: usize) -> DecompileResult<Vec<TopLevelItem>> {
+    fn scan_gap_for_movements(
+        &mut self,
+        gap_start: usize,
+        gap_end: usize,
+    ) -> DecompileResult<Vec<TopLevelItem>> {
         let mut items = Vec::new();
         let mut current_start = gap_start;
 
@@ -325,7 +337,7 @@ impl<'a> Disassembler<'a> {
                 is_public: false,
             }]
         };
-        
+
         while pc < end {
             if let Some(info) = self.symbols.get(&pc) {
                 if pc != start {
@@ -344,18 +356,18 @@ impl<'a> Disassembler<'a> {
 
                 let is_hard_terminator = name.as_str() == "End";
                 let is_soft_terminator = name.as_str() == "Return";
-                
+
                 instructions.push(IrOpcode::Command {
                     name: name.clone(),
                     args,
                 });
 
                 pc += 2 + bytes_consumed;
-                
+
                 if is_hard_terminator && !self.symbols.contains_key(&pc) {
                     break;
                 }
-                
+
                 if is_soft_terminator && self.should_stop_at_return(pc, end) {
                     break;
                 }
@@ -368,10 +380,13 @@ impl<'a> Disassembler<'a> {
             return Ok((None, pc));
         }
 
-        Ok((Some(IrFunction {
-            headers,
-            instructions,
-        }), pc))
+        Ok((
+            Some(IrFunction {
+                headers,
+                instructions,
+            }),
+            pc,
+        ))
     }
 
     #[allow(dead_code)]
@@ -380,10 +395,15 @@ impl<'a> Disassembler<'a> {
         start: usize,
         end: usize,
     ) -> DecompileResult<Option<IrFunction>> {
-        self.disassemble_function_with_span(start, end).map(|(f, _)| f)
+        self.disassemble_function_with_span(start, end)
+            .map(|(f, _)| f)
     }
 
-    fn disassemble_action_with_span(&self, start: usize, end: usize) -> DecompileResult<(Option<IrAction>, usize)> {
+    fn disassemble_action_with_span(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> DecompileResult<(Option<IrAction>, usize)> {
         let mut instructions: Vec<IrOpcode> = Vec::new();
         let mut pc = start;
 
@@ -432,7 +452,8 @@ impl<'a> Disassembler<'a> {
 
     #[allow(dead_code)]
     fn disassemble_action(&self, start: usize, end: usize) -> DecompileResult<Option<IrAction>> {
-        self.disassemble_action_with_span(start, end).map(|(a, _)| a)
+        self.disassemble_action_with_span(start, end)
+            .map(|(a, _)| a)
     }
 
     fn decode_command_args(
@@ -441,7 +462,7 @@ impl<'a> Disassembler<'a> {
         cmd: &Command,
     ) -> DecompileResult<(Vec<Arg>, usize)> {
         let params = self.get_variant_params_at(start, cmd);
-        
+
         let mut binary_args: Vec<Arg> = Vec::new();
         let mut offset = start;
 
@@ -492,7 +513,11 @@ impl<'a> Disassembler<'a> {
         Ok((final_args, bytes_consumed))
     }
 
-    fn get_variant_params_at<'b>(&'b self, start: usize, cmd: &'b Command) -> &'b [crate::database::ParamDef] {
+    fn get_variant_params_at<'b>(
+        &'b self,
+        start: usize,
+        cmd: &'b Command,
+    ) -> &'b [crate::database::ParamDef] {
         if cmd.variants.is_some() && start + 2 <= self.bytes.len() {
             let mode = u16::from_le_bytes([self.bytes[start], self.bytes[start + 1]]) as u8;
             let variant_params = cmd.get_variant_params(mode);
@@ -503,7 +528,11 @@ impl<'a> Disassembler<'a> {
         &cmd.params
     }
 
-    fn omit_trailing_defaults(&self, binary_args: &[Arg], params: &[crate::database::ParamDef]) -> Vec<Arg> {
+    fn omit_trailing_defaults(
+        &self,
+        binary_args: &[Arg],
+        params: &[crate::database::ParamDef],
+    ) -> Vec<Arg> {
         if binary_args.is_empty() {
             return Vec::new();
         }
@@ -515,7 +544,7 @@ impl<'a> Disassembler<'a> {
             }
             let param = &params[i];
             let arg = &binary_args[i];
-            
+
             let matches_default = if let Some(default_str) = &param.default {
                 if let Arg::Value(v) = arg {
                     if let Some(default_val) = self.parse_default_value(default_str) {
@@ -625,10 +654,12 @@ impl<'a> Disassembler<'a> {
     }
 
     fn should_stop_at_return(&self, pc: usize, end: usize) -> bool {
-        let next_action = self.action_offsets.iter()
+        let next_action = self
+            .action_offsets
+            .iter()
             .filter(|&&off| off > pc && off <= end)
             .min();
-        
+
         match next_action {
             Some(&action_off) => {
                 let has_code_between = self.symbols.iter().any(|(&off, info)| {
