@@ -1,4 +1,189 @@
 <img src="docs/rotom.gif" align="right" width="120" alt="Animated sprite of Rotom from Pokemon Black and White"/>
 
-# rotom
-A pokemon script assembler/disassembler
+# `rotom`
+
+**rotom** is a high-level scripting language and toolchain for Pokémon Generation 4 (Diamond/Pearl/Platinum/HGSS) romhacking/modding projects.
+Inspired by [poryscript](https://github.com/huderlem/poryscript) for Gen 3.
+
+
+---
+
+## What This Project Does
+
+Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
+
+### Core Features
+- **High-level syntax** with control flow (`if/else`, `while`, `Jump`)
+- **Three-way compilation**: `.rotom` → `.bin`, `.script` (DSPRE) → `.bin`, `.s` (decomp asm) → `.bin`
+- **Semantic preserving** - Compiles back to byte-matching binaries matching the original game scripts
+- **Decomp integration** - Automatically loads constants from your pokeplatinum/pokediamond build
+- **Fall-through semantics** - Preserves the original game's code organization where functions flow into each other
+- **Parallel batch compilation** - Compile entire directories at once with `rayon`
+
+### Language Features
+- **Public Functions** with explicit jump table slots: `function Main #1:`
+- **Private labels** for internal code organization: `HelperCode:`
+- **Aliases** for constants: `alias 0x800C as VAR_RESULT`
+- **Actions** for movement data: `action WalkPattern ... EndMovement`
+- **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, local jumps, `Call`/`Return`
+- **Inline labels**: `.local_label:` for local jumps within functions
+
+### Compiler Pipeline
+1. **Lexer** → Tokens
+2. **Parser** → AST with semantic analysis (symbol resolution, type checking)
+3. **Lowerer** → IR (flatten control flow, normalize comparisons)
+4. **Emitter** → Binary bytecode (jump tables, offset calculation, command mapping)
+
+---
+
+## Project Status
+
+### Completed
+- Full compiler pipeline from source to binary
+- DSPRE script format transpiler (legacy tool compatibility)
+- Decomp assembly (`*.s`) transpiler for seamless integration
+- Bytecode emission with jump table ordering (sorted by slot ID)
+- Movement command semantics (default parameters, interleaving with functions)
+- Fall-through code generation matching decomp style
+- Multi-format batch compilation with parallel processing
+- Rich error reporting with source locations
+- Constant loading from database and decomp projects
+- Test infrastructure with fixtures from pokeplatinum
+
+### In Progress
+- Full decompiler 
+- Byte-matching verification against pokeplatinum decompiled scripts
+
+### Roadmap
+- Register allocation for automatic variable assignment
+- Constant folding for compile-time arithmetic
+- Complex expressions in conditions (`if x + 1 == 5`)
+- Optimization passes
+- More comprehensive test coverage
+
+---
+
+## Quick Start
+
+### Installation
+```bash
+cargo build --release
+```
+
+### Compile a script
+```bash
+# Single file
+rotom compile -d database.json -i script.rotom -o script.bin
+
+# Directory (parallel compilation)
+rotom compile -d database.json -i scripts/ -o output/
+
+# Use decomp constants
+rotom compile -d database.json -i script.rotom --decomp-root C:/dev/pokeplatinum
+```
+
+### Decompile a binary
+> [!WARNING] **Not yet implemented** - Coming soon!
+
+```bash
+rotom decompile -d database.json -i script.bin -o script.rotom
+```
+
+### Run tests
+```bash
+cargo test
+```
+
+---
+
+## Example: Rotom Syntax
+
+```rotom
+// === Constants ===
+alias 0x800C as VAR_RESULT
+alias 0x800D as VAR_LASTTALKED
+
+// === Public function (in jump table) ===
+function Main #1:
+    // If it's an NPC
+    if VAR_LASTTALKED != 0 then
+        Call TalkToNPC
+    else
+        Message 1  // It's a sign
+    endif
+    End
+
+// === Private label (helper function) ===
+TalkToNPC:
+    FacePlayer
+    Message 2
+    WaitAButton
+    Return
+
+// === Movement action ===
+action NPC_WalkAway
+    WalkDown 3
+    WalkLeft 2
+    FaceDown
+EndMovement
+```
+
+---
+
+## Project Structure
+
+```
+src/
+├── compiler/          # Core compilation pipeline
+│   ├── lexer.rs       # Tokenization
+│   ├── parser.rs      # AST generation
+│   ├── analysis.rs    # Semantic analysis
+│   ├── ir.rs          # Intermediate representation
+│   └── codegen.rs     # Binary emission
+├── database.rs        # Command/constant database
+├── transpiler/        # DSPRE & decomp format converters
+├── lib.rs             # Library API
+└── main.rs            # CLI entry point
+
+tests/fixtures/        # Test scripts and expected binaries
+```
+
+---
+
+## Design Philosophy
+
+Rotom is built with three core principles:
+
+1. **Fidelity to source**: Compile back to byte-matching binaries that match the decompiled game scripts
+2. **Developer experience**: Clean syntax, rich error messages, seamless decomp integration
+3. **Parallel-first**: Built with `rayon` for fast batch compilation of entire projects
+
+---
+
+## Contributing
+
+This is an active development project. The codebase is structured, well-tested, and follows modern Rust practices (2024 edition).
+
+1. Tests are in `tests/` with fixtures
+2. The compiler uses a database-driven approach (JSON command definitions)
+3. Error handling uses rich diagnostics via `codespan-reporting`
+
+---
+
+## License
+
+See LICENSE file for details.
+
+---
+
+## Related Projects
+
+- [uxie](https://github.com/KalaayPT/uxie) - Data fetching library for Gen 4 romhacking
+- [chatot](https://github.com/YakoSWG/chatot) - Text processing library for Gen 4 romhacking
+- [poryscript](https://github.com/huderlem/poryscript) - High-level scripting for Gen 3 (inspiration)
+- [pokeplatinum](https://github.com/pret/pokeplatinum) - Pokemon Platinum decompilation
+- [pokeheartgold](https://github.com/pret/pokeheartgold) - Pokemon HeartGold decompilation
+
+---
+
+**"This bizarre Pokémon appears to be a will-o'-the-wisp powered by electricity. Be wary, as Rotom is both smart and mischievous."** -- Pokédex entry in Pokémon: Legends Arceus
