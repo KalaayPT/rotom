@@ -40,11 +40,22 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
     // Track jump table entries: name -> slot number
     let mut jump_table: Vec<String> = Vec::new();
 
-    // Track which labels are movements (preceded by .balign 4, 0)
+    // Track which labels are movements (first command is a movement command)
     let mut movement_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // First pass: collect jump table and identify movement labels
-    let mut next_is_movement = false;
+    // Build a set of movement command names from the database
+    let movement_commands: std::collections::HashSet<&str> = if let Some(db) = db {
+        db.commands
+            .iter()
+            .filter(|(_, c)| c.cmd_type == CommandType::Movement)
+            .map(|(name, _)| name.as_str())
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    // First pass: collect jump table and identify movement labels by their content
+    let mut current_label: Option<String> = None;
     for line in input.lines() {
         let trimmed = line.trim();
 
@@ -55,7 +66,6 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
 
         // Parse ScriptEntry
         if let Some(rest) = trimmed.strip_prefix("ScriptEntry") {
-            // Get the name after "ScriptEntry"
             let rest = rest.trim();
             // Strip any comments (e.g., "Name @ 0x123" -> "Name")
             let name = rest.split('@').next().unwrap_or(rest).trim();
@@ -66,25 +76,27 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             continue;
         }
 
-        // Track .balign 4, 0 - next label is a movement
-        if trimmed.starts_with(".balign 4") {
-            next_is_movement = true;
+        // Skip assembler directives
+        if trimmed.starts_with('.') {
             continue;
         }
 
-        // If we see a label after .balign, mark it as movement
-        if next_is_movement {
-            if let Some(label_name) = trimmed.strip_suffix(':') {
-                movement_labels.insert(label_name.to_string());
-            }
-            next_is_movement = false;
+        // Track labels
+        if let Some(label_name) = trimmed.strip_suffix(':') {
+            current_label = Some(label_name.to_string());
+            continue;
         }
 
-        // Also check if label name contains "Movement" - these are always movement labels
-        if let Some(label_name) = trimmed.strip_suffix(':') {
-            if label_name.contains("Movement") {
-                movement_labels.insert(label_name.to_string());
+        // If we have a pending label and see a command, check if it's a movement
+        if let Some(ref label) = current_label {
+            let cmd_name = trimmed
+                .split(|c| c == ' ' || c == '\t')
+                .next()
+                .unwrap_or("");
+            if movement_commands.contains(cmd_name) {
+                movement_labels.insert(label.clone());
             }
+            current_label = None;
         }
     }
 
@@ -185,6 +197,10 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
 
         // Handle labels
         if let Some(label_name) = trimmed.strip_suffix(':') {
+            // If we see a label, the jump table is definitely done
+            // (handles files without explicit ScriptEntryEnd)
+            seen_script_entry_end = true;
+
             // Check if this is a movement label
             if movement_labels.contains(label_name) {
                 output.push_str(&format!("action {}", label_name));
