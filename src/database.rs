@@ -198,6 +198,9 @@ pub struct ParamDef {
     pub const_value: Option<String>,
     #[serde(default)]
     pub default: Option<String>,
+    /// If true, this parameter can be omitted entirely (used for macros with arg-count variants)
+    #[serde(default)]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

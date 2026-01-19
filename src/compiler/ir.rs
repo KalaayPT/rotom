@@ -21,6 +21,9 @@ use super::{
 /// Macro condition parameter substitution: matches \paramName
 static RE_MACRO_PARAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(\w+)").unwrap());
 
+/// Macro condition for argument count: matches "1 arg(s)", "2 args", "3 args", etc.
+static RE_ARG_COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)\s+args?\(?s?\)?$").unwrap());
+
 #[derive(Debug, Clone)]
 pub enum IrOpcode {
     Command { name: String, args: Vec<Arg> },
@@ -377,7 +380,8 @@ impl<'a> Lowerer<'a> {
                             };
                             break;
                         } else {
-                            if let Ok(true) = self.evaluate_condition(condition, args, &cmd.params)
+                            if let Ok(true) =
+                                self.evaluate_condition_with_arg_count(condition, args, &cmd.params)
                             {
                                 matched = if variant.params.is_empty() {
                                     &cmd.params
@@ -406,10 +410,13 @@ impl<'a> Lowerer<'a> {
             )));
         }
 
-        let required_count = params.iter().filter(|p| p.default.is_none()).count();
+        let required_count = params
+            .iter()
+            .filter(|p| p.default.is_none() && !p.optional)
+            .count();
         let first_optional_idx = params
             .iter()
-            .position(|p| p.default.is_some())
+            .position(|p| p.default.is_some() || p.optional)
             .unwrap_or(param_count);
 
         if args.len() < required_count {
@@ -435,6 +442,8 @@ impl<'a> Lowerer<'a> {
                 let mut parser = Parser::new(lexer);
                 let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
                 result.push(expr);
+            } else if param.optional {
+                break;
             } else {
                 return Err(lowering_error(format!(
                     "Command '{}' missing required argument '{}' at position {}",
@@ -465,17 +474,15 @@ impl<'a> Lowerer<'a> {
 
         let args_with_defaults = self.apply_defaults(macro_name, cmd, args)?;
 
-        // Build parameter substitution map: param_name -> formatted value
-        if args_with_defaults.len() != params.len() {
+        if args_with_defaults.len() > params.len() {
             return Err(lowering_error(format!(
-                "Macro '{}' expects {} arguments, got {}",
+                "Macro '{}' expects at most {} arguments, got {}",
                 macro_name,
                 params.len(),
                 args_with_defaults.len()
             )));
         }
 
-        // Check for conditional variants
         let expansion = if let Some(variants) = &cmd.variants {
             // Find the first matching variant
             let mut matched_expansion = None;
@@ -486,8 +493,7 @@ impl<'a> Lowerer<'a> {
                         break;
                     }
 
-                    // Evaluate condition
-                    if self.evaluate_condition(condition, &args_with_defaults, params)? {
+                    if self.evaluate_condition_with_arg_count(condition, args, params)? {
                         matched_expansion = variant.expansion.as_ref();
                         break;
                     }
@@ -556,7 +562,19 @@ impl<'a> Lowerer<'a> {
         self.eval_bool_expr(&expr)
     }
 
-    /// Resolve an argument expression to an integer value (for condition evaluation)
+    fn evaluate_condition_with_arg_count(
+        &self,
+        condition: &str,
+        args: &[Expression],
+        params: &[crate::database::ParamDef],
+    ) -> ParseResult<bool> {
+        if let Some(caps) = RE_ARG_COUNT.captures(condition) {
+            let expected_count: usize = caps[1].parse().unwrap_or(0);
+            return Ok(args.len() == expected_count);
+        }
+        self.evaluate_condition(condition, args, params)
+    }
+
     fn resolve_arg_to_int(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
