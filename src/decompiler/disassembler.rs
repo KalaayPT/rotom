@@ -488,10 +488,8 @@ impl<'a> Disassembler<'a> {
         }
 
         let bytes_consumed = offset - start;
-
-        let decomp_args = self.reorder_args_to_decomp_order_with_params(&binary_args, params);
-
-        Ok((decomp_args, bytes_consumed))
+        let final_args = self.omit_trailing_defaults(&binary_args, params);
+        Ok((final_args, bytes_consumed))
     }
 
     fn get_variant_params_at<'b>(&'b self, start: usize, cmd: &'b Command) -> &'b [crate::database::ParamDef] {
@@ -505,44 +503,18 @@ impl<'a> Disassembler<'a> {
         &cmd.params
     }
 
-    fn reorder_args_to_decomp_order_with_params(&self, binary_args: &[Arg], params: &[crate::database::ParamDef]) -> Vec<Arg> {
-        let mut required_indices = Vec::new();
-        let mut optional_indices = Vec::new();
-
-        for (i, p) in params.iter().enumerate() {
-            if p.default.is_none() {
-                required_indices.push(i);
-            } else {
-                optional_indices.push(i);
-            }
-        }
-
-        if optional_indices.is_empty() {
-            return binary_args.to_vec();
-        }
-
-        let mut result = Vec::with_capacity(binary_args.len());
-
-        for &idx in &required_indices {
-            if idx < binary_args.len() {
-                result.push(binary_args[idx].clone());
-            }
-        }
-
-        let mut optional_args: Vec<&Arg> = Vec::new();
-        for &idx in &optional_indices {
-            if idx < binary_args.len() {
-                optional_args.push(&binary_args[idx]);
-            }
+    fn omit_trailing_defaults(&self, binary_args: &[Arg], params: &[crate::database::ParamDef]) -> Vec<Arg> {
+        if binary_args.is_empty() {
+            return Vec::new();
         }
 
         let mut trailing_defaults = 0;
-        for &idx in optional_indices.iter().rev() {
-            if idx >= binary_args.len() {
-                continue;
+        for i in (0..binary_args.len()).rev() {
+            if i >= params.len() {
+                break;
             }
-            let arg = &binary_args[idx];
-            let param = &params[idx];
+            let param = &params[i];
+            let arg = &binary_args[i];
             
             let matches_default = if let Some(default_str) = &param.default {
                 if let Arg::Value(v) = arg {
@@ -565,12 +537,8 @@ impl<'a> Disassembler<'a> {
             }
         }
 
-        let optional_to_keep = optional_args.len().saturating_sub(trailing_defaults);
-        for arg in optional_args.into_iter().take(optional_to_keep) {
-            result.push(arg.clone());
-        }
-
-        result
+        let keep_count = binary_args.len() - trailing_defaults;
+        binary_args[..keep_count].to_vec()
     }
 
     fn parse_default_value(&self, default_str: &str) -> Option<i32> {

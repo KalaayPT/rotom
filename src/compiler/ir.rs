@@ -7,11 +7,11 @@ use crate::compiler::ast::{FunctionHeader, ScriptFile};
 use crate::database::{Command, DatabaseV2, ParamDef};
 
 use super::{
+    Lexer, Parser,
     analysis::{SymbolTable, SymbolType},
     ast::{Expression, ExpressionKind, Statement, StatementKind},
     parse_error::{ParseResult, lowering_error},
     token::TokenType,
-    Lexer, Parser,
 };
 
 // ============================================================================
@@ -19,9 +19,7 @@ use super::{
 // ============================================================================
 
 /// Macro condition parameter substitution: matches \paramName
-static RE_MACRO_PARAM: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\\(\w+)").unwrap()
-});
+static RE_MACRO_PARAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(\w+)").unwrap());
 
 #[derive(Debug, Clone)]
 pub enum IrOpcode {
@@ -172,8 +170,12 @@ impl<'a> Lowerer<'a> {
             constants: None,
         }
     }
-    
-    pub fn with_constants(symbols: &'a SymbolTable, db: &'a DatabaseV2, constants: &'a crate::database::ConstantDb) -> Self {
+
+    pub fn with_constants(
+        symbols: &'a SymbolTable,
+        db: &'a DatabaseV2,
+        constants: &'a crate::database::ConstantDb,
+    ) -> Self {
         Self {
             label_counter: 0,
             output: Vec::new(),
@@ -309,7 +311,7 @@ impl<'a> Lowerer<'a> {
         }
         Ok(())
     }
-    
+
     /// Lower a command, expanding macros if needed
     fn lower_command(
         &mut self,
@@ -343,7 +345,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Apply default parameter values to fill in missing arguments.
-    /// 
+    ///
     /// Decomp-style logic: Arguments are mapped to required parameters first (in order),
     /// then to optional parameters (those with defaults) in order.
     fn apply_defaults(
@@ -352,11 +354,9 @@ impl<'a> Lowerer<'a> {
         cmd: &Command,
         args: &[Expression],
     ) -> ParseResult<Vec<Expression>> {
-        // Find the matching variant if it exists, otherwise use base params
         let params: &[ParamDef] = if let Some(variants) = &cmd.variants {
             let mut matched: &[ParamDef] = &cmd.params;
-            
-            // Try matching by first argument (mode) if it's a constant
+
             if let Some(first_arg) = args.first() {
                 if let Ok(mode) = self.resolve_arg_to_int(first_arg) {
                     let variant_params = cmd.get_variant_params(mode as u8);
@@ -366,16 +366,24 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Fallback: If still base params, try matching by condition (Macro style)
             if std::ptr::eq(matched, &cmd.params as &[ParamDef]) {
                 for variant in variants {
                     if let Some(condition) = &variant.condition {
                         if condition == "else" {
-                            matched = if variant.params.is_empty() { &cmd.params } else { &variant.params };
+                            matched = if variant.params.is_empty() {
+                                &cmd.params
+                            } else {
+                                &variant.params
+                            };
                             break;
                         } else {
-                            if let Ok(true) = self.evaluate_condition(condition, args, &cmd.params) {
-                                matched = if variant.params.is_empty() { &cmd.params } else { &variant.params };
+                            if let Ok(true) = self.evaluate_condition(condition, args, &cmd.params)
+                            {
+                                matched = if variant.params.is_empty() {
+                                    &cmd.params
+                                } else {
+                                    &variant.params
+                                };
                                 break;
                             }
                         }
@@ -388,56 +396,54 @@ impl<'a> Lowerer<'a> {
         };
 
         let param_count = params.len();
-        
-        // Identify indices of required vs optional parameters
-        let mut required_indices = Vec::new();
-        let mut optional_indices = Vec::new();
-        for (i, p) in params.iter().enumerate() {
-            if p.default.is_none() {
-                required_indices.push(i);
-            } else {
-                optional_indices.push(i);
+
+        if args.len() > param_count {
+            return Err(lowering_error(format!(
+                "Command '{}' takes at most {} arguments, but got {}",
+                command,
+                param_count,
+                args.len()
+            )));
+        }
+
+        let required_count = params.iter().filter(|p| p.default.is_none()).count();
+        let first_optional_idx = params
+            .iter()
+            .position(|p| p.default.is_some())
+            .unwrap_or(param_count);
+
+        if args.len() < required_count {
+            let min_required = first_optional_idx.min(required_count);
+            if args.len() < min_required {
+                return Err(lowering_error(format!(
+                    "Command '{}' requires at least {} arguments, but got {}",
+                    command,
+                    min_required,
+                    args.len()
+                )));
             }
         }
 
-        let req_count = required_indices.len();
-        if args.len() < req_count {
-            return Err(lowering_error(format!(
-                "Command '{}' requires at least {} arguments, but got {}",
-                command, req_count, args.len()
-            )));
-        }
-        if args.len() > param_count {
-             return Err(lowering_error(format!(
-                "Command '{}' takes at most {} arguments, but got {}",
-                command, param_count, args.len()
-            )));
-        }
+        let mut result: Vec<Expression> = Vec::with_capacity(param_count);
 
-        let mut result_map: Vec<Option<Expression>> = vec![None; param_count];
-        let mut arg_ptr = 0;
-
-        for &idx in &required_indices {
-            result_map[idx] = Some(args[arg_ptr].clone());
-            arg_ptr += 1;
-        }
-
-        for &idx in &optional_indices {
-            if arg_ptr < args.len() {
-                result_map[idx] = Some(args[arg_ptr].clone());
-                arg_ptr += 1;
-            } else {
-                let default_str = params[idx].default.as_ref().unwrap();
-                let substituted = self.substitute_default_params(default_str, params, &result_map)?;
-                
+        for (i, param) in params.iter().enumerate() {
+            if i < args.len() {
+                result.push(args[i].clone());
+            } else if let Some(default_str) = &param.default {
+                let substituted = self.substitute_default_params(default_str, params, &result)?;
                 let lexer = Lexer::new(&substituted);
                 let mut parser = Parser::new(lexer);
                 let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
-                result_map[idx] = Some(expr);
+                result.push(expr);
+            } else {
+                return Err(lowering_error(format!(
+                    "Command '{}' missing required argument '{}' at position {}",
+                    command, param.name, i
+                )));
             }
         }
 
-        Ok(result_map.into_iter().map(|o| o.unwrap()).collect())
+        Ok(result)
     }
 
     /// Expand a macro by substituting parameters and recursively lowering
@@ -453,12 +459,12 @@ impl<'a> Lowerer<'a> {
                 MAX_MACRO_DEPTH, macro_name
             )));
         }
-        
+
         let cmd = self.db.get_command(macro_name)?;
         let params = &cmd.params;
-        
+
         let args_with_defaults = self.apply_defaults(macro_name, cmd, args)?;
-        
+
         // Build parameter substitution map: param_name -> formatted value
         if args_with_defaults.len() != params.len() {
             return Err(lowering_error(format!(
@@ -468,7 +474,7 @@ impl<'a> Lowerer<'a> {
                 args_with_defaults.len()
             )));
         }
-        
+
         // Check for conditional variants
         let expansion = if let Some(variants) = &cmd.variants {
             // Find the first matching variant
@@ -479,15 +485,15 @@ impl<'a> Lowerer<'a> {
                         matched_expansion = variant.expansion.as_ref();
                         break;
                     }
-                    
+
                     // Evaluate condition
                     if self.evaluate_condition(condition, &args_with_defaults, params)? {
-                    matched_expansion = variant.expansion.as_ref();
-                    break;
+                        matched_expansion = variant.expansion.as_ref();
+                        break;
+                    }
                 }
             }
-        }
-            
+
             // If no match found in variants, fall back to base expansion?
             matched_expansion.or(cmd.expansion.as_ref())
         } else {
@@ -500,19 +506,19 @@ impl<'a> Lowerer<'a> {
                 macro_name
             ))
         })?;
-        
+
         let mut param_map: HashMap<String, String> = HashMap::new();
         for (param, arg) in params.iter().zip(args_with_defaults.iter()) {
             let formatted = self.format_arg_for_substitution(arg)?;
             param_map.insert(param.name.clone(), formatted);
         }
-        
+
         for line in expansion {
             let substituted = self.substitute_params(line, &param_map);
             let parsed_stmt = self.parse_expansion_line(&substituted)?;
             self.lower_statement_with_depth(&parsed_stmt, depth + 1)?;
         }
-        
+
         Ok(())
     }
 
@@ -542,14 +548,14 @@ impl<'a> Lowerer<'a> {
                 "0".to_string()
             }
         });
-        
+
         let lexer = Lexer::new(&substituted);
         let mut parser = Parser::new(lexer);
         let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
-        
+
         self.eval_bool_expr(&expr)
     }
-    
+
     /// Resolve an argument expression to an integer value (for condition evaluation)
     fn resolve_arg_to_int(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
@@ -561,14 +567,14 @@ impl<'a> Lowerer<'a> {
                 } else if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
                     return Ok(*val);
                 }
-                
+
                 // Fallback: Check constants DB
                 if let Some(db) = self.constants {
                     if let Some(val) = db.get(name) {
                         return Ok(val);
                     }
                 }
-                
+
                 Err(lowering_error(format!(
                     "Could not resolve '{}' to an integer for macro condition",
                     name
@@ -580,7 +586,7 @@ impl<'a> Lowerer<'a> {
             ))),
         }
     }
-    
+
     /// Evaluate an expression AST to a boolean
     fn eval_bool_expr(&self, expr: &Expression) -> ParseResult<bool> {
         match &expr.node {
@@ -591,7 +597,7 @@ impl<'a> Lowerer<'a> {
             } => {
                 let left_val = self.eval_int_expr(left)?;
                 let right_val = self.eval_int_expr(right)?;
-                
+
                 match operator {
                     TokenType::LesserThan => Ok(left_val < right_val),
                     TokenType::GreaterThan => Ok(left_val > right_val),
@@ -611,7 +617,7 @@ impl<'a> Lowerer<'a> {
             ))),
         }
     }
-    
+
     /// Evaluate an expression AST to an integer (helper for eval_bool_expr)
     fn eval_int_expr(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
@@ -651,7 +657,7 @@ impl<'a> Lowerer<'a> {
             ))),
         }
     }
-    
+
     /// Format an argument expression as a string for macro substitution
     fn format_arg_for_substitution(&self, expr: &Expression) -> ParseResult<String> {
         match &expr.node {
@@ -700,7 +706,7 @@ impl<'a> Lowerer<'a> {
             ))),
         }
     }
-    
+
     /// Substitute $paramName placeholders with actual values
     fn substitute_params(&self, line: &str, param_map: &HashMap<String, String>) -> String {
         let mut result = line.to_string();
@@ -709,29 +715,29 @@ impl<'a> Lowerer<'a> {
         }
         result
     }
-    
+
     /// Substitute $paramName references in default values with already-resolved parameter values.
     fn substitute_default_params(
         &self,
         default_str: &str,
         params: &[ParamDef],
-        result_map: &[Option<Expression>],
+        resolved_args: &[Expression],
     ) -> ParseResult<String> {
         let mut result = default_str.to_string();
-        
+
         for (i, param) in params.iter().enumerate() {
             let placeholder = format!("${}", param.name);
             if result.contains(&placeholder) {
-                if let Some(expr) = &result_map[i] {
-                    let formatted = self.format_arg_for_substitution(expr)?;
+                if i < resolved_args.len() {
+                    let formatted = self.format_arg_for_substitution(&resolved_args[i])?;
                     result = result.replace(&placeholder, &formatted);
                 }
             }
         }
-        
+
         Ok(result)
     }
-    
+
     /// Parse a macro expansion line into a Statement
     fn parse_expansion_line(&self, line: &str) -> ParseResult<Statement> {
         if line.trim().is_empty() {
@@ -740,19 +746,19 @@ impl<'a> Lowerer<'a> {
                 "Macro expansion produced empty line"
             )));
         }
-        
+
         // Add newline to ensure proper parsing of commands without params
         let line_with_newline = format!("{}\n", line.trim());
-        
+
         // Parse as a single statement
         let lexer = Lexer::new(&line_with_newline);
         let mut parser = Parser::new(lexer);
-        
+
         parser.parse_statement().map_err(|e| {
             lowering_error(format!("Failed to parse macro expansion '{}': {}", line, e))
         })
     }
-    
+
     fn lower_condition(&mut self, expr: &Expression, target_label: &str) -> ParseResult<()> {
         if let ExpressionKind::Infix {
             left,
@@ -806,7 +812,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(&val) = self.local_aliases.get(name) {
                     return Ok(Arg::Value(val));
                 }
-                
+
                 // 1. Check symbol table
                 match self.global_symbols.resolve(name) {
                     Some(SymbolType::Variable(id)) => return Ok(Arg::Value(*id)),
@@ -816,14 +822,14 @@ impl<'a> Lowerer<'a> {
                     | Some(SymbolType::Action) => return Ok(Arg::Pointer(name.clone())),
                     None => {} // Try constants db
                 }
-                
+
                 // 2. Check constants DB
                 if let Some(db) = self.constants {
                     if let Some(val) = db.get(name) {
                         return Ok(Arg::Value(val));
                     }
                 }
-                
+
                 Err(lowering_error(format!(
                     "Symbol '{}' could not be resolved (analysis should have caught this)",
                     name
@@ -919,16 +925,17 @@ impl<'a> Lowerer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::analysis::Analyzer;
     use crate::compiler::ast::{Expression, ExpressionKind};
     use crate::compiler::lexer::Lexer;
     use crate::compiler::parser::Parser;
-    use crate::compiler::analysis::Analyzer;
-    use crate::database::{DatabaseV2, ConstantDb};
+    use crate::database::{ConstantDb, DatabaseV2};
 
     /// Helper function to create a test database
     fn create_test_db() -> DatabaseV2 {
-        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json"))
-            .expect("Test database not found at src/db/platinum_v2.json - tests require the database file")
+        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).expect(
+            "Test database not found at src/db/platinum_v2.json - tests require the database file",
+        )
     }
 
     /// Helper function to parse and analyze a simple script
@@ -936,14 +943,14 @@ mod tests {
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
-        
+
         let mut constants = ConstantDb::new();
         let db = create_test_db();
         constants.load_from_db(&db);
-        
+
         let mut analyzer = Analyzer::with_constants(&constants);
         analyzer.analyze(&script_file).unwrap();
-        
+
         (script_file, analyzer.symbols)
     }
 
@@ -957,10 +964,13 @@ function TestFunc #1:
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
-        let functions: Vec<_> = items.iter().filter(|i| matches!(i, TopLevelItem::Function(_))).collect();
-        
+        let functions: Vec<_> = items
+            .iter()
+            .filter(|i| matches!(i, TopLevelItem::Function(_)))
+            .collect();
+
         assert_eq!(functions.len(), 1);
         match &functions[0] {
             TopLevelItem::Function(ir_func) => {
@@ -983,7 +993,7 @@ function TestFunc #1:
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
@@ -1015,15 +1025,17 @@ function TestFunc #1:
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
                 // Should have: Message, Jump, Message, Label, Message, End
                 assert!(ir_func.instructions.len() >= 5);
-                
+
                 // Check that we have a label
-                let label_count = ir_func.instructions.iter()
+                let label_count = ir_func
+                    .instructions
+                    .iter()
                     .filter(|op| matches!(op, IrOpcode::Label(_)))
                     .count();
                 assert_eq!(label_count, 1);
@@ -1042,10 +1054,13 @@ action TestAction
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
-        let actions: Vec<_> = items.iter().filter(|i| matches!(i, TopLevelItem::Action(_))).collect();
-        
+        let actions: Vec<_> = items
+            .iter()
+            .filter(|i| matches!(i, TopLevelItem::Action(_)))
+            .collect();
+
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             TopLevelItem::Action(ir_action) => {
@@ -1062,7 +1077,7 @@ action TestAction
         let (_script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let lowerer = Lowerer::new(&symbols, &db);
-        
+
         // Test direct value
         let expr = Expression {
             span: 0..1,
@@ -1078,7 +1093,7 @@ action TestAction
         let (_script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let lowerer = Lowerer::new(&symbols, &db);
-        
+
         // Test hex value
         let expr = Expression {
             span: 0..1,
@@ -1100,22 +1115,23 @@ function TestFunc #1:
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
                 // Should generate: CompareVarValue, GoToIf, Message, Label
                 assert!(ir_func.instructions.len() >= 4);
-                
+
                 // Check that we have conditional logic
                 let has_compare = ir_func.instructions.iter().any(|op| {
-                    matches!(op, IrOpcode::Command { name, .. } 
+                    matches!(op, IrOpcode::Command { name, .. }
                         if name == "CompareVarValue" || name == "CompareVars")
                 });
-                let has_jump_if = ir_func.instructions.iter().any(|op| {
-                    matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf")
-                });
-                
+                let has_jump_if = ir_func
+                    .instructions
+                    .iter()
+                    .any(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf"));
+
                 assert!(has_compare, "Should have CompareVarValue instruction");
                 assert!(has_jump_if, "Should have GoToIf instruction");
             }
@@ -1135,22 +1151,23 @@ function TestFunc #1:
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
                 // Should generate loop logic with labels and jumps
                 assert!(ir_func.instructions.len() >= 4);
-                
+
                 // Check for loop constructs
                 let has_compare = ir_func.instructions.iter().any(|op| {
-                    matches!(op, IrOpcode::Command { name, .. } 
+                    matches!(op, IrOpcode::Command { name, .. }
                         if name == "CompareVarValue" || name == "CompareVars")
                 });
-                let has_jump_if = ir_func.instructions.iter().any(|op| {
-                    matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf")
-                });
-                
+                let has_jump_if = ir_func
+                    .instructions
+                    .iter()
+                    .any(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf"));
+
                 assert!(has_compare, "Should have CompareVarValue instruction");
                 assert!(has_jump_if, "Should have GoToIf instruction");
             }
@@ -1172,27 +1189,39 @@ function TestFunc #1:
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
                 // Should generate: Compare, GoToIf, Message1, GoTo, Label(else), Message2, Label(end), End
                 // At minimum: Compare, GoToIf, Message, GoTo, Label, Message, Label, End = 8
-                assert!(ir_func.instructions.len() >= 7, 
-                    "if/else should generate at least 7 instructions, got {}", 
-                    ir_func.instructions.len());
-                
+                assert!(
+                    ir_func.instructions.len() >= 7,
+                    "if/else should generate at least 7 instructions, got {}",
+                    ir_func.instructions.len()
+                );
+
                 // Check for else branch: should have 2 labels (else and end) and a GoTo to skip else
-                let label_count = ir_func.instructions.iter()
+                let label_count = ir_func
+                    .instructions
+                    .iter()
                     .filter(|op| matches!(op, IrOpcode::Label(_)))
                     .count();
-                assert!(label_count >= 2, "if/else should generate at least 2 labels (else + end)");
-                
+                assert!(
+                    label_count >= 2,
+                    "if/else should generate at least 2 labels (else + end)"
+                );
+
                 // Check for unconditional GoTo (to skip else block)
-                let goto_count = ir_func.instructions.iter()
+                let goto_count = ir_func
+                    .instructions
+                    .iter()
                     .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
                     .count();
-                assert!(goto_count >= 1, "if/else should have GoTo to skip else block");
+                assert!(
+                    goto_count >= 1,
+                    "if/else should have GoTo to skip else block"
+                );
             }
             _ => panic!("Expected function"),
         }
@@ -1212,24 +1241,30 @@ function TestFunc #1:
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
                 // Find the CompareVarValue instruction
-                let compare = ir_func.instructions.iter().find(|op| {
-                    matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue")
-                });
-                
+                let compare = ir_func.instructions.iter().find(
+                    |op| matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue"),
+                );
+
                 assert!(compare.is_some(), "Should have CompareVarValue instruction");
-                
+
                 if let Some(IrOpcode::Command { args, .. }) = compare {
                     // First arg should be the variable (0x8000 = 32768)
-                    assert_eq!(args[0].unwrap_value(), 0x8000, 
-                        "First arg should be the variable (swapped from RHS)");
+                    assert_eq!(
+                        args[0].unwrap_value(),
+                        0x8000,
+                        "First arg should be the variable (swapped from RHS)"
+                    );
                     // Second arg should be the value (5)
-                    assert_eq!(args[1].unwrap_value(), 5, 
-                        "Second arg should be the value (swapped from LHS)");
+                    assert_eq!(
+                        args[1].unwrap_value(),
+                        5,
+                        "Second arg should be the value (swapped from LHS)"
+                    );
                 }
             }
             _ => panic!("Expected function"),
@@ -1248,22 +1283,26 @@ function TestFunc #1:
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
-        
+
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
                 // Find the Message command
-                let message = ir_func.instructions.iter().find(|op| {
-                    matches!(op, IrOpcode::Command { name, .. } if name == "Message")
-                });
-                
+                let message = ir_func
+                    .instructions
+                    .iter()
+                    .find(|op| matches!(op, IrOpcode::Command { name, .. } if name == "Message"));
+
                 assert!(message.is_some(), "Should have Message instruction");
-                
+
                 if let Some(IrOpcode::Command { args, .. }) = message {
                     // The value should be compile-time evaluated: 1 + 2 * 3 = 7 (correct precedence) or 9 (left-to-right)
                     let value = args[0].unwrap_value();
-                    assert!(value == 7 || value == 9, 
-                        "Arithmetic should be evaluated at compile time, got {}", value);
+                    assert!(
+                        value == 7 || value == 9,
+                        "Arithmetic should be evaluated at compile time, got {}",
+                        value
+                    );
                 }
             }
             _ => panic!("Expected function"),

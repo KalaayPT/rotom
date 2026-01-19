@@ -241,14 +241,11 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             continue;
         }
 
-        // Handle commands
-        // Decomp format: CommandName arg1, arg2, arg3
         output.push_str("    ");
         if let Some(cmd_end_idx) = trimmed.find(|c| c == ' ' || c == '\t') {
             let mut cmd_name = &trimmed[..cmd_end_idx];
             let args = trimmed[cmd_end_idx..].trim();
 
-            // Resolve ScrCmd_XXX to canonical names if database is provided
             if let Some(db) = db {
                 if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
                     if let Ok(id) = u16::from_str_radix(id_str, 16) {
@@ -264,19 +261,21 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             }
 
             if args.is_empty() {
-                // Command with no arguments
                 output.push_str(cmd_name);
             } else {
-                // Apply local #define substitutions to arguments
                 let substituted_args = substitute_defines(args, &local_defines);
+                let reordered_args = if let Some(db) = db {
+                    reorder_decomp_args_to_binary(cmd_name, &substituted_args, db)
+                } else {
+                    substituted_args
+                };
                 output.push_str(cmd_name);
-                if !substituted_args.is_empty() {
+                if !reordered_args.is_empty() {
                     output.push(' ');
-                    output.push_str(&substituted_args);
+                    output.push_str(&reordered_args);
                 }
             }
         } else {
-            // No arguments, just the command name
             let mut cmd_name = trimmed;
             if let Some(db) = db {
                 if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
@@ -301,6 +300,74 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
     }
 
     output
+}
+
+fn reorder_decomp_args_to_binary(
+    cmd_name: &str,
+    args_str: &str,
+    db: &crate::database::DatabaseV2,
+) -> String {
+    let cmd = match db.get_command(cmd_name) {
+        Ok(c) => c,
+        Err(_) => return args_str.to_string(),
+    };
+
+    let params = &cmd.params;
+    if params.is_empty() {
+        return args_str.to_string();
+    }
+
+    let mut required_indices: Vec<usize> = Vec::new();
+    let mut optional_indices: Vec<usize> = Vec::new();
+    for (i, p) in params.iter().enumerate() {
+        if p.default.is_none() {
+            required_indices.push(i);
+        } else {
+            optional_indices.push(i);
+        }
+    }
+
+    if optional_indices.is_empty() {
+        return args_str.to_string();
+    }
+
+    let all_optional_at_end = optional_indices.iter().all(|&i| i >= required_indices.len());
+    if all_optional_at_end {
+        return args_str.to_string();
+    }
+
+    let args: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
+    
+    let req_count = required_indices.len();
+    let total_params = params.len();
+    
+    if args.len() < req_count || args.len() > total_params {
+        return args_str.to_string();
+    }
+
+    let provided_optional_count = args.len() - req_count;
+    
+    let mut result: Vec<Option<String>> = vec![None; total_params];
+    
+    for (decomp_idx, &binary_idx) in required_indices.iter().enumerate() {
+        if decomp_idx < args.len() {
+            result[binary_idx] = Some(args[decomp_idx].to_string());
+        }
+    }
+    
+    for (opt_num, &binary_idx) in optional_indices.iter().enumerate() {
+        if opt_num < provided_optional_count {
+            let decomp_idx = req_count + opt_num;
+            if decomp_idx < args.len() {
+                result[binary_idx] = Some(args[decomp_idx].to_string());
+            }
+        } else {
+            result[binary_idx] = Some(params[binary_idx].default.clone().unwrap_or_default());
+        }
+    }
+
+    let final_args: Vec<String> = result.into_iter().flatten().collect();
+    final_args.join(", ")
 }
 
 /// Substitute local #define macros in argument string
