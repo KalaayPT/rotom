@@ -62,8 +62,10 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
     };
 
     // First pass: collect jump table and identify movement labels by their content
+    let lines: Vec<&str> = input.lines().collect();
     let mut current_label: Option<String> = None;
-    for line in input.lines() {
+    
+    for (line_idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
         // Skip empty lines and comments
@@ -74,7 +76,6 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         // Parse ScriptEntry
         if let Some(rest) = trimmed.strip_prefix("ScriptEntry") {
             let rest = rest.trim();
-            // Strip any comments (e.g., "Name @ 0x123" -> "Name")
             let name = rest.split('@').next().unwrap_or(rest).trim();
             let name = name.split("//").next().unwrap_or(name).trim();
             if !name.is_empty() {
@@ -94,13 +95,19 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
             continue;
         }
 
-        // If we have a pending label and see a command, check if it's a movement
         if let Some(ref label) = current_label {
             let cmd_name = trimmed
                 .split(|c| c == ' ' || c == '\t')
                 .next()
                 .unwrap_or("");
-            if movement_commands.contains(cmd_name) {
+            
+            let is_movement = if !movement_commands.is_empty() {
+                movement_commands.contains(cmd_name)
+            } else {
+                lookahead_for_end_movement(&lines, line_idx)
+            };
+            
+            if is_movement {
                 movement_labels.insert(label.clone());
             }
             current_label = None;
@@ -421,6 +428,41 @@ fn substitute_defines(args: &str, defines: &std::collections::HashMap<String, St
         .collect();
 
     substituted.join(", ")
+}
+
+fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
+    const MAX_LOOKAHEAD: usize = 32;
+    
+    for i in start_idx..std::cmp::min(start_idx + MAX_LOOKAHEAD, lines.len()) {
+        let trimmed = lines[i].trim();
+        
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("@") {
+            continue;
+        }
+        
+        if trimmed.starts_with('.') {
+            continue;
+        }
+        
+        if trimmed.ends_with(':') {
+            return false;
+        }
+        
+        let cmd_name = trimmed
+            .split(|c| c == ' ' || c == '\t')
+            .next()
+            .unwrap_or("");
+        
+        if cmd_name == "EndMovement" {
+            return true;
+        }
+        
+        if cmd_name == "End" || cmd_name == "Return" {
+            return false;
+        }
+    }
+    
+    false
 }
 
 #[cfg(test)]
