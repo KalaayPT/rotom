@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-use rotom::compile_to_bytes;
+use rotom::compile_to_bytes_with_options;
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::transpiler::decomp::transpile as transpile_decomp;
 
@@ -170,7 +170,7 @@ fn load_test_db_and_constants() -> (DatabaseV2, ConstantDb) {
 fn compile_single_script(
     script_path: &Path,
     db: &DatabaseV2,
-    constants: &ConstantDb,
+    base_constants: &ConstantDb,
 ) -> CompileOutcome {
     let source = match std::fs::read_to_string(script_path) {
         Ok(s) => s,
@@ -184,9 +184,18 @@ fn compile_single_script(
     };
     let expected_hash = sha256_hex(&expected_bytes);
 
-    let rotoscript = transpile_decomp(&source, Some(db));
+    let mut constants = base_constants.clone();
+    let decomp_root = get_pokeplatinum_root();
+    let _ = constants.load_map_events(&decomp_root, script_path);
 
-    let actual_bytes = match compile_to_bytes(&rotoscript, db, constants) {
+    let transpile_result = transpile_decomp(&source, Some(db));
+
+    let actual_bytes = match compile_to_bytes_with_options(
+        &transpile_result.source,
+        db,
+        &constants,
+        transpile_result.emit_end_marker,
+    ) {
         Ok(b) => b,
         Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
     };

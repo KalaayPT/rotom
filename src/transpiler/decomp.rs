@@ -33,9 +33,16 @@
 
 use crate::database::CommandType;
 
+#[derive(Debug, Clone)]
+pub struct TranspileResult {
+    pub source: String,
+    pub emit_end_marker: bool,
+}
+
 /// Transpile a decomp script to Rotoscript format
-pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> String {
+pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> TranspileResult {
     let mut output = String::new();
+    let mut has_script_entry_end = false;
 
     // Track jump table entries: name -> slot number
     let mut jump_table: Vec<String> = Vec::new();
@@ -181,6 +188,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
         if trimmed.starts_with("ScriptEntry") {
             if trimmed == "ScriptEntryEnd" {
                 seen_script_entry_end = true;
+                has_script_entry_end = true;
             }
             continue;
         }
@@ -315,7 +323,10 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
         output.push('\n');
     }
 
-    output
+    TranspileResult {
+        source: output,
+        emit_end_marker: has_script_entry_end,
+    }
 }
 
 fn reorder_decomp_args_to_binary(
@@ -430,8 +441,8 @@ Function2:
     End
 "#;
         let output = transpile(input, None);
-        assert!(output.contains("function Function1 #0:"));
-        assert!(output.contains("function Function2 #1:"));
+        assert!(output.source.contains("function Function1 #0:"));
+        assert!(output.source.contains("function Function2 #1:"));
     }
 
     #[test]
@@ -448,9 +459,9 @@ HelperLabel:
     Return
 "#;
         let output = transpile(input, None);
-        assert!(output.contains("function MainFunc #0:"));
-        assert!(output.contains("HelperLabel:"));
-        assert!(!output.contains("function HelperLabel"));
+        assert!(output.source.contains("function MainFunc #0:"));
+        assert!(output.source.contains("HelperLabel:"));
+        assert!(!output.source.contains("function HelperLabel"));
     }
 
     #[test]
@@ -469,10 +480,10 @@ TestMovement:
     EndMovement
 "#;
         let output = transpile(input, None);
-        assert!(output.contains("function MainFunc #0:"));
-        assert!(output.contains("action TestMovement"));
-        assert!(output.contains("    WalkNorth"));
-        assert!(output.contains("    EndMovement"));
+        assert!(output.source.contains("function MainFunc #0:"));
+        assert!(output.source.contains("action TestMovement"));
+        assert!(output.source.contains("    WalkNorth"));
+        assert!(output.source.contains("    EndMovement"));
     }
 
     #[test]
@@ -490,10 +501,10 @@ TestMovement:
     EndMovement
 "#;
         let output = transpile(input, None);
-        assert!(output.contains("function MainFunc #0:"));
-        assert!(output.contains("action TestMovement"));
-        assert!(output.contains("    WalkNorth"));
-        assert!(output.contains("    EndMovement"));
+        assert!(output.source.contains("function MainFunc #0:"));
+        assert!(output.source.contains("action TestMovement"));
+        assert!(output.source.contains("    WalkNorth"));
+        assert!(output.source.contains("    EndMovement"));
     }
 
     #[test]
@@ -508,8 +519,8 @@ Test:
     End
 "#;
         let output = transpile(input, None);
-        assert!(!output.contains("#include"));
-        assert!(output.contains("function Test #0:"));
+        assert!(!output.source.contains("#include"));
+        assert!(output.source.contains("function Test #0:"));
     }
 
     #[test]
@@ -525,9 +536,9 @@ Test:
     End
 "#;
         let output = transpile(input, None);
-        assert!(output.contains("    SetVar VAR_RESULT, 5"));
-        assert!(output.contains("    Message 0"));
-        assert!(output.contains("    ShowYesNoMenu VAR_RESULT"));
+        assert!(output.source.contains("    SetVar VAR_RESULT, 5"));
+        assert!(output.source.contains("    Message 0"));
+        assert!(output.source.contains("    ShowYesNoMenu VAR_RESULT"));
     }
 
     #[test]
@@ -550,8 +561,8 @@ Move2:
     EndMovement
 "#;
         let output = transpile(input, None);
-        assert!(output.contains("action Move1"));
-        assert!(output.contains("action Move2"));
+        assert!(output.source.contains("action Move1"));
+        assert!(output.source.contains("action Move2"));
     }
 
     #[test]
@@ -561,10 +572,14 @@ Move2:
 
         if let Ok(content) = input {
             let output = transpile(&content, None);
-            assert!(output.contains("function _0012 #1:"));
-            assert!(output.contains("function _004E #0:"));
-            assert!(output.contains("action _00E8"));
-            assert!(output.contains("AcuityLakefront_SetWarpsLakeAcuityNormal:"));
+            assert!(output.source.contains("function _0012 #1:"));
+            assert!(output.source.contains("function _004E #0:"));
+            assert!(output.source.contains("action _00E8"));
+            assert!(
+                output
+                    .source
+                    .contains("AcuityLakefront_SetWarpsLakeAcuityNormal:")
+            );
         }
     }
 }

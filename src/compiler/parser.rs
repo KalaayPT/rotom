@@ -117,7 +117,11 @@ impl<'a> Parser<'a> {
                 _ => unreachable!("top_level_stmt should prevent other statements or errors"),
             }
         }
-        Ok(ScriptFile { aliases, items })
+        Ok(ScriptFile {
+            aliases,
+            items,
+            emit_end_marker: true,
+        })
     }
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         let statement = match self.current_token.kind.clone() {

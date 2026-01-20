@@ -102,6 +102,15 @@ pub fn compile_to_bytes(
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> Result<Vec<u8>, CompileError> {
+    compile_to_bytes_with_options(source, db, constants, true)
+}
+
+pub fn compile_to_bytes_with_options(
+    source: &str,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+    emit_end_marker: bool,
+) -> Result<Vec<u8>, CompileError> {
     let lexer = Lexer::new(source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
@@ -113,7 +122,7 @@ pub fn compile_to_bytes(
     let items = lowerer.lower_script_file(&file)?;
 
     let mut emitter = Emitter::new(db);
-    emitter.emit_script_file(&items)
+    emitter.emit_script_file(&items, emit_end_marker)
 }
 
 pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<Vec<TopLevelItem>> {
@@ -143,10 +152,13 @@ fn compile_file_internal(
         .unwrap_or("")
         .to_lowercase();
 
-    let rotom_source = match extension.as_str() {
-        "rotom" => source,
-        "script" => transpiler::transpile_dspre(&source, Some(db)),
-        "s" => transpiler::transpile_decomp(&source, Some(db)),
+    let (rotom_source, emit_end_marker) = match extension.as_str() {
+        "rotom" => (source, true),
+        "script" => (transpiler::transpile_dspre(&source, Some(db)), true),
+        "s" => {
+            let result = transpiler::transpile_decomp(&source, Some(db));
+            (result.source, result.emit_end_marker)
+        }
         _ => {
             return Err(CompileFileError::IoError(CompileError::Io {
                 message: format!("Unsupported file extension: .{}", extension),
@@ -154,12 +166,11 @@ fn compile_file_internal(
         }
     };
 
-    let bytes = compile_to_bytes(&rotom_source, db, constants).map_err(|e| {
-        CompileFileError::CompileError {
+    let bytes = compile_to_bytes_with_options(&rotom_source, db, constants, emit_end_marker)
+        .map_err(|e| CompileFileError::CompileError {
             error: e,
             source: rotom_source.clone(),
-        }
-    })?;
+        })?;
     let size = bytes.len();
 
     std::fs::write(output, &bytes).map_err(|e| {

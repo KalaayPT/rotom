@@ -28,6 +28,7 @@ fn compile_to_binary(
     source: &str,
     db: &DatabaseV2,
     constants: &ConstantDb,
+    emit_end_marker: bool,
 ) -> Result<Vec<u8>, String> {
     // Parse
     let lexer = Lexer::new(source);
@@ -51,7 +52,7 @@ fn compile_to_binary(
     // Emit binary
     let mut emitter = Emitter::new(db);
     let binary = emitter
-        .emit_script_file(&items)
+        .emit_script_file(&items, emit_end_marker)
         .map_err(|e| format!("Codegen error: {}", e))?;
 
     Ok(binary)
@@ -109,18 +110,23 @@ fn test_script_hash(script_name: &str) {
     let (db, constants) = load_test_db_and_constants();
 
     // Transpile decomp script to rotoscript
-    let rotoscript = transpile_decomp(&decomp_source, Some(&db));
+    let transpile_result = transpile_decomp(&decomp_source, Some(&db));
 
     if std::env::var("ROTOM_DUMP").is_ok() {
         println!(
             "--- Rotoscript for {} ---\n{}\n---",
-            script_name, rotoscript
+            script_name, transpile_result.source
         );
     }
 
     // Compile to binary
-    let binary = compile_to_binary(&rotoscript, &db, &constants)
-        .expect(&format!("Failed to compile {}", script_name));
+    let binary = compile_to_binary(
+        &transpile_result.source,
+        &db,
+        &constants,
+        transpile_result.emit_end_marker,
+    )
+    .expect(&format!("Failed to compile {}", script_name));
 
     // Compute hash and compare
     let actual_hash = sha256_hex(&binary);

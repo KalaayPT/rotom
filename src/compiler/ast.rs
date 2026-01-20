@@ -7,6 +7,9 @@ pub struct ScriptFile {
     pub aliases: Vec<Statement>,
     /// Top-level items (functions and actions interleaved in source order)
     pub items: Vec<Statement>,
+    /// Whether to emit the jump table end marker (0xFD13) in the binary.
+    /// Defaults to true. Set to false for scripts without ScriptEntryEnd directive.
+    pub emit_end_marker: bool,
 }
 // helper struct to hold the metadata for ONE alias of a function (to support multiple jumptable
 // entries for one function)

@@ -409,11 +409,11 @@ EndMovement
     )
     .unwrap();
     let _input = rotom::transpiler::DSPRE::transpile(&_dspre, Some(&db));
-    let input = rotom::transpiler::decomp::transpile(&decomp, Some(&db));
+    let transpile_result = rotom::transpiler::decomp::transpile(&decomp, Some(&db));
     eprintln!("=== TRANSPILED OUTPUT ===");
-    eprintln!("{}", input);
-    std::fs::write("test_input.rotom", &input).unwrap();
-    let input = input.as_str();
+    eprintln!("{}", transpile_result.source);
+    std::fs::write("test_input.rotom", &transpile_result.source).unwrap();
+    let input = transpile_result.source.as_str();
     println!("=== Loading Database ===");
 
     println!(
@@ -542,7 +542,7 @@ EndMovement
     println!("Public functions found: {}", pub_funcs);
 
     let mut emitter = Emitter::new(&db);
-    let byte_output = match emitter.emit_script_file(&items) {
+    let byte_output = match emitter.emit_script_file(&items, transpile_result.emit_end_marker) {
         Ok(output) => output,
         Err(e) => {
             print_error("<test>", input, &e);

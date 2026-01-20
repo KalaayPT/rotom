@@ -406,7 +406,7 @@ impl Command {
 // ============================================================================
 
 /// Central repository for all named constants (built-in, DSPRE, and Decomp)
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ConstantDb {
     /// Manual and built-in constants: name -> value
     constants: HashMap<String, i32>,
@@ -525,10 +525,10 @@ impl ConstantDb {
         Ok(count)
     }
 
-    pub fn load_map_events<P: AsRef<Path>>(
+    pub fn load_map_events<P: AsRef<Path>, Q: AsRef<Path>>(
         &mut self,
         decomp_root: P,
-        script_path: P,
+        script_path: Q,
     ) -> Result<usize, CompileError> {
         let script_name = match script_path.as_ref().file_stem().and_then(|s| s.to_str()) {
             Some(name) => name,
@@ -541,28 +541,26 @@ impl ConstantDb {
             return Ok(0);
         };
 
-        let events_header = decomp_root
+        let events_json = decomp_root
             .as_ref()
             .join("res")
             .join("field")
             .join("events")
-            .join(format!("events_{}.h", map_name));
+            .join(format!("events_{}.json", map_name));
 
-        if !events_header.exists() {
+        if !events_json.exists() {
             return Ok(0);
         }
 
         if let Some(symbols) = &mut self.uxie_symbols {
             let start_count = symbols.get_all_defines().len();
             symbols
-                .load_header(&events_header)
+                .load_events_json(&events_json)
                 .map_err(|e| CompileError::Database {
-                    message: format!("Failed to load map events header: {}", e),
+                    message: format!("Failed to load map events JSON: {}", e),
                 })?;
             Ok(symbols.get_all_defines().len() - start_count)
         } else {
-            // If no workspace loaded yet, we can't easily load map events into a standalone SymbolTable
-            // without context, but this shouldn't happen if load_decomp_project was called.
             Ok(0)
         }
     }

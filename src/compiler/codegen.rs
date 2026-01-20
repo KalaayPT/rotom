@@ -45,7 +45,11 @@ impl<'a> Emitter<'a> {
             relocations: Vec::new(),
         }
     }
-    pub fn emit_script_file(&mut self, items: &Vec<TopLevelItem>) -> ParseResult<Vec<u8>> {
+    pub fn emit_script_file(
+        &mut self,
+        items: &Vec<TopLevelItem>,
+        emit_end_marker: bool,
+    ) -> ParseResult<Vec<u8>> {
         // Collect jump table slots from all functions
         // Sort by slot ID to match game expectations (jump table entries are indexed by slot ID)
         self.jump_table_slots = items
@@ -69,8 +73,10 @@ impl<'a> Emitter<'a> {
             });
             self.emit_u32(0);
         }
-        self.output.extend_from_slice(&JUMP_TABLE_END_MARKER);
-        self.pc += JUMP_TABLE_END_MARKER.len();
+        if emit_end_marker {
+            self.output.extend_from_slice(&JUMP_TABLE_END_MARKER);
+            self.pc += JUMP_TABLE_END_MARKER.len();
+        }
 
         // Emit all items in order (functions and actions interleaved)
         for item in items {
@@ -639,7 +645,7 @@ mod tests {
             }),
         ];
 
-        let output = emitter.emit_script_file(&items).unwrap();
+        let output = emitter.emit_script_file(&items, true).unwrap();
 
         // Jump table: 2 entries * 4 bytes = 8 bytes, plus 2-byte marker
         // Marker is 0xFD13 = [0x13, 0xFD]
@@ -682,7 +688,7 @@ mod tests {
             ],
         })];
 
-        let output = emitter.emit_script_file(&items).unwrap();
+        let output = emitter.emit_script_file(&items, true).unwrap();
 
         // Should compile successfully with the label reference resolved
         assert!(
@@ -732,7 +738,7 @@ mod tests {
             }),
         ];
 
-        let output = emitter.emit_script_file(&items).unwrap();
+        let output = emitter.emit_script_file(&items, true).unwrap();
 
         // Jump table: 1 entry (4 bytes) + marker (2 bytes) = 6 bytes
         // Function: End = 2 bytes, but at offset 6, so function starts at 6
@@ -776,7 +782,7 @@ mod tests {
         };
 
         let items = vec![TopLevelItem::Function(ir_func)];
-        let output = emitter.emit_script_file(&items).unwrap();
+        let output = emitter.emit_script_file(&items, true).unwrap();
 
         // Jump table should have two entries (sorted by ID)
         // Entry 1 (ID 1) -> Pointer to End
