@@ -30,9 +30,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
+use rotom::compile_levelscript_to_bytes;
 use rotom::compile_to_bytes_with_options;
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::transpiler::decomp::transpile as transpile_decomp;
+use rotom::transpiler::is_levelscript_source;
 
 /// Result category for a single script compilation attempt
 #[derive(Debug, Clone)]
@@ -71,7 +73,7 @@ pub struct BulkCompileResult {
     pub outcomes: Mutex<HashMap<String, CompileOutcome>>,
 }
 
-const DEFAULT_POKEPLATINUM_ROOT: &str = "/home/kalaay/dev/pokeplatinum";
+const DEFAULT_POKEPLATINUM_ROOT: &str = "C:/dev/pokeplatinum";
 
 fn get_pokeplatinum_root() -> PathBuf {
     std::env::var("POKEPLATINUM_ROOT")
@@ -188,16 +190,25 @@ fn compile_single_script(
     let decomp_root = get_pokeplatinum_root();
     let _ = constants.load_map_events(&decomp_root, script_path);
 
-    let transpile_result = transpile_decomp(&source, Some(db));
+    let is_levelscript = is_levelscript_source(&source);
 
-    let actual_bytes = match compile_to_bytes_with_options(
-        &transpile_result.source,
-        db,
-        &constants,
-        transpile_result.emit_end_marker,
-    ) {
-        Ok(b) => b,
-        Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
+    let actual_bytes = if is_levelscript {
+        match compile_levelscript_to_bytes(&source, &constants) {
+            Ok(b) => b,
+            Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
+        }
+    } else {
+        let transpile_result = transpile_decomp(&source, Some(db));
+
+        match compile_to_bytes_with_options(
+            &transpile_result.source,
+            db,
+            &constants,
+            transpile_result.emit_end_marker,
+        ) {
+            Ok(b) => b,
+            Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
+        }
     };
 
     let actual_hash = sha256_hex(&actual_bytes);
@@ -354,25 +365,23 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
     }
 }
 
-fn run_normal_scripts_test(verbose: bool) {
+fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_scripts_dir();
     if !scripts_dir.exists() {
-        eprintln!(
-            "Skipping bulk test: scripts directory not found at {:?}",
+        panic!(
+            "Bulk test failed: scripts directory not found at {:?}. \
+             Set POKEPLATINUM_ROOT environment variable to run this test.",
             scripts_dir
         );
-        eprintln!("Set POKEPLATINUM_ROOT environment variable to run this test.");
-        return;
     }
 
     let binaries_dir = get_binaries_dir();
     if !binaries_dir.exists() {
-        eprintln!(
-            "Skipping bulk test: binaries directory not found at {:?}",
+        panic!(
+            "Bulk test failed: binaries directory not found at {:?}. \
+             Make sure you've built the pokeplatinum project first.",
             binaries_dir
         );
-        eprintln!("Make sure you've built the pokeplatinum project first.");
-        return;
     }
 
     let (db, constants) = load_test_db_and_constants();
@@ -384,27 +393,27 @@ fn run_normal_scripts_test(verbose: bool) {
     let result = bulk_compile_scripts(scripts, &db, &constants);
 
     print_bulk_compile_report("Normal Scripts", &result, verbose);
+
+    result
 }
 
-fn run_levelscripts_test(verbose: bool) {
+fn run_levelscripts_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_scripts_dir();
     if !scripts_dir.exists() {
-        eprintln!(
-            "Skipping bulk test: scripts directory not found at {:?}",
+        panic!(
+            "Bulk test failed: scripts directory not found at {:?}. \
+             Set POKEPLATINUM_ROOT environment variable to run this test.",
             scripts_dir
         );
-        eprintln!("Set POKEPLATINUM_ROOT environment variable to run this test.");
-        return;
     }
 
     let binaries_dir = get_binaries_dir();
     if !binaries_dir.exists() {
-        eprintln!(
-            "Skipping bulk test: binaries directory not found at {:?}",
+        panic!(
+            "Bulk test failed: binaries directory not found at {:?}. \
+             Make sure you've built the pokeplatinum project first.",
             binaries_dir
         );
-        eprintln!("Make sure you've built the pokeplatinum project first.");
-        return;
     }
 
     let (db, constants) = load_test_db_and_constants();
@@ -421,26 +430,47 @@ fn run_levelscripts_test(verbose: bool) {
     println!("NOTE: Levelscript compilation uses the same pipeline as normal scripts.");
     println!("Levelscripts have a different binary format (InitScript* commands).");
     println!("Expect failures until a dedicated levelscript compiler is implemented.");
+
+    result
+}
+
+fn assert_100_percent_match(result: &BulkCompileResult, script_type: &str) {
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+
+    assert_eq!(
+        matches,
+        total,
+        "{} bulk compile requires 100% hash matches. Got {}/{} ({:.1}%)",
+        script_type,
+        matches,
+        total,
+        100.0 * matches as f64 / total as f64
+    );
 }
 
 #[test]
 fn test_bulk_compile_normal_scripts() {
-    run_normal_scripts_test(false);
+    let result = run_normal_scripts_test(false);
+    assert_100_percent_match(&result, "Normal scripts");
 }
 
 #[test]
 #[ignore]
 fn test_bulk_compile_normal_scripts_verbose() {
-    run_normal_scripts_test(true);
+    let result = run_normal_scripts_test(true);
+    assert_100_percent_match(&result, "Normal scripts");
 }
 
 #[test]
 fn test_bulk_compile_levelscripts() {
-    run_levelscripts_test(false);
+    let result = run_levelscripts_test(false);
+    assert_100_percent_match(&result, "Levelscripts");
 }
 
 #[test]
 #[ignore]
 fn test_bulk_compile_levelscripts_verbose() {
-    run_levelscripts_test(true);
+    let result = run_levelscripts_test(true);
+    assert_100_percent_match(&result, "Levelscripts");
 }

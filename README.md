@@ -15,10 +15,12 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 ### Core Features
 - **High-level syntax** with control flow (`if/else`, `while`, `Jump`)
 - **Three-way compilation**: `.rotom` → `.bin`, `.script` (DSPRE) → `.bin`, `.s` (decomp asm) → `.bin`
+- **Levelscript support** - Full compilation and decompilation of levelscripts (map init scripts)
 - **Semantic preserving** - Compiles back to byte-matching binaries matching the original game scripts
 - **Decomp integration** - Automatically loads constants from your pokeplatinum/pokediamond build
 - **Fall-through semantics** - Preserves the original game's code organization where functions flow into each other
 - **Parallel batch compilation** - Compile entire directories at once with `rayon`
+- **Decompiler** - Disassemble binary scripts back to source (normal scripts to `.rotom`, levelscripts to JSON)
 
 ### Language Features
 - **Public Functions** with explicit jump table slots: `function Main #1:`
@@ -42,6 +44,9 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - Full compiler pipeline from source to binary
 - DSPRE script format transpiler (legacy tool compatibility)
 - Decomp assembly (`*.s`) transpiler for seamless integration
+- Levelscript transpiler (decomp `InitScriptEntry_*` macros → binary)
+- Levelscript decompiler (binary → JSON)
+- Normal script decompiler (binary → `.rotom` source)
 - Bytecode emission with jump table ordering (sorted by slot ID)
 - Movement command semantics (default parameters, interleaving with functions)
 - Fall-through code generation matching decomp style
@@ -49,10 +54,7 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - Rich error reporting with source locations
 - Constant loading from database and decomp projects
 - Test infrastructure with fixtures from pokeplatinum
-
-### In Progress
-- Full decompiler 
-- Byte-matching verification against pokeplatinum decompiled scripts
+- 100% byte-matching verification against pokeplatinum scripts (1124/1124)
 
 ### Roadmap
 - Register allocation for automatic variable assignment
@@ -86,7 +88,14 @@ rotom compile -d database.json -i script.rotom --decomp-root C:/dev/pokeplatinum
 > [!WARNING] **Not yet implemented** - Coming soon!
 
 ```bash
+# Normal script → .rotom source
 rotom decompile -d database.json -i script.bin -o script.rotom
+
+# Levelscript → JSON (automatically detected)
+rotom decompile -d database.json -i init_script.bin -o init_script.json
+
+# Directory (parallel decompilation)
+rotom decompile -d database.json -i binaries/ -o output/
 ```
 
 ### Run tests
@@ -138,10 +147,17 @@ src/
 │   ├── lexer.rs       # Tokenization
 │   ├── parser.rs      # AST generation
 │   ├── analysis.rs    # Semantic analysis
-│   ├── ir.rs          # Intermediate representation
+│   ├── ir/            # Intermediate representation
 │   └── codegen.rs     # Binary emission
+├── decompiler/        # Disassembly and decompilation
+│   ├── disassembler.rs # Binary → IR conversion
+│   ├── ir_to_source.rs # IR → source text
+│   └── levelscript.rs  # Levelscript types and binary parsing
 ├── database.rs        # Command/constant database
-├── transpiler/        # DSPRE & decomp format converters
+├── transpiler/        # Format converters
+│   ├── DSPRE.rs       # DSPRE .script format
+│   ├── decomp.rs      # Decomp .s assembly format
+│   └── levelscript_decomp.rs # Decomp levelscript macros
 ├── lib.rs             # Library API
 └── main.rs            # CLI entry point
 

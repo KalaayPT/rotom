@@ -1,6 +1,16 @@
 use crate::compiler::ir::{Arg, IrOpcode, TopLevelItem};
 
-pub fn ir_to_source(items: &[TopLevelItem]) -> String {
+use super::disassembler::ScriptOutput;
+use super::levelscript::LevelScript;
+
+pub fn ir_to_source(output: &ScriptOutput) -> String {
+    match output {
+        ScriptOutput::Normal(items) => normal_script_to_source(items),
+        ScriptOutput::Levelscript(ls) => levelscript_to_source(ls),
+    }
+}
+
+fn normal_script_to_source(items: &[TopLevelItem]) -> String {
     let mut output = String::new();
 
     for (i, item) in items.iter().enumerate() {
@@ -85,4 +95,8 @@ pub fn ir_to_source(items: &[TopLevelItem]) -> String {
     }
 
     output
+}
+
+fn levelscript_to_source(ls: &LevelScript) -> String {
+    ls.to_json().unwrap_or_else(|_| "{}".to_string())
 }

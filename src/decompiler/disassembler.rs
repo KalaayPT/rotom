@@ -5,9 +5,22 @@ use crate::compiler::ir::{Arg, IrAction, IrFunction, IrOpcode, TopLevelItem};
 use crate::database::{Command, DatabaseV2};
 
 use super::decomp_error::{DecompileResult, invalid_format};
+use super::levelscript::LevelScript;
+
+#[derive(Debug, Clone)]
+pub enum ScriptOutput {
+    Normal(Vec<TopLevelItem>),
+    Levelscript(LevelScript),
+}
 
 const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
 const END_MOVEMENT_OPCODE: u16 = 0xFE;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScriptType {
+    Normal,
+    Levelscript,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum LabelKind {
@@ -34,6 +47,7 @@ pub struct Disassembler<'a> {
     db: &'a DatabaseV2,
     bytes: Vec<u8>,
 
+    script_type: ScriptType,
     jump_table_end: usize,
     script_slots: BTreeMap<usize, Vec<u32>>,
     symbols: HashMap<usize, LabelInfo>,
@@ -49,6 +63,7 @@ impl<'a> Disassembler<'a> {
         Self {
             db,
             bytes,
+            script_type: ScriptType::Normal,
             jump_table_end: 0,
             script_slots: BTreeMap::new(),
             symbols: HashMap::new(),
@@ -58,11 +73,53 @@ impl<'a> Disassembler<'a> {
         }
     }
 
-    pub fn disassemble(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
+    /// Detect whether this binary is a normal script or a levelscript.
+    ///
+    /// Detection logic:
+    /// 1. If exactly 4 bytes and all zeros → Empty levelscript
+    /// 2. If jump table terminator (0xFD13) is found at 4-byte aligned position → Normal script
+    /// 3. If NO terminator AND len >= 7 AND byte[6] != 0 → Levelscript
+    /// 4. Otherwise → Normal script (fallback for ~3 broken scripts without terminators)
+    fn detect_script_type(&self) -> ScriptType {
+        if self.bytes.len() == 4 && self.bytes.iter().all(|&b| b == 0) {
+            return ScriptType::Levelscript;
+        }
+
+        let has_jump_table_terminator = self.bytes.chunks_exact(4).any(|chunk| {
+            chunk[0] == JUMP_TABLE_END_MARKER[0] && chunk[1] == JUMP_TABLE_END_MARKER[1]
+        });
+
+        if has_jump_table_terminator {
+            return ScriptType::Normal;
+        }
+
+        if self.bytes.len() >= 7 && self.bytes[6] != 0 {
+            return ScriptType::Levelscript;
+        }
+
+        ScriptType::Normal
+    }
+
+    pub fn disassemble(&mut self) -> DecompileResult<ScriptOutput> {
         if self.bytes.len() < 4 {
             return Err(invalid_format("File too small to contain a valid script"));
         }
 
+        self.script_type = self.detect_script_type();
+
+        match self.script_type {
+            ScriptType::Normal => self.disassemble_normal_script().map(ScriptOutput::Normal),
+            ScriptType::Levelscript => self
+                .disassemble_levelscript()
+                .map(ScriptOutput::Levelscript),
+        }
+    }
+
+    fn disassemble_levelscript(&self) -> DecompileResult<LevelScript> {
+        LevelScript::from_bytes(&self.bytes).map_err(invalid_format)
+    }
+
+    fn disassemble_normal_script(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
         self.parse_jump_table()?;
         self.discover_boundaries()?;
         self.disassemble_chunks()
@@ -672,7 +729,7 @@ impl<'a> Disassembler<'a> {
     }
 }
 
-pub fn disassemble_bytes(db: &DatabaseV2, bytes: Vec<u8>) -> DecompileResult<Vec<TopLevelItem>> {
+pub fn disassemble_bytes(db: &DatabaseV2, bytes: Vec<u8>) -> DecompileResult<ScriptOutput> {
     let mut disasm = Disassembler::new(db, bytes);
     disasm.disassemble()
 }

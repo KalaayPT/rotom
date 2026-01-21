@@ -15,14 +15,13 @@ pub use compiler::{
 };
 pub use database::{ConstantDb, DatabaseV2, GameFamily};
 pub use decompiler::{
-    DecompileError, DecompileResult, Disassembler, disassemble_bytes, ir_to_source,
+    DecompileError, DecompileResult, Disassembler, LevelScript, LevelScriptEntry, ScriptOutput,
+    ScriptType, disassemble_bytes, ir_to_source,
 };
 
 use rayon::prelude::*;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-
-use crate::compiler::ir::TopLevelItem;
 
 #[derive(Debug, Serialize)]
 pub struct CompileResult {
@@ -125,7 +124,32 @@ pub fn compile_to_bytes_with_options(
     emitter.emit_script_file(&items, emit_end_marker)
 }
 
-pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<Vec<TopLevelItem>> {
+pub fn compile_levelscript_to_bytes(
+    source: &str,
+    constants: &ConstantDb,
+) -> Result<Vec<u8>, CompileError> {
+    let result = transpiler::transpile_levelscript(source, Some(constants)).map_err(|e| {
+        CompileError::Io {
+            message: format!("Levelscript transpile error: {}", e),
+        }
+    })?;
+
+    let mut bytes = result.levelscript.to_bytes();
+
+    for _ in 0..result.extra_padding {
+        bytes.push(0);
+    }
+
+    Ok(bytes)
+}
+
+fn is_levelscript_file(path: &Path) -> bool {
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    filename.contains("_init_") && !filename.contains("_init_new_game")
+}
+
+pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<ScriptOutput> {
     disassemble_bytes(db, bytes)
 }
 
@@ -152,25 +176,38 @@ fn compile_file_internal(
         .unwrap_or("")
         .to_lowercase();
 
-    let (rotom_source, emit_end_marker) = match extension.as_str() {
-        "rotom" => (source, true),
-        "script" => (transpiler::transpile_dspre(&source, Some(db)), true),
-        "s" => {
-            let result = transpiler::transpile_decomp(&source, Some(db));
-            (result.source, result.emit_end_marker)
-        }
-        _ => {
-            return Err(CompileFileError::IoError(CompileError::Io {
-                message: format!("Unsupported file extension: .{}", extension),
-            }));
-        }
-    };
+    let is_levelscript = is_levelscript_file(input)
+        || (extension == "s" && transpiler::is_levelscript_source(&source));
 
-    let bytes = compile_to_bytes_with_options(&rotom_source, db, constants, emit_end_marker)
-        .map_err(|e| CompileFileError::CompileError {
-            error: e,
-            source: rotom_source.clone(),
-        })?;
+    let bytes = if is_levelscript && extension == "s" {
+        compile_levelscript_to_bytes(&source, constants).map_err(|e| {
+            CompileFileError::CompileError {
+                error: e,
+                source: source.clone(),
+            }
+        })?
+    } else {
+        let (rotom_source, emit_end_marker) = match extension.as_str() {
+            "rotom" => (source, true),
+            "script" => (transpiler::transpile_dspre(&source, Some(db)), true),
+            "s" => {
+                let result = transpiler::transpile_decomp(&source, Some(db));
+                (result.source, result.emit_end_marker)
+            }
+            _ => {
+                return Err(CompileFileError::IoError(CompileError::Io {
+                    message: format!("Unsupported file extension: .{}", extension),
+                }));
+            }
+        };
+
+        compile_to_bytes_with_options(&rotom_source, db, constants, emit_end_marker).map_err(
+            |e| CompileFileError::CompileError {
+                error: e,
+                source: rotom_source.clone(),
+            },
+        )?
+    };
     let size = bytes.len();
 
     std::fs::write(output, &bytes).map_err(|e| {
@@ -359,12 +396,12 @@ fn decompile_file_internal(
         },
     })?;
 
-    let items = decompile_to_ir(bytes, db).map_err(|e| DecompileFailure {
+    let script_output = decompile_to_ir(bytes, db).map_err(|e| DecompileFailure {
         path: input.to_path_buf(),
         error: e,
     })?;
 
-    let source_text = ir_to_source(&items);
+    let source_text = ir_to_source(&script_output);
     let size = source_text.len();
 
     std::fs::write(output, &source_text).map_err(|e| DecompileFailure {
