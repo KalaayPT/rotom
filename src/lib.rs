@@ -321,19 +321,18 @@ pub fn compile_path(
             .map_err(|e| CompileError::Io {
                 message: format!("Failed to read directory '{}': {}", input.display(), e),
             })?
-            .filter_map(|entry| entry.ok())
+            .flatten()
             .map(|entry| entry.path())
             .filter(|path| {
-                if !path.is_file() {
-                    return false;
-                }
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| {
-                        let ext = ext.to_lowercase();
-                        ext == "rotom" || ext == "script" || ext == "s"
-                    })
-                    .unwrap_or(false)
+                path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|ext| {
+                            ext.eq_ignore_ascii_case("rotom")
+                                || ext.eq_ignore_ascii_case("script")
+                                || ext.eq_ignore_ascii_case("s")
+                        })
             })
             .collect();
 
@@ -491,16 +490,13 @@ pub fn decompile_path(
             .map_err(|e| DecompileError::Io {
                 message: format!("Failed to read directory '{}': {}", input.display(), e),
             })?
-            .filter_map(|entry| entry.ok())
+            .flatten()
             .map(|entry| entry.path())
             .filter(|path| {
-                if !path.is_file() {
-                    return false;
-                }
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext.to_lowercase() == "bin")
-                    .unwrap_or(false)
+                path.is_file()
+                    && path.extension().is_none_or(|ext| {
+                        ext.to_str().is_some_and(|s| s.eq_ignore_ascii_case("bin"))
+                    })
             })
             .collect();
 
