@@ -128,12 +128,40 @@ impl<'a> Disassembler<'a> {
         self.disassemble_chunks()
     }
 
+    fn find_jump_table_boundary(&self) -> usize {
+        let mut entry_count = 0;
+        let len = self.bytes.len();
+
+        for i in (0..len).step_by(4) {
+            if i + 4 > len {
+                break;
+            }
+
+            let rel_offset = i32::from_le_bytes([
+                self.bytes[i],
+                self.bytes[i + 1],
+                self.bytes[i + 2],
+                self.bytes[i + 3],
+            ]);
+
+            let abs_offset = (rel_offset + ((i + 4) as i32)) as usize;
+
+            if 0 <= (abs_offset as isize) && abs_offset < len {
+                entry_count += 1;
+            } else {
+                break;
+            }
+        }
+
+        entry_count * 4
+    }
+
     fn parse_jump_table(&mut self) -> DecompileResult<()> {
         let marker_pos = self
             .bytes
             .windows(2)
             .position(|w| w == JUMP_TABLE_END_MARKER)
-            .ok_or_else(|| invalid_format("Jump table end marker (0xFD13) not found"))?;
+            .unwrap_or_else(|| self.find_jump_table_boundary());
 
         self.jump_table_end = marker_pos;
 
