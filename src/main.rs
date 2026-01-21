@@ -272,20 +272,18 @@ fn decompile(
         db.meta.version
     );
 
-    // Determine output path
     let output_path = match output {
         Some(p) => p.clone(),
         None => {
             if input.is_dir() {
                 input.clone()
             } else {
-                input.with_extension("rotom")
+                input.parent().map(|p| p.to_path_buf()).unwrap_or_default()
             }
         }
     };
 
     println!("\nDecompiling: {}", input.display());
-    println!("Output to: {}", output_path.display());
 
     let result = decompile_path(input, &output_path, &db)?;
 

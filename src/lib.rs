@@ -252,9 +252,14 @@ fn generate_output_path_compile(input: &Path, output_dir: &Path) -> PathBuf {
     output_dir.join(format!("{}.bin", stem.to_string_lossy()))
 }
 
-fn generate_output_path_decompile(input: &Path, output_dir: &Path) -> PathBuf {
+fn generate_output_path_decompile(
+    input: &Path,
+    output_dir: &Path,
+    is_levelscript: bool,
+) -> PathBuf {
     let stem = input.file_stem().unwrap_or_default();
-    output_dir.join(format!("{}.rotom", stem.to_string_lossy()))
+    let extension = if is_levelscript { "json" } else { "rotom" };
+    output_dir.join(format!("{}.{}", stem.to_string_lossy(), extension))
 }
 
 pub fn compile_path(
@@ -386,7 +391,7 @@ pub fn compile_path(
 
 fn decompile_file_internal(
     input: &Path,
-    output: &Path,
+    output_dir: Option<&Path>,
     db: &DatabaseV2,
 ) -> Result<DecompileFileResult, DecompileFailure> {
     let bytes = std::fs::read(input).map_err(|e| DecompileFailure {
@@ -401,29 +406,43 @@ fn decompile_file_internal(
         error: e,
     })?;
 
+    let is_levelscript = matches!(script_output, ScriptOutput::Levelscript(_));
+
+    let output_path = match output_dir {
+        Some(dir) => generate_output_path_decompile(input, dir, is_levelscript),
+        None => {
+            let extension = if is_levelscript { "json" } else { "rotom" };
+            input.with_extension(extension)
+        }
+    };
+
     let source_text = ir_to_source(&script_output);
     let size = source_text.len();
 
-    std::fs::write(output, &source_text).map_err(|e| DecompileFailure {
+    std::fs::write(&output_path, &source_text).map_err(|e| DecompileFailure {
         path: input.to_path_buf(),
         error: DecompileError::Io {
-            message: format!("Failed to write output file '{}': {}", output.display(), e),
+            message: format!(
+                "Failed to write output file '{}': {}",
+                output_path.display(),
+                e
+            ),
         },
     })?;
 
     Ok(DecompileFileResult {
         input: input.to_path_buf(),
-        output: output.to_path_buf(),
+        output: output_path,
         size,
     })
 }
 
 pub fn decompile_file(
     input: &Path,
-    output: &Path,
+    output_dir: Option<&Path>,
     db: &DatabaseV2,
 ) -> DecompileResult<DecompileFileResult> {
-    decompile_file_internal(input, output, db).map_err(|f| f.error)
+    decompile_file_internal(input, output_dir, db).map_err(|f| f.error)
 }
 
 pub fn decompile_path(
@@ -432,13 +451,13 @@ pub fn decompile_path(
     db: &DatabaseV2,
 ) -> Result<BatchDecompileResult, DecompileError> {
     if input.is_file() {
-        let output_path = if output.is_dir() {
-            generate_output_path_decompile(input, output)
+        let output_dir = if output.is_dir() {
+            Some(output)
         } else {
-            output.to_path_buf()
+            output.parent()
         };
 
-        match decompile_file_internal(input, &output_path, db) {
+        match decompile_file_internal(input, output_dir, db) {
             Ok(result) => Ok(BatchDecompileResult {
                 successes: vec![result],
                 failures: vec![],
@@ -493,10 +512,7 @@ pub fn decompile_path(
 
         let results: Vec<Result<DecompileFileResult, DecompileFailure>> = files
             .par_iter()
-            .map(|input_file| {
-                let output_path = generate_output_path_decompile(input_file, output);
-                decompile_file_internal(input_file, &output_path, db)
-            })
+            .map(|input_file| decompile_file_internal(input_file, Some(output), db))
             .collect();
 
         let mut successes = Vec::new();
