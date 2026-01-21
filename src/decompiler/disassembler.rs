@@ -79,7 +79,8 @@ impl<'a> Disassembler<'a> {
     /// 1. If exactly 4 bytes and all zeros → Empty levelscript
     /// 2. If jump table terminator (0xFD13) is found at 4-byte aligned position → Normal script
     /// 3. If NO terminator AND len >= 7 AND byte[6] != 0 → Levelscript
-    /// 4. Otherwise → Normal script (fallback for ~3 broken scripts without terminators)
+    /// 4. If NO terminator AND bytes 4 and 5 are zero → Levelscript (cant be a valid address or command)
+    /// 5. Otherwise → Normal script (fallback for ~3 broken scripts without terminators)
     fn detect_script_type(&self) -> ScriptType {
         if self.bytes.len() == 4 && self.bytes.iter().all(|&b| b == 0) {
             return ScriptType::Levelscript;
@@ -93,7 +94,9 @@ impl<'a> Disassembler<'a> {
             return ScriptType::Normal;
         }
 
-        if self.bytes.len() >= 7 && self.bytes[6] != 0 {
+        if self.bytes.len() >= 7
+            && (self.bytes[6] != 0 || (self.bytes[5] == 0 && self.bytes[4] == 0))
+        {
             return ScriptType::Levelscript;
         }
 
