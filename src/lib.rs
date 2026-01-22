@@ -143,6 +143,14 @@ pub fn compile_levelscript_to_bytes(
     Ok(bytes)
 }
 
+pub fn compile_levelscript_json_to_bytes(source: &str) -> Result<Vec<u8>, CompileError> {
+    let levelscript = LevelScript::from_json(source).map_err(|e| CompileError::Io {
+        message: format!("Failed to parse levelscript JSON: {}", e),
+    })?;
+
+    Ok(levelscript.to_bytes())
+}
+
 fn is_levelscript_file(path: &Path) -> bool {
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
@@ -179,7 +187,12 @@ fn compile_file_internal(
     let is_levelscript = is_levelscript_file(input)
         || (extension == "s" && transpiler::is_levelscript_source(&source));
 
-    let bytes = if is_levelscript && extension == "s" {
+    let bytes = if extension == "json" {
+        compile_levelscript_json_to_bytes(&source).map_err(|e| CompileFileError::CompileError {
+            error: e,
+            source: source.clone(),
+        })?
+    } else if is_levelscript && extension == "s" {
         compile_levelscript_to_bytes(&source, constants).map_err(|e| {
             CompileFileError::CompileError {
                 error: e,
@@ -332,6 +345,7 @@ pub fn compile_path(
                             ext.eq_ignore_ascii_case("rotom")
                                 || ext.eq_ignore_ascii_case("script")
                                 || ext.eq_ignore_ascii_case("s")
+                                || ext.eq_ignore_ascii_case("json")
                         })
             })
             .collect();
@@ -339,7 +353,7 @@ pub fn compile_path(
         if files.is_empty() {
             return Err(CompileError::Io {
                 message: format!(
-                    "No supported script files (.rotom, .script, .s) found in directory: {}",
+                    "No supported script files (.rotom, .script, .s, .json) found in directory: {}",
                     input.display()
                 ),
             });
