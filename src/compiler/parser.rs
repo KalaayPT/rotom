@@ -103,11 +103,10 @@ impl<'a> Parser<'a> {
                                     first_header.name
                                 ),
                             ));
-                        } else {
-                            // New function - add it
-                            function_headers_by_name.insert(first_header.name.clone(), items.len());
-                            items.push(stmt);
                         }
+                        // New function - add it
+                        function_headers_by_name.insert(first_header.name.clone(), items.len());
+                        items.push(stmt);
                     } else {
                         items.push(stmt);
                     }
@@ -302,13 +301,13 @@ impl<'a> Parser<'a> {
             body.push(Spanned {
                 node: StatementKind::EndMovement,
                 span,
-            })
+            });
         } else {
             return Err(parse_error(
                 self.current_token.span.clone(),
                 "Expected 'EndMovement' to close action",
             ));
-        };
+        }
         let end = self.current_token.span.start;
         Ok(Spanned {
             node: StatementKind::Action { name, body },

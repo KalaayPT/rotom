@@ -281,15 +281,13 @@ impl DatabaseV2 {
             return Ok(cmd);
         }
 
-        if let Some(id_str) = name.strip_prefix("ScrCmd_") {
-            if let Ok(id) = i32::from_str_radix(id_str, 16) {
-                if let Some((_, cmd)) = self.commands.iter().find(|(_, cmd)| {
+        if let Some(id_str) = name.strip_prefix("ScrCmd_")
+            && let Ok(id) = i32::from_str_radix(id_str, 16)
+                && let Some((_, cmd)) = self.commands.iter().find(|(_, cmd)| {
                     cmd.id == Some(id as u16) && cmd.cmd_type == CommandType::ScriptCmd
                 }) {
                     return Ok(cmd);
                 }
-            }
-        }
 
         Err(database_error(format!(
             "Command '{}' not found in database",
@@ -380,13 +378,11 @@ impl Command {
     pub fn get_variant_params(&self, mode: u8) -> &[ParamDef] {
         if let Some(variants) = &self.variants {
             for variant in variants {
-                if let Some(first_param) = variant.params.first() {
-                    if let Some(const_val) = &first_param.const_value {
-                        if const_val.parse::<u8>().ok() == Some(mode) {
+                if let Some(first_param) = variant.params.first()
+                    && let Some(const_val) = &first_param.const_value
+                        && const_val.parse::<u8>().ok() == Some(mode) {
                             return &variant.params;
                         }
-                    }
-                }
             }
         }
         &self.params
@@ -431,7 +427,7 @@ impl ConstantDb {
 
         for (id_str, name) in &db.comparison_operators {
             if let Ok(id) = id_str.parse::<i32>() {
-                let normalized = name.replace("/", "_");
+                let normalized = name.replace('/', "_");
                 self.constants.insert(normalized, id);
                 count += 1;
             }
@@ -497,7 +493,7 @@ impl ConstantDb {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
+            if path.extension().is_some_and(|e| e == "json") {
                 let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if filename.contains("_v2") || filename == "commands.json" {
                     continue;
@@ -570,11 +566,10 @@ impl ConstantDb {
             return Some(*val);
         }
 
-        if let Some(symbols) = &self.uxie_symbols {
-            if let Some(val) = symbols.resolve_constant(name) {
+        if let Some(symbols) = &self.uxie_symbols
+            && let Some(val) = symbols.resolve_constant(name) {
                 return Some(val as i32);
             }
-        }
 
         None
     }
@@ -583,8 +578,7 @@ impl ConstantDb {
         let uxie_count = self
             .uxie_symbols
             .as_ref()
-            .map(|s| s.get_all_defines().len())
-            .unwrap_or(0);
+            .map_or(0, |s| s.get_all_defines().len());
         self.constants.len() + uxie_count
     }
 

@@ -123,7 +123,7 @@ impl IrFunction {
 }
 
 /// Condition codes for comparison jumps
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Condition {
     Less = 0,         // 0x00
@@ -134,8 +134,8 @@ pub enum Condition {
     Different = 5,    // 0x05
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum OperandType {
+#[derive(Debug, PartialEq, Eq)]
+pub enum OperandType {
     Variable, // VarPointer (0x8000)
     Value,    // raw number (5)
 }

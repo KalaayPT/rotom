@@ -21,6 +21,12 @@ pub struct SymbolTable {
     scopes: Vec<HashMap<String, (SymbolType, Range<usize>)>>,
 }
 
+impl Default for SymbolTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SymbolTable {
     pub fn new() -> SymbolTable {
         SymbolTable {
@@ -49,7 +55,7 @@ impl SymbolTable {
                 return Ok(());
             }
             return Err(analysis_error(
-                span.clone(),
+                span,
                 format!(
                     "Symbol '{}' is already defined globally. (Previous definition at {:?})",
                     name, original_span
@@ -69,7 +75,7 @@ impl SymbolTable {
 
         if let Some((_, original_span)) = current_scope.get(&name) {
             return Err(analysis_error(
-                span.clone(),
+                span,
                 format!(
                     "Symbol '{}' is already defined in this scope. (Previous definition at {:?})",
                     name, original_span
@@ -93,6 +99,12 @@ impl SymbolTable {
 pub struct Analyzer<'a> {
     pub symbols: SymbolTable,
     constants: Option<&'a ConstantDb>,
+}
+
+impl Default for Analyzer<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<'a> Analyzer<'a> {
@@ -294,11 +306,10 @@ impl<'a> Analyzer<'a> {
         }
 
         // 2. Fallback: Check constants DB
-        if let Some(db) = self.constants {
-            if let Some(value) = db.get(name) {
+        if let Some(db) = self.constants
+            && let Some(value) = db.get(name) {
                 return Some(SymbolType::Constant(value));
             }
-        }
 
         None
     }

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::ops::Range;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenType {
     Function, // "function"
     Public,   // "public"

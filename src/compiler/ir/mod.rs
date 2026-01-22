@@ -1,7 +1,7 @@
 //! Intermediate Representation (IR) for the Rotom compiler
 //!
 //! This module contains:
-//! - Core IR types (IrOpcode, Arg, IrFunction, IrAction, TopLevelItem)
+//! - Core IR types (`IrOpcode`, Arg, `IrFunction`, `IrAction`, `TopLevelItem`)
 //! - The Lowerer that transforms AST → IR
 
 mod lowerer;

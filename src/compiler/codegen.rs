@@ -90,7 +90,7 @@ impl<'a> Emitter<'a> {
                 }
                 TopLevelItem::Action(ir_action) => {
                     // actions need to be 4-byte aligned
-                    while self.pc % 4 != 0 {
+                    while !self.pc.is_multiple_of(4) {
                         self.emit_u8(0);
                     }
                     self.action_offsets.insert(ir_action.name.clone(), self.pc);
@@ -114,7 +114,7 @@ impl<'a> Emitter<'a> {
             let offset_bytes = (relative as u32).to_le_bytes();
             self.output[reloc.offset..reloc.offset + 4].copy_from_slice(&offset_bytes);
         }
-        while self.output.len() % 4 != 0 {
+        while !self.output.len().is_multiple_of(4) {
             self.emit_u8(0);
         }
         Ok(self.output.clone())
@@ -126,7 +126,7 @@ impl<'a> Emitter<'a> {
             }
             IrOpcode::Command { name, args } => {
                 let cmd = self.db.get_command(name)?;
-                self.emit_command(&name, cmd, args)?;
+                self.emit_command(name, cmd, args)?;
             }
         }
         Ok(())
@@ -154,11 +154,7 @@ impl<'a> Emitter<'a> {
                             )));
                         }
                     }
-                } else if name == "EndMovement" {
-                    0
-                } else {
-                    1
-                };
+                } else { u16::from(name != "EndMovement") };
                 self.emit_u16(param);
             }
         }

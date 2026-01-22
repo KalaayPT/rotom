@@ -23,12 +23,12 @@ impl<'a> Lexer<'a> {
     fn peek_next(&self) -> Option<char> {
         let mut cloned = self.chars.clone();
         cloned.next()?;
-        Some(cloned.next()?)
+        cloned.next()
     }
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             match self.chars.peek() {
-                Some(' ') | Some('\t') | Some('\r') => {
+                Some(' ' | '\t' | '\r') => {
                     self.read_char();
                 }
                 Some('/') => match self.peek_next() {
@@ -37,7 +37,7 @@ impl<'a> Lexer<'a> {
                     _ => return,
                 },
                 _ => return,
-            };
+            }
         }
     }
     fn skip_line(&mut self) {
@@ -55,13 +55,12 @@ impl<'a> Lexer<'a> {
         loop {
             match self.chars.peek() {
                 Some('*') => {
-                    if let Some('/') = self.peek_next() {
+                    if self.peek_next() == Some('/') {
                         self.read_char();
                         self.read_char();
                         break;
-                    } else {
-                        self.read_char();
                     }
+                    self.read_char();
                 }
                 Some(_) => {
                     self.read_char();
@@ -105,7 +104,7 @@ impl<'a> Lexer<'a> {
             }
             Some(':') => TokenType::Colon,
             Some('=') => {
-                if let Some('=') = self.chars.peek() {
+                if matches!(self.chars.peek(), Some('=')) {
                     self.read_char();
                     TokenType::Equal
                 } else {
@@ -115,7 +114,7 @@ impl<'a> Lexer<'a> {
             Some('(') => TokenType::LParen,
             Some(')') => TokenType::RParen,
             Some('&') => {
-                if let Some('&') = self.chars.peek() {
+                if matches!(self.chars.peek(), Some('&')) {
                     self.read_char();
                     TokenType::And
                 } else {
@@ -123,7 +122,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             Some('|') => {
-                if let Some('|') = self.chars.peek() {
+                if matches!(self.chars.peek(), Some('|')) {
                     self.read_char();
                     TokenType::Or
                 } else {
@@ -131,7 +130,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             Some('!') => {
-                if let Some('=') = self.chars.peek() {
+                if matches!(self.chars.peek(), Some('=')) {
                     self.read_char();
                     TokenType::NotEqual
                 } else {
@@ -139,7 +138,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             Some('<') => {
-                if let Some('=') = self.chars.peek() {
+                if matches!(self.chars.peek(), Some('=')) {
                     self.read_char();
                     TokenType::LesserEqual
                 } else {
@@ -147,7 +146,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             Some('>') => {
-                if let Some('=') = self.chars.peek() {
+                if matches!(self.chars.peek(), Some('=')) {
                     self.read_char();
                     TokenType::GreaterEqual
                 } else {
@@ -179,34 +178,34 @@ impl<'a> Lexer<'a> {
             self.read_char();
         }
         match name.as_str() {
-            "function" => return TokenType::Function,
-            "public" => return TokenType::Public,
-            "action" => return TokenType::Action,
-            "alias" => return TokenType::Alias,
-            "global" => return TokenType::Global,
-            "true" => return TokenType::True,
-            "false" => return TokenType::False,
-            "if" => return TokenType::If,
-            "then" => return TokenType::Then,
-            "else" => return TokenType::Else,
-            "endif" => return TokenType::EndIf,
-            "while" => return TokenType::While,
-            "do" => return TokenType::Do,
-            "endwhile" => return TokenType::EndWhile,
-            "End" => return TokenType::End,
-            "EndMovement" => return TokenType::EndMovement,
-            "Return" => return TokenType::Return,
-            "Jump" => return TokenType::Jump,
-            "and" => return TokenType::And,
-            "or" => return TokenType::Or,
-            "not" => return TokenType::Not,
-            "as" => return TokenType::As,
-            _ => return TokenType::Identifier(name),
+            "function" => TokenType::Function,
+            "public" => TokenType::Public,
+            "action" => TokenType::Action,
+            "alias" => TokenType::Alias,
+            "global" => TokenType::Global,
+            "true" => TokenType::True,
+            "false" => TokenType::False,
+            "if" => TokenType::If,
+            "then" => TokenType::Then,
+            "else" => TokenType::Else,
+            "endif" => TokenType::EndIf,
+            "while" => TokenType::While,
+            "do" => TokenType::Do,
+            "endwhile" => TokenType::EndWhile,
+            "End" => TokenType::End,
+            "EndMovement" => TokenType::EndMovement,
+            "Return" => TokenType::Return,
+            "Jump" => TokenType::Jump,
+            "and" => TokenType::And,
+            "or" => TokenType::Or,
+            "not" => TokenType::Not,
+            "as" => TokenType::As,
+            _ => TokenType::Identifier(name),
         }
     }
     pub fn read_integer(&mut self, first: char) -> TokenType {
         if first == '0'
-            && let Some('x') = self.chars.peek()
+            && matches!(self.chars.peek(), Some('x'))
         {
             self.read_char();
             let mut hex_string = String::new();

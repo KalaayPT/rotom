@@ -1,7 +1,7 @@
 //! AST to IR lowering
 //!
 //! The Lowerer transforms parsed AST into IR opcodes, handling:
-//! - Control flow (if/else, while) → CompareVarValue + GoToIf
+//! - Control flow (if/else, while) → `CompareVarValue` + `GoToIf`
 //! - Macro expansion with parameter substitution
 //! - Default parameter application
 //! - Symbol resolution (aliases, constants, labels)
@@ -154,7 +154,7 @@ impl<'a> Lowerer<'a> {
                 }
                 self.output.push(IrOpcode::Command {
                     name: "GoTo".to_string(),
-                    args: vec![Arg::Pointer(label_start.clone())],
+                    args: vec![Arg::Pointer(label_start)],
                 });
                 self.output.push(IrOpcode::Label(label_end));
             }
@@ -204,7 +204,7 @@ impl<'a> Lowerer<'a> {
                 return self.expand_macro(command, args, macro_depth);
             }
 
-            let args_with_defaults = self.apply_defaults(command, &cmd, args)?;
+            let args_with_defaults = self.apply_defaults(command, cmd, args)?;
             let resolved_args = self.resolve_args(&args_with_defaults)?;
             self.output.push(IrOpcode::Command {
                 name: command.to_string(),
@@ -230,14 +230,13 @@ impl<'a> Lowerer<'a> {
         let params: &[ParamDef] = if let Some(variants) = &cmd.variants {
             let mut matched: &[ParamDef] = &cmd.params;
 
-            if let Some(first_arg) = args.first() {
-                if let Ok(mode) = self.resolve_arg_to_int(first_arg) {
+            if let Some(first_arg) = args.first()
+                && let Ok(mode) = self.resolve_arg_to_int(first_arg) {
                     let variant_params = cmd.get_variant_params(mode as u8);
                     if !variant_params.is_empty() {
                         matched = variant_params;
                     }
                 }
-            }
 
             if std::ptr::eq(matched, &cmd.params as &[ParamDef]) {
                 for variant in variants {
@@ -249,17 +248,14 @@ impl<'a> Lowerer<'a> {
                                 &variant.params
                             };
                             break;
-                        } else {
-                            if let Ok(true) =
-                                self.evaluate_condition_with_arg_count(condition, args, &cmd.params)
-                            {
-                                matched = if variant.params.is_empty() {
-                                    &cmd.params
-                                } else {
-                                    &variant.params
-                                };
-                                break;
-                            }
+                        } else if matches!(self.evaluate_condition_with_arg_count(condition, args, &cmd.params), Ok(true))
+                        {
+                            matched = if variant.params.is_empty() {
+                                &cmd.params
+                            } else {
+                                &variant.params
+                            };
+                            break;
                         }
                     }
                 }
@@ -447,11 +443,10 @@ impl<'a> Lowerer<'a> {
                     return Ok(*val);
                 }
 
-                if let Some(db) = self.constants {
-                    if let Some(val) = db.get(name) {
+                if let Some(db) = self.constants
+                    && let Some(val) = db.get(name) {
                         return Ok(val);
                     }
-                }
 
                 Err(lowering_error(format!(
                     "Could not resolve '{}' to an integer for macro condition",
@@ -596,12 +591,11 @@ impl<'a> Lowerer<'a> {
 
         for (i, param) in params.iter().enumerate() {
             let placeholder = format!("${}", param.name);
-            if result.contains(&placeholder) {
-                if i < resolved_args.len() {
+            if result.contains(&placeholder)
+                && i < resolved_args.len() {
                     let formatted = self.format_arg_for_substitution(&resolved_args[i])?;
                     result = result.replace(&placeholder, &formatted);
                 }
-            }
         }
 
         Ok(result)
@@ -609,9 +603,7 @@ impl<'a> Lowerer<'a> {
 
     fn parse_expansion_line(&self, line: &str) -> ParseResult<Statement> {
         if line.trim().is_empty() {
-            return Err(lowering_error(format!(
-                "Macro expansion produced empty line"
-            )));
+            return Err(lowering_error("Macro expansion produced empty line".to_string()));
         }
 
         let line_with_newline = format!("{}\n", line.trim());
@@ -680,17 +672,14 @@ impl<'a> Lowerer<'a> {
                 match self.global_symbols.resolve(name) {
                     Some(SymbolType::Variable(id)) => return Ok(Arg::Value(*id)),
                     Some(SymbolType::Constant(id)) => return Ok(Arg::Value(*id)),
-                    Some(SymbolType::Function(_))
-                    | Some(SymbolType::Label)
-                    | Some(SymbolType::Action) => return Ok(Arg::Pointer(name.clone())),
+                    Some(SymbolType::Function(_) | SymbolType::Label | SymbolType::Action) => return Ok(Arg::Pointer(name.clone())),
                     None => {}
                 }
 
-                if let Some(db) = self.constants {
-                    if let Some(val) = db.get(name) {
+                if let Some(db) = self.constants
+                    && let Some(val) = db.get(name) {
                         return Ok(Arg::Value(val));
                     }
-                }
 
                 Err(lowering_error(format!(
                     "Symbol '{}' could not be resolved (analysis should have caught this)",
@@ -757,7 +746,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn get_inverted_condition(&self, token: &TokenType, swapped: bool) -> Condition {
-        use Condition::*;
+        use Condition::{Different, Equal, LessEqual, GreaterEqual, Less, Greater};
 
         let effective_op = if swapped {
             match token {

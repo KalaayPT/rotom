@@ -69,7 +69,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         let trimmed = line.trim();
 
         // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("@") {
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
             continue;
         }
 
@@ -97,14 +97,14 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
 
         if let Some(ref label) = current_label {
             let cmd_name = trimmed
-                .split(|c| c == ' ' || c == '\t')
+                .split([' ', '\t'])
                 .next()
                 .unwrap_or("");
             
-            let is_movement = if !movement_commands.is_empty() {
-                movement_commands.contains(cmd_name)
-            } else {
+            let is_movement = if movement_commands.is_empty() {
                 lookahead_for_end_movement(&lines, line_idx)
+            } else {
+                movement_commands.contains(cmd_name)
             };
             
             if is_movement {
@@ -121,7 +121,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
     for (slot_idx, name) in jump_table.iter().enumerate() {
         function_to_slots
             .entry(name.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(slot_idx);
     }
 
@@ -164,15 +164,15 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         }
 
         // Skip preprocessor directives
-        if raw_trimmed.starts_with("#include") || raw_trimmed.starts_with("#") {
+        if raw_trimmed.starts_with("#include") || raw_trimmed.starts_with('#') {
             continue;
         }
 
         // Handle assembly comments (full line)
-        if raw_trimmed.starts_with("@") || raw_trimmed.starts_with("//") {
+        if raw_trimmed.starts_with('@') || raw_trimmed.starts_with("//") {
             // Keep regular comments, and convert @ comments to //
-            let comment = if raw_trimmed.starts_with("@") {
-                raw_trimmed.replacen("@", "//", 1)
+            let comment = if raw_trimmed.starts_with('@') {
+                raw_trimmed.replacen('@', "//", 1)
             } else {
                 raw_trimmed.to_string()
             };
@@ -185,7 +185,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         let (trimmed, inline_comment) = if let Some(idx) = raw_trimmed.find('@') {
             (
                 raw_trimmed[..idx].trim(),
-                Some(raw_trimmed[idx..].replace("@", "//")),
+                Some(raw_trimmed[idx..].replace('@', "//")),
             )
         } else {
             (raw_trimmed, None)
@@ -206,7 +206,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         }
 
         // Skip other assembler directives
-        if trimmed.starts_with(".") {
+        if trimmed.starts_with('.') {
             continue;
         }
 
@@ -273,23 +273,20 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         }
 
         output.push_str("    ");
-        if let Some(cmd_end_idx) = trimmed.find(|c| c == ' ' || c == '\t') {
+        if let Some(cmd_end_idx) = trimmed.find([' ', '\t']) {
             let mut cmd_name = &trimmed[..cmd_end_idx];
             let args = trimmed[cmd_end_idx..].trim();
 
-            if let Some(db) = db {
-                if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
-                    if let Ok(id) = u16::from_str_radix(id_str, 16) {
-                        if let Some((name, _)) = db
+            if let Some(db) = db
+                && let Some(id_str) = cmd_name.strip_prefix("ScrCmd_")
+                    && let Ok(id) = u16::from_str_radix(id_str, 16)
+                        && let Some((name, _)) = db
                             .commands
                             .iter()
                             .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
                         {
                             cmd_name = name;
                         }
-                    }
-                }
-            }
 
             if args.is_empty() {
                 output.push_str(cmd_name);
@@ -308,19 +305,16 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
             }
         } else {
             let mut cmd_name = trimmed;
-            if let Some(db) = db {
-                if let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") {
-                    if let Ok(id) = u16::from_str_radix(id_str, 16) {
-                        if let Some((name, _)) = db
+            if let Some(db) = db
+                && let Some(id_str) = cmd_name.strip_prefix("ScrCmd_")
+                    && let Ok(id) = u16::from_str_radix(id_str, 16)
+                        && let Some((name, _)) = db
                             .commands
                             .iter()
                             .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
                         {
                             cmd_name = name;
                         }
-                    }
-                }
-            }
             output.push_str(cmd_name);
         }
         if let Some(ref c) = inline_comment {
@@ -372,7 +366,7 @@ fn reorder_decomp_args_to_binary(
         return args_str.to_string();
     }
 
-    let args: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
+    let args: Vec<&str> = args_str.split(',').map(str::trim).collect();
 
     let req_count = required_indices.len();
     let total_params = params.len();
@@ -436,7 +430,7 @@ fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
     for i in start_idx..std::cmp::min(start_idx + MAX_LOOKAHEAD, lines.len()) {
         let trimmed = lines[i].trim();
         
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("@") {
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
             continue;
         }
         
@@ -449,7 +443,7 @@ fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
         }
         
         let cmd_name = trimmed
-            .split(|c| c == ' ' || c == '\t')
+            .split([' ', '\t'])
             .next()
             .unwrap_or("");
         

@@ -136,17 +136,15 @@ fn compile(
     let mut constants = ConstantDb::new();
     let const_count = constants.load_from_db(&db);
 
-    if let Some(db_dir) = db_path.parent() {
-        if let Ok(dir_count) = constants.load_directory(db_dir) {
-            if !json && dir_count > 0 {
+    if let Some(db_dir) = db_path.parent()
+        && let Ok(dir_count) = constants.load_directory(db_dir)
+            && !json && dir_count > 0 {
                 println!(
                     "Loaded {} additional constants from {}",
                     dir_count,
                     db_dir.display()
                 );
             }
-        }
-    }
 
     if !json {
         println!("Loaded {} built-in constants", const_count);
@@ -278,7 +276,7 @@ fn decompile(
             if input.is_dir() {
                 input.clone()
             } else {
-                input.parent().map(|p| p.to_path_buf()).unwrap_or_default()
+                input.parent().map(std::path::Path::to_path_buf).unwrap_or_default()
             }
         }
     };
@@ -331,7 +329,7 @@ fn decompile(
 
 fn run_test(db_path: &PathBuf) {
     let start = std::time::Instant::now();
-    let _old_input = r#"
+    let _old_input = r"
 // === Global Aliases ===
 alias 0x800C as RESULT
 alias 0x8000 as PLAYER_X
@@ -390,7 +388,7 @@ action WalkPattern
     WalkNormalSouth 2
     FaceNorth
 EndMovement
-"#;
+";
     // load db
     let db = match DatabaseV2::load(db_path) {
         Ok(db) => db,

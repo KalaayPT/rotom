@@ -46,7 +46,7 @@ pub fn transpile_levelscript(
 
         if let Some(rest) = trimmed.strip_prefix(".long") {
             let value_str = rest.trim();
-            if let Ok(0) = parse_u32_value(value_str) {
+            if parse_u32_value(value_str) == Ok(0) {
                 extra_padding += 4;
             }
             continue;
@@ -54,7 +54,7 @@ pub fn transpile_levelscript(
 
         if let Some(rest) = trimmed.strip_prefix(".short") {
             let value_str = rest.trim();
-            if let Ok(0) = parse_u16_value(value_str, constants) {
+            if parse_u16_value(value_str, constants) == Ok(0) {
                 extra_padding += 2;
             }
             continue;
@@ -62,7 +62,7 @@ pub fn transpile_levelscript(
 
         if let Some(rest) = trimmed.strip_prefix(".byte") {
             let value_str = rest.trim();
-            if let Ok(0) = parse_u8_value(value_str) {
+            if parse_u8_value(value_str) == Ok(0) {
                 extra_padding += 1;
             }
             continue;
@@ -215,7 +215,7 @@ fn parse_frame_table_entry(
     args: &str,
     constants: Option<&ConstantDb>,
 ) -> Result<(u16, u16, u16), String> {
-    let parts: Vec<&str> = args.split(',').map(|s| s.trim()).collect();
+    let parts: Vec<&str> = args.split(',').map(str::trim).collect();
 
     if parts.len() != 3 {
         return Err(format!(

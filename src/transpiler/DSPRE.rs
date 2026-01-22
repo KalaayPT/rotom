@@ -119,7 +119,7 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
         }
 
         // Check for UseScript_#N (DSPRE workaround for jumping to scripts)
-        if let Some(caps) = RE_USE_SCRIPT.captures(&line) {
+        if let Some(caps) = RE_USE_SCRIPT.captures(line) {
             let id: u32 = caps[1].parse().unwrap();
             // Preserve leading whitespace
             let leading_ws = &line[..line.len() - line.trim_start().len()];
@@ -172,7 +172,7 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
 }
 
 /// Convert DSPRE space-separated arguments to comma-separated
-/// e.g., "    WaitTime 8 0x800C" -> "    WaitTime 8, 0x800C"
+/// e.g., "    `WaitTime` 8 0x800C" -> "    `WaitTime` 8, 0x800C"
 /// Only converts if there are no commas already present (to avoid double-comma issues)
 fn convert_space_to_comma_args(line: &str) -> String {
     let trimmed = line.trim();

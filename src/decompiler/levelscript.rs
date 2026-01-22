@@ -61,7 +61,7 @@ pub enum LevelScriptEntry {
 /// JSON for easy editing or to binary for the game.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LevelScript {
-    /// The trigger entries (on_transition, on_load, on_resume, on_var_equals)
+    /// The trigger entries (`on_transition`, `on_load`, `on_resume`, `on_var_equals`)
     pub entries: Vec<LevelScriptEntry>,
 }
 
@@ -76,7 +76,7 @@ impl LevelScript {
         self.entries.is_empty()
     }
 
-    /// Check if this levelscript has any var_equals conditions
+    /// Check if this levelscript has any `var_equals` conditions
     /// (which require a frame table in binary format)
     pub fn has_var_conditions(&self) -> bool {
         self.entries

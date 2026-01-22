@@ -19,7 +19,7 @@ pub use decompiler::{
     ScriptType, disassemble_bytes, ir_to_source,
 };
 
-use rayon::prelude::*;
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -407,12 +407,11 @@ fn decompile_file_internal(
 
     let is_levelscript = matches!(script_output, ScriptOutput::Levelscript(_));
 
-    let output_path = match output_dir {
-        Some(dir) => generate_output_path_decompile(input, dir, is_levelscript),
-        None => {
-            let extension = if is_levelscript { "json" } else { "rotom" };
-            input.with_extension(extension)
-        }
+    let output_path = if let Some(dir) = output_dir {
+        generate_output_path_decompile(input, dir, is_levelscript)
+    } else {
+        let extension = if is_levelscript { "json" } else { "rotom" };
+        input.with_extension(extension)
     };
 
     let source_text = ir_to_source(&script_output);

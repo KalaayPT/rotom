@@ -16,7 +16,7 @@ pub enum ScriptOutput {
 const JUMP_TABLE_END_MARKER: [u8; 2] = [0x13, 0xFD];
 const END_MOVEMENT_OPCODE: u16 = 0xFE;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptType {
     Normal,
     Levelscript,
@@ -188,7 +188,7 @@ impl<'a> Disassembler<'a> {
 
             self.script_slots
                 .entry(abs_offset)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(slot_id);
         }
 
@@ -223,19 +223,16 @@ impl<'a> Disassembler<'a> {
             if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
                 let cmd_size = self.command_size_at(pc, cmd);
 
-                if self.is_jump_command(name) {
-                    if let Some(target) = self.extract_jump_target(pc, cmd) {
+                if self.is_jump_command(name)
+                    && let Some(target) = self.extract_jump_target(pc, cmd) {
                         pending_jump_targets.push(target);
                     }
-                }
 
-                if self.is_action_reference(name) {
-                    if let Some(action_offset) = self.extract_action_offset(pc, cmd) {
-                        if action_offset < self.bytes.len() && action_offset % 4 == 0 {
+                if self.is_action_reference(name)
+                    && let Some(action_offset) = self.extract_action_offset(pc, cmd)
+                        && action_offset < self.bytes.len() && action_offset % 4 == 0 {
                             self.action_offsets.insert(action_offset);
                         }
-                    }
-                }
 
                 pc += 2 + cmd_size;
             } else {
@@ -245,15 +242,10 @@ impl<'a> Disassembler<'a> {
 
         for target in pending_jump_targets {
             if target >= code_start && target < self.bytes.len() {
-                if !self.symbols.contains_key(&target) {
-                    self.symbols.insert(
-                        target,
-                        LabelInfo {
+                self.symbols.entry(target).or_insert_with(|| LabelInfo {
                             kind: LabelKind::Internal,
                             name: format!("_L{:04X}", target),
-                        },
-                    );
-                }
+                        });
             }
         }
 
@@ -277,7 +269,7 @@ impl<'a> Disassembler<'a> {
     fn disassemble_chunks(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
         let code_start = self.jump_table_end + 2;
 
-        let mut all_offsets: BTreeSet<usize> = self.symbols.keys().cloned().collect();
+        let mut all_offsets: BTreeSet<usize> = self.symbols.keys().copied().collect();
         all_offsets.insert(code_start);
         all_offsets.insert(self.bytes.len());
 
@@ -332,7 +324,7 @@ impl<'a> Disassembler<'a> {
             if let Some(term_pos) = self.find_next_terminator(current_start, gap_end) {
                 let movement_end = term_pos + 4;
 
-                let action_start = if current_start % 4 == 0 {
+                let action_start = if current_start.is_multiple_of(4) {
                     current_start
                 } else {
                     (current_start + 3) & !3
@@ -427,11 +419,10 @@ impl<'a> Disassembler<'a> {
         };
 
         while pc < end {
-            if let Some(info) = self.symbols.get(&pc) {
-                if pc != start {
+            if let Some(info) = self.symbols.get(&pc)
+                && pc != start {
                     instructions.push(IrOpcode::Label(info.name.clone()));
                 }
-            }
 
             if pc + 2 > self.bytes.len() {
                 break;
@@ -497,9 +488,7 @@ impl<'a> Disassembler<'a> {
 
         let name = self
             .symbols
-            .get(&start)
-            .map(|info| info.name.clone())
-            .unwrap_or_else(|| format!("action_{:04X}", start));
+            .get(&start).map_or_else(|| format!("action_{:04X}", start), |info| info.name.clone());
 
         while pc + 4 <= end && pc + 4 <= self.bytes.len() {
             let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
@@ -509,7 +498,7 @@ impl<'a> Disassembler<'a> {
                 let args = if opcode == END_MOVEMENT_OPCODE {
                     vec![]
                 } else {
-                    vec![Arg::Value(param as i32)]
+                    vec![Arg::Value(i32::from(param))]
                 };
 
                 instructions.push(IrOpcode::Command {
@@ -525,7 +514,7 @@ impl<'a> Disassembler<'a> {
             } else {
                 instructions.push(IrOpcode::Command {
                     name: format!("Movement_0x{:02X}", opcode),
-                    args: vec![Arg::Value(param as i32)],
+                    args: vec![Arg::Value(i32::from(param))],
                 });
                 pc += 4;
             }
@@ -562,8 +551,8 @@ impl<'a> Disassembler<'a> {
             }
 
             let value = match size {
-                1 => self.bytes[offset] as i32,
-                2 => u16::from_le_bytes([self.bytes[offset], self.bytes[offset + 1]]) as i32,
+                1 => i32::from(self.bytes[offset]),
+                2 => i32::from(u16::from_le_bytes([self.bytes[offset], self.bytes[offset + 1]])),
                 4 => {
                     if param.name == "relative_jump" {
                         let rel = i32::from_le_bytes([
