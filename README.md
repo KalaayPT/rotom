@@ -103,6 +103,13 @@ rotom decompile -d database.json -i binaries/ -o output/
 cargo test
 ```
 
+### Code Quality
+```bash
+cargo clippy
+```
+
+The project uses `clippy.toml` for code quality configuration. Pedantic and nursery lints are enabled by default in `Cargo.toml`.
+
 ---
 
 ## Example: Rotom Syntax

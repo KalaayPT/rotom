@@ -1,0 +1,52 @@
+# Clippy configuration - thresholds and project-specific settings
+
+# Cognitive complexity threshold - warn when functions are too complex
+cognitive-complexity-threshold = 30
+
+# Type complexity threshold - warn when type signatures are too complex
+type-complexity-threshold = 250
+
+# Function argument threshold - warn when functions have too many parameters
+too-many-arguments-threshold = 7
+
+# Lines per item threshold - warn when functions/structs are too long
+too-many-lines-threshold = 100
+
+# Warn on wildcard imports for better code clarity
+warn-on-all-wildcard-imports = true
+
+# Allow common patterns in tests that would otherwise be warned about
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
+
+# Project-specific documentation identifiers
+doc-valid-idents = [
+    "Rotom",
+    "Poryscript",
+    "DSPRE",
+    "Gen4",
+    "NintendoDS",
+    "JSON",
+    "Rust",
+    "ASM",
+    "bytecode",
+    "scripter",
+    "decompiler",
+    "compiler",
+]
+
+# Check for inconsistent struct field initialization
+check-inconsistent-struct-field-initializers = true
+
+# Performance-related thresholds
+pass-by-value-size-limit = 256
+unnecessary-box-size = 128
+vec-box-size-threshold = 4096
+trivial-copy-size-limit = 256
+
+# Function parameter and trait bounds limits
+max-fn-params-bools = 3
+max-trait-bounds = 3
+max-struct-bools = 3
+max-suggested-slice-pattern-length = 3
