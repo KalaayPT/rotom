@@ -49,6 +49,7 @@ pub struct Disassembler<'a> {
 
     script_type: ScriptType,
     jump_table_end: usize,
+    has_jump_table_marker: bool,
     script_slots: BTreeMap<usize, Vec<u32>>,
     symbols: HashMap<usize, LabelInfo>,
     action_offsets: HashSet<usize>,
@@ -65,11 +66,12 @@ impl<'a> Disassembler<'a> {
             bytes,
             script_type: ScriptType::Normal,
             jump_table_end: 0,
+            has_jump_table_marker: false,
             script_slots: BTreeMap::new(),
             symbols: HashMap::new(),
             action_offsets: HashSet::new(),
-            func_counter: 1,
-            action_counter: 1,
+            func_counter: 0,
+            action_counter: 0,
         }
     }
 
@@ -160,19 +162,20 @@ impl<'a> Disassembler<'a> {
         let marker_pos = self
             .bytes
             .windows(2)
-            .position(|w| w == JUMP_TABLE_END_MARKER)
-            .unwrap_or_else(|| self.find_jump_table_boundary());
+            .position(|w| w == JUMP_TABLE_END_MARKER);
 
-        self.jump_table_end = marker_pos;
+        self.has_jump_table_marker = marker_pos.is_some();
+        let table_end = marker_pos.unwrap_or_else(|| self.find_jump_table_boundary());
+        self.jump_table_end = table_end;
 
-        if marker_pos % 4 != 0 {
+        if table_end % 4 != 0 {
             return Err(invalid_format(format!(
                 "Jump table size {} is not a multiple of 4",
-                marker_pos
+                table_end
             )));
         }
 
-        let entry_count = marker_pos / 4;
+        let entry_count = table_end / 4;
 
         for i in 0..entry_count {
             let entry_offset = i * 4;
@@ -208,44 +211,65 @@ impl<'a> Disassembler<'a> {
         Ok(())
     }
 
+    fn code_start(&self) -> usize {
+        if self.has_jump_table_marker {
+            self.jump_table_end + 2
+        } else {
+            self.jump_table_end
+        }
+    }
+
     fn discover_boundaries(&mut self) -> DecompileResult<()> {
-        let code_start = self.jump_table_end + 2;
-        let mut pc = code_start;
+        let code_start = self.code_start();
         let mut pending_jump_targets: Vec<usize> = Vec::new();
 
-        while pc < self.bytes.len() {
-            if pc + 2 > self.bytes.len() {
-                break;
-            }
+        let mut script_starts: Vec<usize> = self.script_slots.keys().copied().collect();
+        script_starts.sort();
 
-            let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
+        for &start in &script_starts {
+            self.scan_function_for_targets(start, &mut pending_jump_targets);
+        }
 
-            if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
-                let cmd_size = self.command_size_at(pc, cmd);
+        let mut new_targets_to_scan: Vec<usize> = pending_jump_targets
+            .iter()
+            .filter(|&&t| t >= code_start && t < self.bytes.len() && !self.symbols.contains_key(&t))
+            .copied()
+            .collect();
 
-                if self.is_jump_command(name)
-                    && let Some(target) = self.extract_jump_target(pc, cmd) {
-                        pending_jump_targets.push(target);
-                    }
+        while !new_targets_to_scan.is_empty() {
+            let mut next_round: Vec<usize> = Vec::new();
 
-                if self.is_action_reference(name)
-                    && let Some(action_offset) = self.extract_action_offset(pc, cmd)
-                        && action_offset < self.bytes.len() && action_offset % 4 == 0 {
-                            self.action_offsets.insert(action_offset);
+            for target in new_targets_to_scan {
+                if !self.symbols.contains_key(&target) {
+                    self.symbols.insert(
+                        target,
+                        LabelInfo {
+                            kind: LabelKind::Internal,
+                            name: format!("_L{:04X}", target),
+                        },
+                    );
+
+                    let mut local_targets: Vec<usize> = Vec::new();
+                    self.scan_function_for_targets(target, &mut local_targets);
+
+                    for t in local_targets {
+                        if t >= code_start && t < self.bytes.len() && !self.symbols.contains_key(&t)
+                        {
+                            next_round.push(t);
                         }
-
-                pc += 2 + cmd_size;
-            } else {
-                pc += 2;
+                    }
+                }
             }
+
+            new_targets_to_scan = next_round;
         }
 
         for target in pending_jump_targets {
             if target >= code_start && target < self.bytes.len() {
                 self.symbols.entry(target).or_insert_with(|| LabelInfo {
-                            kind: LabelKind::Internal,
-                            name: format!("_L{:04X}", target),
-                        });
+                    kind: LabelKind::Internal,
+                    name: format!("_L{:04X}", target),
+                });
             }
         }
 
@@ -266,8 +290,44 @@ impl<'a> Disassembler<'a> {
         Ok(())
     }
 
+    fn scan_function_for_targets(&mut self, start: usize, targets: &mut Vec<usize>) {
+        let mut pc = start;
+
+        while pc + 2 <= self.bytes.len() {
+            let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
+
+            if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
+                let cmd_size = self.command_size_at(pc, cmd);
+
+                if self.is_jump_command(name) {
+                    if let Some(target) = self.extract_jump_target(pc, cmd) {
+                        targets.push(target);
+                    }
+                }
+
+                if self.is_action_reference(name)
+                    && let Some(action_offset) = self.extract_action_offset(pc, cmd)
+                    && action_offset < self.bytes.len()
+                    && action_offset % 4 == 0
+                {
+                    self.action_offsets.insert(action_offset);
+                }
+
+                let is_hard_terminator = name.as_str() == "End";
+
+                pc += 2 + cmd_size;
+
+                if is_hard_terminator && !self.symbols.contains_key(&pc) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     fn disassemble_chunks(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
-        let code_start = self.jump_table_end + 2;
+        let code_start = self.code_start();
 
         let mut all_offsets: BTreeSet<usize> = self.symbols.keys().copied().collect();
         all_offsets.insert(code_start);
@@ -420,9 +480,10 @@ impl<'a> Disassembler<'a> {
 
         while pc < end {
             if let Some(info) = self.symbols.get(&pc)
-                && pc != start {
-                    instructions.push(IrOpcode::Label(info.name.clone()));
-                }
+                && pc != start
+            {
+                instructions.push(IrOpcode::Label(info.name.clone()));
+            }
 
             if pc + 2 > self.bytes.len() {
                 break;
@@ -488,7 +549,8 @@ impl<'a> Disassembler<'a> {
 
         let name = self
             .symbols
-            .get(&start).map_or_else(|| format!("action_{:04X}", start), |info| info.name.clone());
+            .get(&start)
+            .map_or_else(|| format!("action_{:04X}", start), |info| info.name.clone());
 
         while pc + 4 <= end && pc + 4 <= self.bytes.len() {
             let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
@@ -552,7 +614,10 @@ impl<'a> Disassembler<'a> {
 
             let value = match size {
                 1 => i32::from(self.bytes[offset]),
-                2 => i32::from(u16::from_le_bytes([self.bytes[offset], self.bytes[offset + 1]])),
+                2 => i32::from(u16::from_le_bytes([
+                    self.bytes[offset],
+                    self.bytes[offset + 1],
+                ])),
                 4 => {
                     if param.name == "relative_jump" {
                         let rel = i32::from_le_bytes([
@@ -688,8 +753,9 @@ impl<'a> Disassembler<'a> {
 
     fn extract_jump_target(&self, pc: usize, cmd: &Command) -> Option<usize> {
         let mut offset = pc + 2;
+        let params = self.get_variant_params_at(offset, cmd);
 
-        for param in &cmd.params {
+        for param in params {
             let size = param.param_type.size();
 
             if param.name == "relative_jump" && offset + 4 <= self.bytes.len() {
@@ -710,8 +776,9 @@ impl<'a> Disassembler<'a> {
 
     fn extract_action_offset(&self, pc: usize, cmd: &Command) -> Option<usize> {
         let mut offset = pc + 2;
+        let params = self.get_variant_params_at(offset, cmd);
 
-        for param in &cmd.params {
+        for param in params {
             let size = param.param_type.size();
 
             if param.name == "relative_jump" && offset + 4 <= self.bytes.len() {
