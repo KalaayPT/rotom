@@ -11,7 +11,8 @@ pub enum TokenType {
 
     Num(i32),           // integer
     Identifier(String), // variable,
-    Label(String),
+    Label(String),      // label definition (ends with :)
+    LocalLabel(String), // local label reference (.name without colon)
 
     // control flow
     True,        // "true"
@@ -84,7 +85,8 @@ impl fmt::Display for TokenType {
             // --- Literals ---
             TokenType::Identifier(s) => write!(f, "identifier '{}'", s),
             TokenType::Num(n) => write!(f, "number '{}'", n),
-            TokenType::Label(l) => write!(f, "label '{}'", l),
+            TokenType::Label(l) => write!(f, "label definition '{}'", l),
+            TokenType::LocalLabel(l) => write!(f, "local label reference '{}'", l),
             // if we add string literals for inline messages later
             // TokenType::StringLit(s) => write!(f, "string \"{}\"", s),
 

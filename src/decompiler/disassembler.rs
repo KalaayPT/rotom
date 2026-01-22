@@ -240,14 +240,11 @@ impl<'a> Disassembler<'a> {
             let mut next_round: Vec<usize> = Vec::new();
 
             for target in new_targets_to_scan {
-                if !self.symbols.contains_key(&target) {
-                    self.symbols.insert(
-                        target,
-                        LabelInfo {
-                            kind: LabelKind::Internal,
-                            name: format!("_L{:04X}", target),
-                        },
-                    );
+                if let std::collections::hash_map::Entry::Vacant(e) = self.symbols.entry(target) {
+                    e.insert(LabelInfo {
+                        kind: LabelKind::Internal,
+                        name: format!("_L{:04X}", target),
+                    });
 
                     let mut local_targets: Vec<usize> = Vec::new();
                     self.scan_function_for_targets(target, &mut local_targets);
@@ -299,10 +296,10 @@ impl<'a> Disassembler<'a> {
             if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
                 let cmd_size = self.command_size_at(pc, cmd);
 
-                if self.is_jump_command(name) {
-                    if let Some(target) = self.extract_jump_target(pc, cmd) {
-                        targets.push(target);
-                    }
+                if self.is_jump_command(name)
+                    && let Some(target) = self.extract_jump_target(pc, cmd)
+                {
+                    targets.push(target);
                 }
 
                 if self.is_action_reference(name)

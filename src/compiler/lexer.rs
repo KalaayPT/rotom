@@ -6,6 +6,7 @@ pub struct Lexer<'a> {
     pub source: &'a str,
     pub chars: Peekable<Chars<'a>>,
     pub current_pos: usize,
+    finished: bool,
 }
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Lexer<'a> {
@@ -13,7 +14,12 @@ impl<'a> Lexer<'a> {
             source,
             chars: source.chars().peekable(),
             current_pos: 0,
+            finished: false,
         }
+    }
+
+    pub fn tokenize(self) -> Vec<Token> {
+        self.collect()
     }
     fn read_char(&mut self) -> Option<char> {
         let char = self.chars.next()?;
@@ -90,14 +96,8 @@ impl<'a> Lexer<'a> {
                         TokenType::Identifier(string) => string,
                         keyword => format!("{}", keyword),
                     };
-                    // Preserve the dot prefix for local labels
-                    let full_name = format!(".{}", name);
-                    if self.chars.peek() == Some(&':') {
-                        self.read_char();
-                        TokenType::Label(full_name)
-                    } else {
-                        TokenType::Label(full_name)
-                    }
+                    // LocalLabel is just the .name part - colon is handled separately by parser
+                    TokenType::LocalLabel(format!(".{}", name))
                 } else {
                     TokenType::Dot
                 }
@@ -204,9 +204,7 @@ impl<'a> Lexer<'a> {
         }
     }
     pub fn read_integer(&mut self, first: char) -> TokenType {
-        if first == '0'
-            && matches!(self.chars.peek(), Some('x'))
-        {
+        if first == '0' && matches!(self.chars.peek(), Some('x')) {
             self.read_char();
             let mut hex_string = String::new();
             while let Some(c) = self.chars.peek() {
@@ -246,6 +244,24 @@ fn is_identifier_start(c: char) -> bool {
 }
 fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        let token = self.next_token();
+        match token.kind {
+            TokenType::EOF => {
+                self.finished = true;
+                None
+            }
+            _ => Some(token),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -321,11 +337,41 @@ mod tests {
         let source = ".localLabel: .anotherLabel";
         let mut lexer = Lexer::new(source);
         let token1 = lexer.next_token();
-        assert_eq!(token1.kind, TokenType::Label(".localLabel".to_string()));
+        assert_eq!(
+            token1.kind,
+            TokenType::LocalLabel(".localLabel".to_string())
+        );
         let token2 = lexer.next_token();
-        assert_eq!(token2.kind, TokenType::Label(".anotherLabel".to_string()));
+        assert_eq!(token2.kind, TokenType::Colon);
+        let token3 = lexer.next_token();
+        assert_eq!(
+            token3.kind,
+            TokenType::LocalLabel(".anotherLabel".to_string())
+        );
         let eof_token = lexer.next_token();
         assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_iterator() {
+        let source = "function test";
+        let lexer = Lexer::new(source);
+        let tokens: Vec<Token> = lexer.collect();
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].kind, TokenType::Function);
+        assert_eq!(tokens[1].kind, TokenType::Identifier("test".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_tokenize() {
+        let source = "if x then Return endif";
+        let tokens = Lexer::new(source).tokenize();
+        assert_eq!(tokens.len(), 5);
+        assert_eq!(tokens[0].kind, TokenType::If);
+        assert_eq!(tokens[1].kind, TokenType::Identifier("x".to_string()));
+        assert_eq!(tokens[2].kind, TokenType::Then);
+        assert_eq!(tokens[3].kind, TokenType::Return);
+        assert_eq!(tokens[4].kind, TokenType::EndIf);
     }
 
     #[test]
@@ -501,7 +547,7 @@ mod tests {
             TokenType::Then,
             TokenType::Newline,
             TokenType::Jump,
-            TokenType::Label(".start".to_string()),
+            TokenType::LocalLabel(".start".to_string()),
             TokenType::Newline,
             TokenType::Else,
             TokenType::Newline,

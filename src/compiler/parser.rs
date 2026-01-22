@@ -144,12 +144,15 @@ impl<'a> Parser<'a> {
                     span,
                 }
             }
-            TokenType::Label(name) => {
-                let span = self.current_token.span.clone();
+            TokenType::LocalLabel(name) => {
+                let start = self.current_token.span.start;
+                let label_name = name.clone();
                 self.advance();
+                self.expect_advance(TokenType::Colon)?;
+                let end = self.current_token.span.start;
                 Spanned {
-                    node: StatementKind::Label(name),
-                    span,
+                    node: StatementKind::Label(label_name),
+                    span: start..end,
                 }
             }
             _ => {
@@ -435,7 +438,7 @@ impl<'a> Parser<'a> {
         let start = self.current_token.span.start;
         self.expect_advance(TokenType::Jump)?;
         let target_expr = match &self.current_token.kind {
-            TokenType::Label(name) => {
+            TokenType::LocalLabel(name) => {
                 let span = self.current_token.span.clone();
                 let name_clone = name.clone();
                 self.advance();

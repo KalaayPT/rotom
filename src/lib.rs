@@ -114,7 +114,7 @@ pub fn compile_to_bytes_with_options(
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
 
-    let mut analyzer = Analyzer::with_constants(constants);
+    let mut analyzer = Analyzer::with_database(constants, db);
     analyzer.analyze(&file)?;
 
     let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, constants);

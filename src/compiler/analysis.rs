@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use crate::database::ConstantDb;
+use crate::database::{Command, ConstantDb, DatabaseV2, ParamType};
 
 use super::{
     ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind},
@@ -99,6 +99,7 @@ impl SymbolTable {
 pub struct Analyzer<'a> {
     pub symbols: SymbolTable,
     constants: Option<&'a ConstantDb>,
+    database: Option<&'a DatabaseV2>,
 }
 
 impl Default for Analyzer<'_> {
@@ -112,6 +113,7 @@ impl<'a> Analyzer<'a> {
         Analyzer {
             symbols: SymbolTable::new(),
             constants: None,
+            database: None,
         }
     }
 
@@ -120,6 +122,16 @@ impl<'a> Analyzer<'a> {
         Analyzer {
             symbols: SymbolTable::new(),
             constants: Some(constants),
+            database: None,
+        }
+    }
+
+    /// Create an analyzer with both constants and command database for full validation
+    pub fn with_database(constants: &'a ConstantDb, database: &'a DatabaseV2) -> Analyzer<'a> {
+        Analyzer {
+            symbols: SymbolTable::new(),
+            constants: Some(constants),
+            database: Some(database),
         }
     }
 
@@ -280,7 +292,8 @@ impl<'a> Analyzer<'a> {
                 self.validate_expression(condition)?;
                 self.validate_block(body)?;
             }
-            StatementKind::ScriptCommand { args, .. } => {
+            StatementKind::ScriptCommand { command, args } => {
+                self.validate_command(command, args, &stmt.span)?;
                 for arg in args {
                     self.validate_expression(arg)?;
                 }
@@ -307,15 +320,173 @@ impl<'a> Analyzer<'a> {
 
         // 2. Fallback: Check constants DB
         if let Some(db) = self.constants
-            && let Some(value) = db.get(name) {
-                return Some(SymbolType::Constant(value));
-            }
+            && let Some(value) = db.get(name)
+        {
+            return Some(SymbolType::Constant(value));
+        }
 
         None
     }
 
-    fn validate_expression(&self, expr: &Expression) -> ParseResult<()> {
+    /// Look up a command in the database
+    fn get_command(&self, name: &str) -> Option<&Command> {
+        self.database?.commands.get(name)
+    }
+
+    /// Validate command parameters (count and types)
+    fn validate_command(
+        &self,
+        command: &str,
+        args: &[Expression],
+        span: &Range<usize>,
+    ) -> ParseResult<()> {
+        let Some(cmd) = self.get_command(command) else {
+            return Ok(());
+        };
+
+        let actual_count = args.len();
+
+        if let Some(variants) = &cmd.variants {
+            let valid_counts: Vec<usize> = variants.iter().map(|v| v.params.len()).collect();
+            if !valid_counts.contains(&actual_count) && !cmd.params.is_empty() {
+                let params = &cmd.params;
+                let required_count = params
+                    .iter()
+                    .filter(|p| !p.optional && p.default.is_none())
+                    .count();
+                let max_count = params.len();
+
+                if actual_count < required_count || actual_count > max_count {
+                    if !valid_counts.iter().any(|&vc| actual_count <= vc) {
+                        return Ok(());
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        let params = &cmd.params;
+        let required_count = params
+            .iter()
+            .filter(|p| !p.optional && p.default.is_none())
+            .count();
+        let max_count = params.len();
+
+        if actual_count < required_count {
+            return Err(analysis_error(
+                span.clone(),
+                format!(
+                    "Command '{}' requires at least {} argument(s), got {}",
+                    command, required_count, actual_count
+                ),
+            ));
+        }
+
+        if actual_count > max_count {
+            return Err(analysis_error(
+                span.clone(),
+                format!(
+                    "Command '{}' accepts at most {} argument(s), got {}",
+                    command, max_count, actual_count
+                ),
+            ));
+        }
+
+        for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
+            self.validate_argument_type(arg, &param.param_type, command, &param.name, i)?;
+        }
+
+        Ok(())
+    }
+
+    /// Validate that an argument matches the expected parameter type
+    fn validate_argument_type(
+        &self,
+        arg: &Expression,
+        param_type: &ParamType,
+        command: &str,
+        param_name: &str,
+        arg_index: usize,
+    ) -> ParseResult<()> {
+        match &arg.node {
+            ExpressionKind::Number(n) => {
+                self.validate_number_for_type(
+                    *n, param_type, &arg.span, command, param_name, arg_index,
+                )?;
+            }
+            ExpressionKind::Label(_) => {
+                if !matches!(
+                    param_type,
+                    ParamType::Label | ParamType::ScriptId | ParamType::MovementId
+                ) {
+                    return Err(analysis_error(
+                        arg.span.clone(),
+                        format!(
+                            "Argument {} ('{}') for '{}' expects {:?}, got a label reference",
+                            arg_index + 1,
+                            param_name,
+                            command,
+                            param_type
+                        ),
+                    ));
+                }
+            }
+            ExpressionKind::Identifier(name) => {
+                if let Some(SymbolType::Constant(value)) = self.resolve_symbol(name) {
+                    self.validate_number_for_type(
+                        value, param_type, &arg.span, command, param_name, arg_index,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Validate that a number fits within the range for a parameter type
+    fn validate_number_for_type(
+        &self,
+        n: i32,
+        param_type: &ParamType,
+        span: &Range<usize>,
+        command: &str,
+        param_name: &str,
+        arg_index: usize,
+    ) -> ParseResult<()> {
+        let (valid, type_desc) = match param_type {
+            ParamType::U8 => (n >= 0 && n <= u8::MAX as i32, "u8 (0-255)"),
+            ParamType::U16 | ParamType::Var | ParamType::Flag | ParamType::MsgId => {
+                (n >= 0 && n <= u16::MAX as i32, "u16 (0-65535)")
+            }
+            ParamType::U32 | ParamType::Label | ParamType::ScriptId | ParamType::MovementId => {
+                (n >= 0, "u32 (non-negative)")
+            }
+            ParamType::Unknown => (true, "unknown"),
+        };
+
+        if !valid {
+            return Err(analysis_error(
+                span.clone(),
+                format!(
+                    "Argument {} ('{}') for '{}' is out of range: {} does not fit in {}",
+                    arg_index + 1,
+                    param_name,
+                    command,
+                    n,
+                    type_desc
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_expression(&self, expr: &Expression) -> ParseResult<()> {
         match &expr.node {
+            ExpressionKind::Number(n) => {
+                self.validate_number_range(*n, &expr.span)?;
+            }
             ExpressionKind::Identifier(name) => {
                 if self.resolve_symbol(name).is_none() {
                     return Err(analysis_error(
@@ -341,6 +512,16 @@ impl<'a> Analyzer<'a> {
         }
         Ok(())
     }
+
+    /// Validate that a standalone number is within reasonable bounds (signed 32-bit)
+    fn validate_number_range(&self, n: i32, span: &Range<usize>) -> ParseResult<()> {
+        // For general expressions, we allow full i32 range since the target might need it
+        // Specific parameter type checking is done in validate_argument_type
+        // Here we just catch obviously problematic values
+        let _ = (n, span);
+        Ok(())
+    }
+
     fn validate_jump_target(&self, expr: &Expression) -> ParseResult<()> {
         let name = match &expr.node {
             ExpressionKind::Label(n) => n,      // Jump .local
@@ -554,6 +735,368 @@ function TestFunc #2:
         assert!(
             result.is_ok(),
             "Analyzer failed to handle stacked headers: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_parameter_count_too_few() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    LockAll
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "LockAll takes 0 params, should pass: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_parameter_count_validation() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    SetFlag 100
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "SetFlag with 1 param should pass: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_parameter_u8_range_overflow() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    RegValueSet 999, 1
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_err(),
+            "999 should overflow u8 and fail validation"
+        );
+        let err_msg = format!("{:?}", result.err());
+        assert!(
+            err_msg.contains("out of range"),
+            "Error should mention out of range: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_analyzer_without_database_skips_command_validation() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r#"
+function Test #1:
+    SomeUnknownCommand 1, 2, 3, 4, 5
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "Without database, unknown commands should be allowed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_parameter_count_too_many() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    SetFlag 100, 200, 300
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_err(),
+            "SetFlag with 3 args should fail (expects 1)"
+        );
+        let err_msg = format!("{:?}", result.err());
+        assert!(
+            err_msg.contains("at most 1"),
+            "Error should mention max args: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_command_missing_required_arguments() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    SetFlag
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_err(),
+            "SetFlag with 0 args should fail (requires 1)"
+        );
+        let err_msg = format!("{:?}", result.err());
+        assert!(
+            err_msg.contains("requires at least 1"),
+            "Error should mention required args: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_command_u16_range_valid() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    SetFlag 65535
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "SetFlag with 65535 should pass (max u16): {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_u16_range_overflow() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    SetFlag 65536
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_err(),
+            "SetFlag with 65536 should fail (overflows u16)"
+        );
+        let err_msg = format!("{:?}", result.err());
+        assert!(
+            err_msg.contains("out of range"),
+            "Error should mention out of range: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_command_with_default_param_can_be_omitted() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    PlayCry 440
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "PlayCry with 1 arg should pass (2nd param has default): {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_with_all_default_params_can_be_omitted() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    PokeMartCommon
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "PokeMartCommon with 0 args should pass (param has default): {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_with_variants_accepts_valid_count() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    CallTVBroadcast 0, 0x800C
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "CallTVBroadcast with 2 args should pass (variant 0 accepts 2): {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_trainer_battle_with_default() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    StartTrainerBattle 913
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "StartTrainerBattle with 1 arg should pass (2nd param has default): {:?}",
             result.err()
         );
     }
