@@ -24,6 +24,11 @@ pub enum TokenType {
     While,       // "while"
     Do,          // "do"
     EndWhile,    // "endwhile"
+    Match,       // "match"
+    Where,       // "where"
+    Case,        // "case"
+    EndMatch,    // "endmatch"
+    Break,       // "break"
     End,         // "End"
     EndMovement, // "EndMovement"
     Return,      // "Return"
@@ -72,6 +77,11 @@ impl fmt::Display for TokenType {
             TokenType::While => write!(f, "keyword 'while'"),
             TokenType::EndWhile => write!(f, "keyword 'endwhile'"),
             TokenType::Do => write!(f, "keyword 'do'"),
+            TokenType::Match => write!(f, "keyword 'match'"),
+            TokenType::Where => write!(f, "keyword 'where'"),
+            TokenType::Case => write!(f, "keyword 'case'"),
+            TokenType::EndMatch => write!(f, "keyword 'endmatch'"),
+            TokenType::Break => write!(f, "keyword 'break'"),
             TokenType::As => write!(f, "keyword 'as'"),
             TokenType::True => write!(f, "boolean 'true'"),
             TokenType::False => write!(f, "boolean 'false'"),

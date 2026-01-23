@@ -2,6 +2,13 @@ use std::ops::Range;
 
 use super::token::TokenType;
 
+#[derive(Debug, Clone)]
+pub struct MatchCase {
+    pub values: Vec<Expression>,
+    pub body: Vec<Statement>,
+    pub span: Range<usize>,
+}
+
 #[derive(Debug)]
 pub struct ScriptFile {
     pub aliases: Vec<Statement>,
@@ -44,6 +51,12 @@ pub enum StatementKind {
         condition: Box<Expression>,
         body: Vec<Statement>,
     },
+    MatchStatement {
+        subject: Box<Expression>,
+        cases: Vec<MatchCase>,
+        default: Option<Vec<Statement>>,
+    },
+    Break,
     ScriptCommand {
         command: String,
         args: Vec<Expression>,

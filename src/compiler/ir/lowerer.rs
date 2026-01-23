@@ -37,6 +37,7 @@ pub struct Lowerer<'a> {
     local_aliases: HashMap<String, i32>,
     db: &'a DatabaseV2,
     constants: Option<&'a crate::database::ConstantDb>,
+    break_targets: Vec<String>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -48,6 +49,7 @@ impl<'a> Lowerer<'a> {
             local_aliases: HashMap::new(),
             db,
             constants: None,
+            break_targets: Vec::new(),
         }
     }
 
@@ -63,6 +65,7 @@ impl<'a> Lowerer<'a> {
             local_aliases: HashMap::new(),
             db,
             constants: Some(constants),
+            break_targets: Vec::new(),
         }
     }
 
@@ -147,6 +150,7 @@ impl<'a> Lowerer<'a> {
             StatementKind::WhileStatement { condition, body } => {
                 let label_start = self.new_label("while_start");
                 let label_end = self.new_label("while_end");
+                self.break_targets.push(label_end.clone());
                 self.output.push(IrOpcode::Label(label_start.clone()));
                 self.lower_condition(condition, &label_end)?;
                 for s in body {
@@ -157,6 +161,83 @@ impl<'a> Lowerer<'a> {
                     args: vec![Arg::Pointer(label_start)],
                 });
                 self.output.push(IrOpcode::Label(label_end));
+                self.break_targets.pop();
+            }
+            StatementKind::MatchStatement {
+                subject,
+                cases,
+                default,
+            } => {
+                let label_end = self.new_label("end_match");
+
+                for (i, case) in cases.iter().enumerate() {
+                    let label_next = if i + 1 < cases.len() {
+                        self.new_label("match_next")
+                    } else if default.is_some() {
+                        self.new_label("match_default")
+                    } else {
+                        label_end.clone()
+                    };
+
+                    let label_body = self.new_label("match_case");
+
+                    for (vi, value) in case.values.iter().enumerate() {
+                        let is_last_value = vi + 1 >= case.values.len();
+                        let jump_target = if is_last_value {
+                            &label_next
+                        } else {
+                            &label_body
+                        };
+
+                        let condition = Expression {
+                            node: ExpressionKind::Infix {
+                                left: subject.clone(),
+                                operator: TokenType::Equal,
+                                right: Box::new(value.clone()),
+                            },
+                            span: value.span.clone(),
+                        };
+
+                        if is_last_value {
+                            self.lower_condition(&condition, jump_target)?;
+                        } else {
+                            self.lower_condition_non_inverted(&condition, jump_target)?;
+                        }
+                    }
+
+                    self.output.push(IrOpcode::Label(label_body));
+                    for s in &case.body {
+                        self.lower_statement_with_depth(s, macro_depth)?;
+                    }
+                    self.output.push(IrOpcode::Command {
+                        name: "GoTo".to_string(),
+                        args: vec![Arg::Pointer(label_end.clone())],
+                    });
+
+                    if i + 1 < cases.len() || default.is_some() {
+                        self.output.push(IrOpcode::Label(label_next));
+                    }
+                }
+
+                if let Some(default_body) = default {
+                    for s in default_body {
+                        self.lower_statement_with_depth(s, macro_depth)?;
+                    }
+                }
+
+                self.output.push(IrOpcode::Label(label_end));
+            }
+            StatementKind::Break => {
+                if let Some(target) = self.break_targets.last() {
+                    self.output.push(IrOpcode::Command {
+                        name: "GoTo".to_string(),
+                        args: vec![Arg::Pointer(target.clone())],
+                    });
+                } else {
+                    return Err(lowering_error(
+                        "break statement outside of loop".to_string(),
+                    ));
+                }
             }
             StatementKind::ScriptCommand { command, args } => {
                 self.lower_command(command, args, macro_depth)?;
@@ -231,12 +312,13 @@ impl<'a> Lowerer<'a> {
             let mut matched: &[ParamDef] = &cmd.params;
 
             if let Some(first_arg) = args.first()
-                && let Ok(mode) = self.resolve_arg_to_int(first_arg) {
-                    let variant_params = cmd.get_variant_params(mode as u8);
-                    if !variant_params.is_empty() {
-                        matched = variant_params;
-                    }
+                && let Ok(mode) = self.resolve_arg_to_int(first_arg)
+            {
+                let variant_params = cmd.get_variant_params(mode as u8);
+                if !variant_params.is_empty() {
+                    matched = variant_params;
                 }
+            }
 
             if std::ptr::eq(matched, &cmd.params as &[ParamDef]) {
                 for variant in variants {
@@ -248,8 +330,10 @@ impl<'a> Lowerer<'a> {
                                 &variant.params
                             };
                             break;
-                        } else if matches!(self.evaluate_condition_with_arg_count(condition, args, &cmd.params), Ok(true))
-                        {
+                        } else if matches!(
+                            self.evaluate_condition_with_arg_count(condition, args, &cmd.params),
+                            Ok(true)
+                        ) {
                             matched = if variant.params.is_empty() {
                                 &cmd.params
                             } else {
@@ -444,9 +528,10 @@ impl<'a> Lowerer<'a> {
                 }
 
                 if let Some(db) = self.constants
-                    && let Some(val) = db.get(name) {
-                        return Ok(val);
-                    }
+                    && let Some(val) = db.get(name)
+                {
+                    return Ok(val);
+                }
 
                 Err(lowering_error(format!(
                     "Could not resolve '{}' to an integer for macro condition",
@@ -591,11 +676,10 @@ impl<'a> Lowerer<'a> {
 
         for (i, param) in params.iter().enumerate() {
             let placeholder = format!("${}", param.name);
-            if result.contains(&placeholder)
-                && i < resolved_args.len() {
-                    let formatted = self.format_arg_for_substitution(&resolved_args[i])?;
-                    result = result.replace(&placeholder, &formatted);
-                }
+            if result.contains(&placeholder) && i < resolved_args.len() {
+                let formatted = self.format_arg_for_substitution(&resolved_args[i])?;
+                result = result.replace(&placeholder, &formatted);
+            }
         }
 
         Ok(result)
@@ -603,7 +687,9 @@ impl<'a> Lowerer<'a> {
 
     fn parse_expansion_line(&self, line: &str) -> ParseResult<Statement> {
         if line.trim().is_empty() {
-            return Err(lowering_error("Macro expansion produced empty line".to_string()));
+            return Err(lowering_error(
+                "Macro expansion produced empty line".to_string(),
+            ));
         }
 
         let line_with_newline = format!("{}\n", line.trim());
@@ -617,6 +703,23 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_condition(&mut self, expr: &Expression, target_label: &str) -> ParseResult<()> {
+        self.lower_condition_inner(expr, target_label, true)
+    }
+
+    fn lower_condition_non_inverted(
+        &mut self,
+        expr: &Expression,
+        target_label: &str,
+    ) -> ParseResult<()> {
+        self.lower_condition_inner(expr, target_label, false)
+    }
+
+    fn lower_condition_inner(
+        &mut self,
+        expr: &Expression,
+        target_label: &str,
+        invert: bool,
+    ) -> ParseResult<()> {
         if let ExpressionKind::Infix {
             left,
             operator,
@@ -641,7 +744,11 @@ impl<'a> Lowerer<'a> {
                 name: cmd_name.to_string(),
                 args: vec![Arg::Value(final_left), Arg::Value(final_right)],
             });
-            let cond = self.get_inverted_condition(operator, swapped);
+            let cond = if invert {
+                self.get_inverted_condition(operator, swapped)
+            } else {
+                self.get_condition(operator, swapped)
+            };
             self.output.push(IrOpcode::Command {
                 name: "GoToIf".to_string(),
                 args: vec![
@@ -672,14 +779,17 @@ impl<'a> Lowerer<'a> {
                 match self.global_symbols.resolve(name) {
                     Some(SymbolType::Variable(id)) => return Ok(Arg::Value(*id)),
                     Some(SymbolType::Constant(id)) => return Ok(Arg::Value(*id)),
-                    Some(SymbolType::Function(_) | SymbolType::Label | SymbolType::Action) => return Ok(Arg::Pointer(name.clone())),
+                    Some(SymbolType::Function(_) | SymbolType::Label | SymbolType::Action) => {
+                        return Ok(Arg::Pointer(name.clone()));
+                    }
                     None => {}
                 }
 
                 if let Some(db) = self.constants
-                    && let Some(val) = db.get(name) {
-                        return Ok(Arg::Value(val));
-                    }
+                    && let Some(val) = db.get(name)
+                {
+                    return Ok(Arg::Value(val));
+                }
 
                 Err(lowering_error(format!(
                     "Symbol '{}' could not be resolved (analysis should have caught this)",
@@ -745,17 +855,41 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn get_inverted_condition(&self, token: &TokenType, swapped: bool) -> Condition {
-        use Condition::{Different, Equal, LessEqual, GreaterEqual, Less, Greater};
+    fn swap_operator(&self, token: &TokenType) -> TokenType {
+        match token {
+            TokenType::GreaterThan => TokenType::LesserThan,
+            TokenType::LesserThan => TokenType::GreaterThan,
+            TokenType::GreaterEqual => TokenType::LesserEqual,
+            TokenType::LesserEqual => TokenType::GreaterEqual,
+            _ => token.clone(),
+        }
+    }
+
+    fn get_condition(&self, token: &TokenType, swapped: bool) -> Condition {
+        use Condition::{Different, Equal, Greater, GreaterEqual, Less, LessEqual};
 
         let effective_op = if swapped {
-            match token {
-                TokenType::GreaterThan => TokenType::LesserThan,
-                TokenType::LesserThan => TokenType::GreaterThan,
-                TokenType::GreaterEqual => TokenType::LesserEqual,
-                TokenType::LesserEqual => TokenType::GreaterEqual,
-                _ => token.clone(),
-            }
+            self.swap_operator(token)
+        } else {
+            token.clone()
+        };
+
+        match effective_op {
+            TokenType::Equal => Equal,
+            TokenType::NotEqual => Different,
+            TokenType::GreaterThan => Greater,
+            TokenType::LesserThan => Less,
+            TokenType::GreaterEqual => GreaterEqual,
+            TokenType::LesserEqual => LessEqual,
+            _ => Equal,
+        }
+    }
+
+    fn get_inverted_condition(&self, token: &TokenType, swapped: bool) -> Condition {
+        use Condition::{Different, Equal, Greater, GreaterEqual, Less, LessEqual};
+
+        let effective_op = if swapped {
+            self.swap_operator(token)
         } else {
             token.clone()
         };
@@ -1134,5 +1268,128 @@ function TestFunc #1:
             }
             _ => panic!("Expected function"),
         }
+    }
+
+    #[test]
+    fn test_lower_match_statement() {
+        let source = r#"
+function TestFunc #1:
+    match 0x8000 where
+        case 0:
+            Message 1
+        case 1, 2:
+            Message 2
+        else:
+            Message 3
+    endmatch
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let compare_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| {
+                        matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue")
+                    })
+                    .count();
+                assert!(
+                    compare_count >= 3,
+                    "Should have at least 3 CompareVarValue for cases 0, 1, 2. Got {}",
+                    compare_count
+                );
+
+                let goto_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
+                    .count();
+                assert!(
+                    goto_count >= 2,
+                    "Should have GoTo jumps to skip to end after each case. Got {}",
+                    goto_count
+                );
+
+                let message_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "Message"))
+                    .count();
+                assert_eq!(message_count, 3, "Should have 3 Message commands");
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_break_statement() {
+        let source = r#"
+function TestFunc #1:
+    while 0x8000 != 0 do
+        if 0x8000 == 5 then
+            break
+        endif
+        SubVar 0x8000, 1
+    endwhile
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let labels: Vec<_> = ir_func
+                    .instructions
+                    .iter()
+                    .filter_map(|op| {
+                        if let IrOpcode::Label(name) = op {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                let while_end_label = labels
+                    .iter()
+                    .find(|l| l.contains("while_end"))
+                    .expect("Should have while_end label");
+
+                let goto_to_while_end = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                    if name == "GoTo" && args.iter().any(|a| {
+                        matches!(a, Arg::Pointer(p) if p == while_end_label)
+                    }))
+                });
+
+                assert!(
+                    goto_to_while_end,
+                    "Break should generate GoTo to while_end label"
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_break_outside_loop_fails() {
+        let source = r#"
+function TestFunc #1:
+    break
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let result = lowerer.lower_script_file(&script_file);
+        assert!(result.is_err(), "Break outside loop should fail");
     }
 }

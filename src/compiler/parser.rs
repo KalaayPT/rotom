@@ -1,7 +1,7 @@
 use super::{
     ast::{
-        Expression, ExpressionKind, FunctionHeader, Precedence, ScriptFile, Spanned, Statement,
-        StatementKind,
+        Expression, ExpressionKind, FunctionHeader, MatchCase, Precedence, ScriptFile, Spanned,
+        Statement, StatementKind,
     },
     lexer::Lexer,
     parse_error::{ParseResult, parse_error},
@@ -44,6 +44,11 @@ impl<'a> Parser<'a> {
             | TokenType::EndIf
             | TokenType::While
             | TokenType::EndWhile
+            | TokenType::Match
+            | TokenType::Where
+            | TokenType::Case
+            | TokenType::EndMatch
+            | TokenType::Break
             | TokenType::End
             | TokenType::Return
             | TokenType::Jump
@@ -126,6 +131,15 @@ impl<'a> Parser<'a> {
         let statement = match self.current_token.kind.clone() {
             TokenType::If => self.parse_if()?,
             TokenType::While => self.parse_while()?,
+            TokenType::Match => self.parse_match()?,
+            TokenType::Break => {
+                let span = self.current_token.span.clone();
+                self.advance();
+                Spanned {
+                    node: StatementKind::Break,
+                    span,
+                }
+            }
             TokenType::Identifier(_) => self.parse_command()?,
             TokenType::Jump => self.parse_jump()?,
             TokenType::End => {
@@ -400,6 +414,75 @@ impl<'a> Parser<'a> {
             node: StatementKind::WhileStatement {
                 condition: Box::new(condition),
                 body,
+            },
+            span: start..end,
+        })
+    }
+    pub fn parse_match(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        self.expect_advance(TokenType::Match)?;
+        let subject = self.parse_expression(Precedence::Lowest)?;
+        self.expect_advance(TokenType::Where)?;
+
+        let mut cases = Vec::new();
+        let mut default = None;
+
+        while !self.current_token_is(TokenType::EndMatch) && !self.current_token_is(TokenType::EOF)
+        {
+            if self.current_token_is(TokenType::Newline) {
+                self.advance();
+                continue;
+            }
+
+            if self.current_token_is(TokenType::Else) {
+                self.advance();
+                self.expect_advance(TokenType::Colon)?;
+                default = Some(self.parse_block(vec![TokenType::EndMatch, TokenType::Case])?);
+                break;
+            }
+
+            if self.current_token_is(TokenType::Case) {
+                let case_start = self.current_token.span.start;
+                self.advance();
+
+                let mut values = Vec::new();
+                loop {
+                    values.push(self.parse_expression(Precedence::Lowest)?);
+                    if self.current_token_is(TokenType::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect_advance(TokenType::Colon)?;
+                let body =
+                    self.parse_block(vec![TokenType::Case, TokenType::Else, TokenType::EndMatch])?;
+                let case_end = self.current_token.span.start;
+
+                cases.push(MatchCase {
+                    values,
+                    body,
+                    span: case_start..case_end,
+                });
+            } else {
+                return Err(parse_error(
+                    self.current_token.span.clone(),
+                    format!(
+                        "Expected 'case' or 'else' in match statement, found {}",
+                        self.current_token.kind
+                    ),
+                ));
+            }
+        }
+
+        self.expect_advance(TokenType::EndMatch)?;
+        let end = self.current_token.span.start;
+
+        Ok(Spanned {
+            node: StatementKind::MatchStatement {
+                subject: Box::new(subject),
+                cases,
+                default,
             },
             span: start..end,
         })
@@ -1025,6 +1108,135 @@ function TestFunc #1:
                 assert_eq!(*id, 0x4000);
             }
             _ => panic!("Expected alias statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_statement() {
+        let source = r#"
+function TestFunc #1:
+    match 0x8000 where
+        case 0:
+            Message 1
+        case 1, 2:
+            Message 2
+        else:
+            Message 3
+    endmatch
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 1);
+
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => {
+                assert_eq!(body.len(), 2);
+                match &body[0].node {
+                    StatementKind::MatchStatement {
+                        subject,
+                        cases,
+                        default,
+                    } => {
+                        match &subject.node {
+                            ExpressionKind::Number(n) => assert_eq!(*n, 0x8000),
+                            _ => panic!("Expected number expression"),
+                        }
+                        assert_eq!(cases.len(), 2);
+                        assert_eq!(cases[0].values.len(), 1);
+                        assert_eq!(cases[1].values.len(), 2);
+                        assert!(default.is_some());
+                        assert_eq!(default.as_ref().unwrap().len(), 1);
+                    }
+                    _ => panic!("Expected match statement"),
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_without_else() {
+        let source = r#"
+function TestFunc #1:
+    match 0x8000 where
+        case 0:
+            Message 1
+        case 1:
+            Message 2
+    endmatch
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 1);
+
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => match &body[0].node {
+                StatementKind::MatchStatement { cases, default, .. } => {
+                    assert_eq!(cases.len(), 2);
+                    assert!(default.is_none());
+                }
+                _ => panic!("Expected match statement"),
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_break_statement() {
+        let source = r#"
+function TestFunc #1:
+    while 0x8000 != 0 do
+        if 0x8000 == 5 then
+            break
+        endif
+        SubVar 0x8000, 1
+    endwhile
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 1);
+
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => {
+                assert_eq!(body.len(), 2);
+                match &body[0].node {
+                    StatementKind::WhileStatement {
+                        body: while_body, ..
+                    } => {
+                        assert_eq!(while_body.len(), 2);
+                        match &while_body[0].node {
+                            StatementKind::IfStatement { body: if_body, .. } => {
+                                assert_eq!(if_body.len(), 1);
+                                assert!(matches!(&if_body[0].node, StatementKind::Break));
+                            }
+                            _ => panic!("Expected if statement"),
+                        }
+                    }
+                    _ => panic!("Expected while statement"),
+                }
+            }
+            _ => panic!("Expected function"),
         }
     }
 }

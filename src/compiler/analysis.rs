@@ -260,6 +260,14 @@ impl<'a> Analyzer<'a> {
                 StatementKind::WhileStatement { body, .. } => {
                     self.register_labels_in_block(body)?;
                 }
+                StatementKind::MatchStatement { cases, default, .. } => {
+                    for case in cases {
+                        self.register_labels_in_block(&case.body)?;
+                    }
+                    if let Some(default_body) = default {
+                        self.register_labels_in_block(default_body)?;
+                    }
+                }
                 _ => {}
             }
         }
@@ -292,6 +300,23 @@ impl<'a> Analyzer<'a> {
                 self.validate_expression(condition)?;
                 self.validate_block(body)?;
             }
+            StatementKind::MatchStatement {
+                subject,
+                cases,
+                default,
+            } => {
+                self.validate_expression(subject)?;
+                for case in cases {
+                    for value in &case.values {
+                        self.validate_expression(value)?;
+                    }
+                    self.validate_block(&case.body)?;
+                }
+                if let Some(default_body) = default {
+                    self.validate_block(default_body)?;
+                }
+            }
+            StatementKind::Break => {}
             StatementKind::ScriptCommand { command, args } => {
                 self.validate_command(command, args, &stmt.span)?;
                 for arg in args {
