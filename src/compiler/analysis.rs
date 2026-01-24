@@ -7,6 +7,17 @@ use super::{
     parse_error::{CompileError, ParseResult, analysis_error},
 };
 
+const AUTOVAR_PARAM_NAMES: &[&str] = &[
+    "destvar",
+    "destvarid",
+    "successvar",
+    "var_dest",
+    "retvar",
+    "variable",
+];
+
+const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
+
 #[derive(Debug, Clone)]
 pub enum SymbolType {
     Function(Option<u32>),
@@ -100,6 +111,7 @@ pub struct Analyzer<'a> {
     pub symbols: SymbolTable,
     constants: Option<&'a ConstantDb>,
     database: Option<&'a DatabaseV2>,
+    loop_depth: u32,
 }
 
 impl Default for Analyzer<'_> {
@@ -114,6 +126,7 @@ impl<'a> Analyzer<'a> {
             symbols: SymbolTable::new(),
             constants: None,
             database: None,
+            loop_depth: 0,
         }
     }
 
@@ -123,6 +136,7 @@ impl<'a> Analyzer<'a> {
             symbols: SymbolTable::new(),
             constants: Some(constants),
             database: None,
+            loop_depth: 0,
         }
     }
 
@@ -132,6 +146,7 @@ impl<'a> Analyzer<'a> {
             symbols: SymbolTable::new(),
             constants: Some(constants),
             database: Some(database),
+            loop_depth: 0,
         }
     }
 
@@ -203,6 +218,7 @@ impl<'a> Analyzer<'a> {
     fn validate_function_body(&mut self, func: &Statement) -> ParseResult<()> {
         if let StatementKind::Function { body, .. } = &func.node {
             self.symbols.enter_scope();
+            self.loop_depth = 0;
             self.register_labels_in_block(body)?;
             self.validate_block(body)?;
             self.symbols.exit_scope();
@@ -298,14 +314,16 @@ impl<'a> Analyzer<'a> {
             }
             StatementKind::WhileStatement { condition, body } => {
                 self.validate_expression(condition)?;
+                self.loop_depth += 1;
                 self.validate_block(body)?;
+                self.loop_depth -= 1;
             }
             StatementKind::MatchStatement {
                 subject,
                 cases,
                 default,
             } => {
-                self.validate_expression(subject)?;
+                self.validate_match_subject(subject, &stmt.span)?;
                 for case in cases {
                     for value in &case.values {
                         self.validate_expression(value)?;
@@ -316,7 +334,14 @@ impl<'a> Analyzer<'a> {
                     self.validate_block(default_body)?;
                 }
             }
-            StatementKind::Break => {}
+            StatementKind::Break => {
+                if self.loop_depth == 0 {
+                    return Err(analysis_error(
+                        stmt.span.clone(),
+                        "break statement can only be used inside a while loop".to_string(),
+                    ));
+                }
+            }
             StatementKind::ScriptCommand { command, args } => {
                 self.validate_command(command, args, &stmt.span)?;
                 for arg in args {
@@ -356,6 +381,138 @@ impl<'a> Analyzer<'a> {
     /// Look up a command in the database
     fn get_command(&self, name: &str) -> Option<&Command> {
         self.database?.commands.get(name)
+    }
+
+    /// Check if a command is autovar-compatible (has a result parameter with VAR_RESULT default)
+    fn is_autovar_command(&self, name: &str) -> bool {
+        let Some(cmd) = self.get_command(name) else {
+            return false;
+        };
+
+        cmd.params.iter().any(|param| {
+            let name_lower = param.name.to_lowercase();
+            let has_autovar_name = AUTOVAR_PARAM_NAMES.iter().any(|n| name_lower.contains(n));
+            let has_autovar_default = param.default.as_ref().is_some_and(|d| {
+                AUTOVAR_DEFAULT_VALUES
+                    .iter()
+                    .any(|v| d.eq_ignore_ascii_case(v))
+            });
+            has_autovar_name && has_autovar_default
+        })
+    }
+
+    /// Get the autovar parameter index for a command (the parameter that stores the result)
+    fn get_autovar_param_index(&self, name: &str) -> Option<usize> {
+        let cmd = self.get_command(name)?;
+
+        cmd.params.iter().position(|param| {
+            let name_lower = param.name.to_lowercase();
+            let has_autovar_name = AUTOVAR_PARAM_NAMES.iter().any(|n| name_lower.contains(n));
+            let has_autovar_default = param.default.as_ref().is_some_and(|d| {
+                AUTOVAR_DEFAULT_VALUES
+                    .iter()
+                    .any(|v| d.eq_ignore_ascii_case(v))
+            });
+            has_autovar_name && has_autovar_default
+        })
+    }
+
+    /// Validate that a Call expression is to an autovar-compatible command
+    fn validate_autovar_call(
+        &self,
+        function: &Expression,
+        args: &[Expression],
+        span: &Range<usize>,
+    ) -> ParseResult<()> {
+        let ExpressionKind::Identifier(name) = &function.node else {
+            return Err(analysis_error(
+                span.clone(),
+                "Function calls in conditions must use a command name".to_string(),
+            ));
+        };
+
+        if !self.is_autovar_command(name) {
+            return Err(analysis_error(
+                span.clone(),
+                format!(
+                    "Command '{}' cannot be used in a condition because it does not return a result. \
+                     Only commands with a destVar/destVarID parameter that defaults to VAR_RESULT can be used this way.",
+                    name
+                ),
+            ));
+        }
+
+        let Some(autovar_index) = self.get_autovar_param_index(name) else {
+            return Err(analysis_error(
+                span.clone(),
+                format!(
+                    "Internal error: could not find autovar parameter for '{}'",
+                    name
+                ),
+            ));
+        };
+
+        if args.len() > autovar_index {
+            return Err(analysis_error(
+                span.clone(),
+                format!(
+                    "When using '{}' in a condition, do not specify the result variable - it will automatically use VAR_RESULT. \
+                     Provide only the first {} argument(s).",
+                    name, autovar_index
+                ),
+            ));
+        }
+
+        for arg in args {
+            self.validate_expression(arg)?;
+        }
+
+        Ok(())
+    }
+
+    /// Validate a match statement subject (must be a variable or autovar call)
+    fn validate_match_subject(
+        &self,
+        subject: &Expression,
+        stmt_span: &Range<usize>,
+    ) -> ParseResult<()> {
+        match &subject.node {
+            ExpressionKind::Identifier(name) => match self.resolve_symbol(name) {
+                Some(SymbolType::Variable(_) | SymbolType::Constant(_)) => Ok(()),
+                Some(_) => Err(analysis_error(
+                    subject.span.clone(),
+                    format!(
+                        "match subject '{}' must be a variable, not a label or function",
+                        name
+                    ),
+                )),
+                None => Err(analysis_error(
+                    subject.span.clone(),
+                    format!("Undefined symbol '{}' in match subject", name),
+                )),
+            },
+            ExpressionKind::Number(n) => {
+                if *n >= 0x4000 {
+                    Ok(())
+                } else {
+                    Err(analysis_error(
+                        subject.span.clone(),
+                        format!(
+                            "match subject must be a variable (>= 0x4000), got literal value {}",
+                            n
+                        ),
+                    ))
+                }
+            }
+            ExpressionKind::Call { function, args } => {
+                self.validate_autovar_call(function, args, &subject.span)?;
+                Ok(())
+            }
+            _ => Err(analysis_error(
+                stmt_span.clone(),
+                "match subject must be a variable or an autovar command call".to_string(),
+            )),
+        }
     }
 
     /// Validate command parameters (count and types)
@@ -528,10 +685,7 @@ impl<'a> Analyzer<'a> {
                 self.validate_expression(id)?;
             }
             ExpressionKind::Call { function, args } => {
-                self.validate_expression(function)?;
-                for arg in args {
-                    self.validate_expression(arg)?;
-                }
+                self.validate_autovar_call(function, args, &expr.span)?;
             }
             _ => {}
         }
@@ -589,6 +743,226 @@ mod tests {
             Some(SymbolType::Variable(id)) => assert_eq!(*id, 1),
             _ => panic!("Global alias not found in symbol table"),
         }
+    }
+
+    #[test]
+    fn test_break_inside_while_is_valid() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    while 0x8000 != 0 do
+        break
+    endwhile
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_ok(), "break inside while should be valid");
+    }
+
+    #[test]
+    fn test_break_outside_while_is_error() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    break
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_err(), "break outside while should be an error");
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(err.contains("break statement can only be used inside a while loop"));
+    }
+
+    #[test]
+    fn test_break_in_if_inside_while_is_valid() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    while 0x8000 != 0 do
+        if 0x8000 == 5 then
+            break
+        endif
+    endwhile
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_ok(), "break in if inside while should be valid");
+    }
+
+    #[test]
+    fn test_match_with_variable_is_valid() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    match 0x8000 where
+        case 0:
+            Message 1
+        else:
+            Message 2
+    endmatch
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_ok(), "match with variable should be valid");
+    }
+
+    #[test]
+    fn test_match_with_literal_value_is_error() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    match 5 where
+        case 0:
+            Message 1
+    endmatch
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_err(),
+            "match with literal value should be an error"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(err.contains("must be a variable"));
+    }
+
+    #[test]
+    fn test_autovar_call_in_condition_valid() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    if CheckPlayerOnBike() then
+        Message 1
+    endif
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "autovar command in condition should be valid: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_autovar_call_in_match_valid() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    match ShowYesNoMenu() where
+        case 0:
+            Message 1
+        case 1:
+            Message 2
+    endmatch
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "autovar command in match should be valid: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_non_autovar_call_in_condition_error() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    if Message() then
+        End
+    endif
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_err(),
+            "non-autovar command in condition should be an error"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(err.contains("does not return a result"));
+    }
+
+    #[test]
+    fn test_autovar_call_with_comparison() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r#"
+function TestFunc #1:
+    if ShowYesNoMenu() == 1 then
+        Message 1
+    endif
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "autovar command with comparison should be valid: {:?}",
+            result
+        );
     }
 
     #[test]

@@ -27,8 +27,9 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - **Private labels** for internal code organization: `HelperCode:`
 - **Aliases** for constants: `alias 0x800C as VAR_RESULT`
 - **Actions** for movement data: `action WalkPattern ... EndMovement`
-- **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, local jumps, `Call`/`Return`
+- **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, `match/endmatch`, `break`, local jumps, `Call`/`Return`
 - **Inline labels**: `.local_label:` for local jumps within functions
+- **Autovar**: Commands that return results can be used directly in conditions (e.g., `if CheckPlayerOnBike() then`), inspired by the feature of the same name from PoryScript
 
 ### Compiler Pipeline
 1. **Lexer** → Tokens
@@ -61,6 +62,7 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - Constant folding for compile-time arithmetic
 - Complex expressions in conditions (`if x + 1 == 5`)
 - Optimization passes
+- Decompiler pattern matching for `match`/`while`/`if` reconstruction
 - More comprehensive test coverage
 
 ---
@@ -142,6 +144,79 @@ action NPC_WalkAway
     WalkLeft 2
     FaceDown
 EndMovement
+```
+
+### Match Statements
+
+Use `match` to dispatch based on a variable's value:
+
+```rotom
+function HandleChoice #1:
+    match VAR_RESULT where
+        case 0:
+            Message 1
+        case 1, 2:
+            Message 2
+        else:
+            Message 3
+    endmatch
+    End
+```
+
+### Autovar: Commands in Conditions
+
+Commands that return a result (those with a `destVar`/`destVarID` parameter defaulting to `VAR_RESULT`) can be used directly in conditions. The compiler automatically:
+1. Emits the command with `VAR_RESULT` as the destination
+2. Compares the result appropriately
+
+```rotom
+function BikeCheck #1:
+    // Bare call - equivalent to: CheckPlayerOnBike VAR_RESULT; if VAR_RESULT == 1
+    if CheckPlayerOnBike() then
+        Message 1
+    endif
+
+    // With explicit comparison
+    if ShowYesNoMenu() == 0 then
+        Message 2
+    endif
+
+    // In match statements
+    match ShowYesNoMenu() where
+        case 0:
+            Call HandleNo
+        case 1:
+            Call HandleYes
+    endmatch
+    End
+```
+
+Commands with additional parameters work too:
+
+```rotom
+function ItemCheck #1:
+    // AddItem(item, amount) - destVarID is automatically VAR_RESULT
+    if AddItem(ITEM_POTION, 5) then
+        Message 1  // Success
+    else
+        Message 2  // Bag full
+    endif
+    End
+```
+
+### Break Statement
+
+Use `break` to exit a `while` loop early:
+
+```rotom
+function SearchLoop #1:
+    while VAR_COUNTER < 10 do
+        if VAR_RESULT == TARGET_VALUE then
+            break
+        endif
+        AddVar VAR_COUNTER, 1
+    endwhile
+    End
 ```
 
 ---

@@ -5,6 +5,7 @@
 //! - Macro expansion with parameter substitution
 //! - Default parameter application
 //! - Symbol resolution (aliases, constants, labels)
+//! - Autovar commands in conditions (commands with destVar that default to VAR_RESULT)
 
 use regex::Regex;
 use std::collections::HashMap;
@@ -18,6 +19,19 @@ use crate::compiler::{Lexer, Parser};
 use crate::database::{Command, DatabaseV2, ParamDef};
 
 use super::{Arg, Condition, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
+
+const VAR_RESULT: i32 = 0x800C;
+
+const AUTOVAR_PARAM_NAMES: &[&str] = &[
+    "destvar",
+    "destvarid",
+    "successvar",
+    "var_dest",
+    "retvar",
+    "variable",
+];
+
+const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
 
 /// Macro condition parameter substitution: matches \paramName
 static RE_MACRO_PARAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(\w+)").unwrap());
@@ -170,6 +184,17 @@ impl<'a> Lowerer<'a> {
             } => {
                 let label_end = self.new_label("end_match");
 
+                let effective_subject =
+                    if let ExpressionKind::Call { function, args } = &subject.node {
+                        self.lower_autovar_call(function, args)?;
+                        Expression {
+                            node: ExpressionKind::Number(VAR_RESULT),
+                            span: subject.span.clone(),
+                        }
+                    } else {
+                        subject.as_ref().clone()
+                    };
+
                 for (i, case) in cases.iter().enumerate() {
                     let label_next = if i + 1 < cases.len() {
                         self.new_label("match_next")
@@ -191,7 +216,7 @@ impl<'a> Lowerer<'a> {
 
                         let condition = Expression {
                             node: ExpressionKind::Infix {
-                                left: subject.clone(),
+                                left: Box::new(effective_subject.clone()),
                                 operator: TokenType::Equal,
                                 right: Box::new(value.clone()),
                             },
@@ -720,14 +745,38 @@ impl<'a> Lowerer<'a> {
         target_label: &str,
         invert: bool,
     ) -> ParseResult<()> {
+        if let ExpressionKind::Call { function, args } = &expr.node {
+            self.lower_autovar_call(function, args)?;
+            self.output.push(IrOpcode::Command {
+                name: "CompareVarValue".to_string(),
+                args: vec![Arg::Value(VAR_RESULT), Arg::Value(1)],
+            });
+            let cond = if invert {
+                Condition::Different
+            } else {
+                Condition::Equal
+            };
+            self.output.push(IrOpcode::Command {
+                name: "GoToIf".to_string(),
+                args: vec![
+                    Arg::Value(cond as i32),
+                    Arg::Pointer(target_label.to_string()),
+                ],
+            });
+            return Ok(());
+        }
+
         if let ExpressionKind::Infix {
             left,
             operator,
             right,
         } = &expr.node
         {
-            let (left_type, left_val) = self.analyze_operand(left)?;
-            let (right_type, right_val) = self.analyze_operand(right)?;
+            let left_type = self.lower_operand_if_call(left)?;
+            let right_type = self.lower_operand_if_call(right)?;
+
+            let (left_type, left_val) = self.analyze_operand_after_call(left, left_type)?;
+            let (right_type, right_val) = self.analyze_operand_after_call(right, right_type)?;
             let (final_left, final_right, swapped) = match (&left_type, &right_type) {
                 (OperandType::Variable, OperandType::Value) => (left_val, right_val, false),
                 (OperandType::Value, OperandType::Variable) => (right_val, left_val, true),
@@ -759,10 +808,116 @@ impl<'a> Lowerer<'a> {
             Ok(())
         } else {
             Err(lowering_error(format!(
-                "Condition must be a comparison expression (e.g., 'x == 1'), found {:?}. Boolean expressions are not yet supported.",
+                "Condition must be a comparison expression (e.g., 'x == 1') or an autovar command call, found {:?}.",
                 expr.node
             )))
         }
+    }
+
+    fn lower_operand_if_call(&mut self, expr: &Expression) -> ParseResult<Option<i32>> {
+        if let ExpressionKind::Call { function, args } = &expr.node {
+            self.lower_autovar_call(function, args)?;
+            Ok(Some(VAR_RESULT))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn analyze_operand_after_call(
+        &self,
+        expr: &Expression,
+        call_result: Option<i32>,
+    ) -> ParseResult<(OperandType, i32)> {
+        if let Some(var_result) = call_result {
+            Ok((OperandType::Variable, var_result))
+        } else {
+            self.analyze_operand(expr)
+        }
+    }
+
+    fn lower_autovar_call(
+        &mut self,
+        function: &Expression,
+        args: &[Expression],
+    ) -> ParseResult<()> {
+        let ExpressionKind::Identifier(name) = &function.node else {
+            return Err(lowering_error(
+                "Autovar call must use a command name".to_string(),
+            ));
+        };
+
+        let cmd = self.db.get_command(name)?;
+
+        let autovar_index = self.get_autovar_param_index(cmd);
+
+        let mut final_args: Vec<Expression> = args.to_vec();
+
+        if let Some(idx) = autovar_index {
+            while final_args.len() < idx {
+                let param = &cmd.params[final_args.len()];
+                if let Some(default_str) = &param.default {
+                    let substituted =
+                        self.substitute_default_params(default_str, &cmd.params, &final_args)?;
+                    let lexer = Lexer::new(&substituted);
+                    let mut parser = Parser::new(lexer);
+                    let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
+                    final_args.push(expr);
+                } else {
+                    return Err(lowering_error(format!(
+                        "Command '{}' missing required argument '{}' at position {}",
+                        name,
+                        param.name,
+                        final_args.len()
+                    )));
+                }
+            }
+
+            final_args.push(Expression {
+                node: ExpressionKind::Number(VAR_RESULT),
+                span: 0..0,
+            });
+        }
+
+        let args_with_defaults = self.apply_defaults(name, cmd, &final_args)?;
+
+        if cmd.is_macro() {
+            let mut param_map: HashMap<String, String> = HashMap::new();
+            for (param, arg) in cmd.params.iter().zip(args_with_defaults.iter()) {
+                let formatted = self.format_arg_for_substitution(arg)?;
+                param_map.insert(param.name.clone(), formatted);
+            }
+
+            let expansion = cmd.expansion.as_ref().ok_or_else(|| {
+                lowering_error(format!("Macro '{}' has no expansion defined", name))
+            })?;
+
+            for line in expansion {
+                let substituted = self.substitute_params(line, &param_map);
+                let parsed_stmt = self.parse_expansion_line(&substituted)?;
+                self.lower_statement_with_depth(&parsed_stmt, 1)?;
+            }
+        } else {
+            let resolved_args = self.resolve_args(&args_with_defaults)?;
+            self.output.push(IrOpcode::Command {
+                name: name.to_string(),
+                args: resolved_args,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn get_autovar_param_index(&self, cmd: &Command) -> Option<usize> {
+        cmd.params.iter().position(|param| {
+            let name_lower = param.name.to_lowercase();
+            let has_autovar_name = AUTOVAR_PARAM_NAMES.iter().any(|n| name_lower.contains(n));
+            let has_autovar_default = param.default.as_ref().is_some_and(|d| {
+                AUTOVAR_DEFAULT_VALUES
+                    .iter()
+                    .any(|v| d.eq_ignore_ascii_case(v))
+            });
+            has_autovar_name && has_autovar_default
+        })
     }
 
     fn resolve_args(&self, args: &[Expression]) -> ParseResult<Vec<Arg>> {
@@ -930,7 +1085,7 @@ mod tests {
         let db = create_test_db();
         constants.load_from_db(&db);
 
-        let mut analyzer = Analyzer::with_constants(&constants);
+        let mut analyzer = Analyzer::with_database(&constants, &db);
         analyzer.analyze(&script_file).unwrap();
 
         (script_file, analyzer.symbols)
@@ -1385,11 +1540,268 @@ function TestFunc #1:
     break
     End
 "#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut constants = ConstantDb::new();
+        let db = create_test_db();
+        constants.load_from_db(&db);
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+
+        assert!(
+            result.is_err(),
+            "Break outside loop should fail during analysis"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("break statement can only be used inside a while loop"),
+            "Error should mention break outside loop"
+        );
+    }
+
+    #[test]
+    fn test_lower_autovar_call_bare_condition() {
+        let source = r#"
+function TestFunc #1:
+    if CheckPlayerOnBike() then
+        Message 1
+    endif
+    End
+"#;
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
 
-        let result = lowerer.lower_script_file(&script_file);
-        assert!(result.is_err(), "Break outside loop should fail");
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let has_check_bike = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } if name == "CheckPlayerOnBike")
+                });
+                assert!(has_check_bike, "Should emit CheckPlayerOnBike command");
+
+                let has_compare = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                        if name == "CompareVarValue"
+                        && args.len() == 2
+                        && matches!(&args[0], Arg::Value(0x800C))
+                        && matches!(&args[1], Arg::Value(1)))
+                });
+                assert!(
+                    has_compare,
+                    "Should emit CompareVarValue with VAR_RESULT and 1"
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_autovar_call_with_comparison() {
+        let source = r#"
+function TestFunc #1:
+    if ShowYesNoMenu() == 0 then
+        Message 1
+    endif
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let has_yesno = ir_func.instructions.iter().any(
+                    |op| matches!(op, IrOpcode::Command { name, .. } if name == "ShowYesNoMenu"),
+                );
+                assert!(has_yesno, "Should emit ShowYesNoMenu command");
+
+                let has_compare = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                        if name == "CompareVarValue"
+                        && args.len() == 2
+                        && matches!(&args[0], Arg::Value(0x800C))
+                        && matches!(&args[1], Arg::Value(0)))
+                });
+                assert!(
+                    has_compare,
+                    "Should emit CompareVarValue with VAR_RESULT and 0"
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_autovar_in_match() {
+        let source = r#"
+function TestFunc #1:
+    match ShowYesNoMenu() where
+        case 0:
+            Message 1
+        case 1:
+            Message 2
+    endmatch
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let has_yesno = ir_func.instructions.iter().any(
+                    |op| matches!(op, IrOpcode::Command { name, .. } if name == "ShowYesNoMenu"),
+                );
+                assert!(has_yesno, "Should emit ShowYesNoMenu command");
+
+                let compare_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| {
+                        matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue")
+                    })
+                    .count();
+                assert!(
+                    compare_count >= 2,
+                    "Should have at least 2 CompareVarValue for cases 0 and 1. Got {}",
+                    compare_count
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_autovar_in_match_emits_once() {
+        let source = r#"
+function TestFunc #1:
+    match ShowYesNoMenu() where
+        case 0:
+            Message 1
+        case 1:
+            Message 2
+        case 2:
+            Message 3
+    endmatch
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let yesno_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| {
+                        matches!(op, IrOpcode::Command { name, .. } if name == "ShowYesNoMenu")
+                    })
+                    .count();
+                assert_eq!(
+                    yesno_count, 1,
+                    "ShowYesNoMenu should be emitted exactly once, got {}",
+                    yesno_count
+                );
+
+                let compare_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| {
+                        matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue")
+                    })
+                    .count();
+                assert!(
+                    compare_count >= 3,
+                    "Should have at least 3 CompareVarValue for cases 0, 1, 2. Got {}",
+                    compare_count
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_autovar_call_with_args() {
+        let source = r#"
+function TestFunc #1:
+    if AddItem(1, 5) then
+        Message 1
+    endif
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let has_add_item = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                        if name == "AddItem"
+                        && args.len() == 3
+                        && matches!(&args[0], Arg::Value(1))
+                        && matches!(&args[1], Arg::Value(5))
+                        && matches!(&args[2], Arg::Value(0x800C)))
+                });
+                assert!(
+                    has_add_item,
+                    "Should emit AddItem with item=1, amount=5, destVarID=VAR_RESULT"
+                );
+
+                let has_compare = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                        if name == "CompareVarValue"
+                        && matches!(&args[0], Arg::Value(0x800C))
+                        && matches!(&args[1], Arg::Value(1)))
+                });
+                assert!(
+                    has_compare,
+                    "Should emit CompareVarValue with VAR_RESULT and 1"
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_autovar_call_on_right_side() {
+        let source = r#"
+function TestFunc #1:
+    if 1 == CheckPlayerOnBike() then
+        Message 1
+    endif
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let has_check_bike = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } if name == "CheckPlayerOnBike")
+                });
+                assert!(has_check_bike, "Should emit CheckPlayerOnBike command");
+
+                let has_compare = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                        if name == "CompareVarValue"
+                        && args.len() == 2
+                        && matches!(&args[0], Arg::Value(0x800C)))
+                });
+                assert!(has_compare, "Should emit CompareVarValue with VAR_RESULT");
+            }
+            _ => panic!("Expected function"),
+        }
     }
 }
