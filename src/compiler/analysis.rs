@@ -82,7 +82,10 @@ impl SymbolTable {
         kind: SymbolType,
         span: Range<usize>,
     ) -> Result<(), CompileError> {
-        let current_scope = self.scopes.last_mut().unwrap();
+        let current_scope = self
+            .scopes
+            .last_mut()
+            .expect("scopes is never empty; initialized with one element and protected by exit_scope guard");
 
         if let Some((_, original_span)) = current_scope.get(&name) {
             return Err(analysis_error(
