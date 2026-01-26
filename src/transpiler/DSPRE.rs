@@ -45,32 +45,36 @@ use std::sync::LazyLock;
 
 /// Script header: "Script N:"
 static RE_SCRIPT_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^Script\s+(\d+)\s*:").unwrap());
+    LazyLock::new(|| Regex::new(r"^Script\s+(\d+)\s*:").expect("static regex is valid"));
 
 /// Function header: "Function N:"
 static RE_FUNCTION_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^Function\s+(\d+)\s*:").unwrap());
+    LazyLock::new(|| Regex::new(r"^Function\s+(\d+)\s*:").expect("static regex is valid"));
 
 /// Action header: "Action N:"
 static RE_ACTION_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^Action\s+(\d+)\s*:").unwrap());
+    LazyLock::new(|| Regex::new(r"^Action\s+(\d+)\s*:").expect("static regex is valid"));
 
 /// Script reference in arguments: "Script#N"
-static RE_SCRIPT_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Script#(\d+)").unwrap());
+static RE_SCRIPT_REF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Script#(\d+)").expect("static regex is valid"));
 
 /// Function reference in arguments: "Function#N"
-static RE_FUNCTION_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Function#(\d+)").unwrap());
+static RE_FUNCTION_REF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Function#(\d+)").expect("static regex is valid"));
 
 /// Action reference in arguments: "Action#N"
-static RE_ACTION_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Action#(\d+)").unwrap());
+static RE_ACTION_REF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Action#(\d+)").expect("static regex is valid"));
 
 /// UseScript workaround: "UseScript_#N"
 static RE_USE_SCRIPT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*UseScript_#(\d+)\s*$").unwrap());
+    LazyLock::new(|| Regex::new(r"^\s*UseScript_#(\d+)\s*$").expect("static regex is valid"));
 
 /// Descriptor pattern: Word.Value -> Value (e.g., "Overworld.0" -> "0")
-static RE_DESCRIPTOR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z0-9_]+)").unwrap());
+static RE_DESCRIPTOR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z0-9_]+)").expect("static regex is valid")
+});
 
 /// Transpile a DSPRE script to Rotoscript format
 pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> String {
@@ -96,7 +100,7 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
 
         // Check for Script N: header -> becomes `function script_N #N:`
         if let Some(caps) = RE_SCRIPT_HEADER.captures(trimmed) {
-            let id: u32 = caps[1].parse().unwrap();
+            let id: u32 = caps[1].parse().expect("regex guarantees digits");
             output.push_str(&format!("function script_{} #{}:\n", id, id));
             in_action = false;
             continue;
@@ -104,7 +108,7 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
 
         // Check for Function N: header -> becomes bare label `func_N:`
         if let Some(caps) = RE_FUNCTION_HEADER.captures(trimmed) {
-            let id: u32 = caps[1].parse().unwrap();
+            let id: u32 = caps[1].parse().expect("regex guarantees digits");
             output.push_str(&format!("func_{}:\n", id));
             in_action = false;
             continue;
@@ -112,7 +116,7 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
 
         // Check for Action N: header
         if let Some(caps) = RE_ACTION_HEADER.captures(trimmed) {
-            let id: u32 = caps[1].parse().unwrap();
+            let id: u32 = caps[1].parse().expect("regex guarantees digits");
             output.push_str(&format!("action action_{}\n", id));
             in_action = true;
             continue;
@@ -120,7 +124,7 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
 
         // Check for UseScript_#N (DSPRE workaround for jumping to scripts)
         if let Some(caps) = RE_USE_SCRIPT.captures(line) {
-            let id: u32 = caps[1].parse().unwrap();
+            let id: u32 = caps[1].parse().expect("regex guarantees digits");
             // Preserve leading whitespace
             let leading_ws = &line[..line.len() - line.trim_start().len()];
             output.push_str(leading_ws);
