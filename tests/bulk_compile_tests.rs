@@ -33,8 +33,10 @@ use sha2::{Digest, Sha256};
 use rotom::compile_levelscript_to_bytes;
 use rotom::compile_to_bytes_with_options;
 use rotom::database::{ConstantDb, DatabaseV2};
+use rotom::decompiler::ir_to_source;
 use rotom::transpiler::decomp::transpile as transpile_decomp;
 use rotom::transpiler::is_levelscript_source;
+use rotom::transpiler::transpile_dspre;
 
 /// Result category for a single script compilation attempt
 #[derive(Debug, Clone)]
@@ -245,6 +247,22 @@ fn load_test_db_and_constants() -> (DatabaseV2, ConstantDb) {
     (db, constants)
 }
 
+fn load_platinum_db_and_constants() -> (DatabaseV2, ConstantDb) {
+    let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
+        .expect("Failed to load Platinum database");
+    let mut constants = ConstantDb::new();
+    constants.load_from_db(&db);
+    (db, constants)
+}
+
+fn load_heartgold_db_and_constants() -> (DatabaseV2, ConstantDb) {
+    let db = DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
+        .expect("Failed to load HeartGold database");
+    let mut constants = ConstantDb::new();
+    constants.load_from_db(&db);
+    (db, constants)
+}
+
 fn compile_single_script(
     script_path: &Path,
     db: &DatabaseV2,
@@ -300,6 +318,66 @@ fn compile_single_script(
     }
 }
 
+fn round_trip_single_binary(
+    binary_path: &Path,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> CompileOutcome {
+    // 1. Read binary file
+    let original_bytes = match std::fs::read(binary_path) {
+        Ok(b) => b,
+        Err(e) => return CompileOutcome::IoError(format!("{}", e)),
+    };
+    let expected_hash = sha256_hex(&original_bytes);
+
+    // 2. Decompile to IR, then to source
+    let ir = match rotom::decompile_to_ir(original_bytes.clone(), db) {
+        Ok(ir) => ir,
+        Err(e) => return CompileOutcome::CompileError(format!("Decompile failed: {:?}", e)),
+    };
+    let source = ir_to_source(&ir, db);
+
+    // 3. Compile source back to binary
+    let actual_bytes = match compile_to_bytes_with_options(&source, db, constants, true) {
+        Ok(b) => b,
+        Err(e) => return CompileOutcome::CompileError(format!("Recompile failed: {:?}", e)),
+    };
+
+    // 4. Compare hashes
+    let actual_hash = sha256_hex(&actual_bytes);
+    if actual_hash == expected_hash {
+        CompileOutcome::Match
+    } else {
+        CompileOutcome::HashMismatch {
+            expected_hash,
+            actual_hash,
+            expected_size: original_bytes.len(),
+            actual_size: actual_bytes.len(),
+        }
+    }
+}
+
+fn compile_dspre_script(
+    script_path: &Path,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> CompileOutcome {
+    // 1. Read DSPRE source
+    let source = match std::fs::read_to_string(script_path) {
+        Ok(s) => s,
+        Err(e) => return CompileOutcome::IoError(format!("{}", e)),
+    };
+
+    // 2. Transpile DSPRE to rotom
+    let rotom_source = transpile_dspre(&source, Some(db));
+
+    // 3. Compile to binary (no expected hash - just check if it compiles)
+    match compile_to_bytes_with_options(&rotom_source, db, constants, true) {
+        Ok(_) => CompileOutcome::Match, // "Match" means successful compile
+        Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
+    }
+}
+
 fn bulk_compile_scripts(
     scripts: Vec<PathBuf>,
     db: &DatabaseV2,
@@ -321,6 +399,104 @@ fn bulk_compile_scripts(
             .unwrap()
             .to_string();
         let outcome = compile_single_script(script_path, db, constants);
+
+        match &outcome {
+            CompileOutcome::Match => {
+                result.stats.matches.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::HashMismatch { .. } => {
+                result.stats.hash_mismatches.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::CompileError(_) => {
+                result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::MissingExpectedBinary(_) => {
+                result
+                    .stats
+                    .missing_binaries
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::IoError(_) => {
+                result.stats.io_errors.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        result.outcomes.lock().unwrap().insert(script_name, outcome);
+    });
+
+    result
+}
+
+fn bulk_round_trip_binaries(
+    binaries: Vec<PathBuf>,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> BulkCompileResult {
+    let result = BulkCompileResult {
+        stats: BulkCompileStats {
+            total: binaries.len(),
+            ..Default::default()
+        },
+        outcomes: Mutex::new(HashMap::new()),
+    };
+
+    binaries.par_iter().for_each(|binary_path| {
+        let binary_name = binary_path
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or("")
+            .to_string();
+        let outcome = round_trip_single_binary(binary_path, db, constants);
+
+        match &outcome {
+            CompileOutcome::Match => {
+                result.stats.matches.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::HashMismatch { .. } => {
+                result.stats.hash_mismatches.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::CompileError(_) => {
+                result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::MissingExpectedBinary(_) => {
+                result
+                    .stats
+                    .missing_binaries
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::IoError(_) => {
+                result.stats.io_errors.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        result.outcomes.lock().unwrap().insert(binary_name, outcome);
+    });
+
+    result
+}
+
+fn bulk_compile_dspre_scripts(
+    scripts: Vec<PathBuf>,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> BulkCompileResult {
+    let result = BulkCompileResult {
+        stats: BulkCompileStats {
+            total: scripts.len(),
+            ..Default::default()
+        },
+        outcomes: Mutex::new(HashMap::new()),
+    };
+
+    scripts.par_iter().for_each(|script_path| {
+        let script_name = script_path
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let outcome = compile_dspre_script(script_path, db, constants);
 
         match &outcome {
             CompileOutcome::Match => {
@@ -549,4 +725,170 @@ fn test_bulk_compile_levelscripts() {
 fn test_bulk_compile_levelscripts_verbose() {
     let result = run_levelscripts_test(true);
     assert_100_percent_match(&result, "Levelscripts");
+}
+
+// === DSPRE PLATINUM ROUND-TRIP TESTS ===
+
+fn run_dspre_platinum_round_trip_test(verbose: bool) -> BulkCompileResult {
+    let binaries_dir = get_dspre_platinum_binaries_dir();
+    if !binaries_dir.exists() {
+        panic!("DSPRE Platinum binaries not found at {:?}", binaries_dir);
+    }
+
+    let (db, constants) = load_platinum_db_and_constants();
+    let binaries = find_dspre_binary_files(&binaries_dir);
+    println!(
+        "Found {} DSPRE Platinum binaries for round-trip",
+        binaries.len()
+    );
+
+    let result = bulk_round_trip_binaries(binaries, &db, &constants);
+    print_bulk_compile_report("DSPRE Platinum Round-Trip", &result, verbose);
+    result
+}
+
+#[test]
+fn test_dspre_platinum_round_trip() {
+    let result = run_dspre_platinum_round_trip_test(false);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    let rate = 100.0 * matches as f64 / total as f64;
+    assert!(rate >= 45.0, "Expected 45%+ match rate, got {:.1}%", rate);
+}
+
+#[test]
+#[ignore]
+fn test_dspre_platinum_round_trip_verbose() {
+    let result = run_dspre_platinum_round_trip_test(true);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    let rate = 100.0 * matches as f64 / total as f64;
+    assert!(rate >= 45.0, "Expected 45%+ match rate, got {:.1}%", rate);
+}
+
+// === DSPRE PLATINUM COMPILE TESTS ===
+
+fn run_dspre_platinum_compile_test(verbose: bool) -> BulkCompileResult {
+    let scripts_dir = get_dspre_platinum_scripts_dir();
+    if !scripts_dir.exists() {
+        panic!("DSPRE Platinum scripts not found at {:?}", scripts_dir);
+    }
+
+    let (db, constants) = load_platinum_db_and_constants();
+    let scripts = find_dspre_script_files(&scripts_dir);
+    println!("Found {} DSPRE Platinum scripts to compile", scripts.len());
+
+    let result = bulk_compile_dspre_scripts(scripts, &db, &constants);
+    print_bulk_compile_report("DSPRE Platinum Compile", &result, verbose);
+    result
+}
+
+#[test]
+fn test_dspre_platinum_compile() {
+    let result = run_dspre_platinum_compile_test(false);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    let rate = 100.0 * matches as f64 / total as f64;
+    assert!(
+        rate >= 85.0,
+        "Expected 85%+ compile success rate, got {:.1}%",
+        rate
+    );
+}
+
+#[test]
+#[ignore]
+fn test_dspre_platinum_compile_verbose() {
+    let result = run_dspre_platinum_compile_test(true);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    let rate = 100.0 * matches as f64 / total as f64;
+    assert!(
+        rate >= 85.0,
+        "Expected 85%+ compile success rate, got {:.1}%",
+        rate
+    );
+}
+
+// === DSPRE HEARTGOLD ROUND-TRIP TESTS ===
+
+fn run_dspre_heartgold_round_trip_test(verbose: bool) -> BulkCompileResult {
+    let binaries_dir = get_dspre_heartgold_binaries_dir();
+    if !binaries_dir.exists() {
+        panic!("DSPRE HeartGold binaries not found at {:?}", binaries_dir);
+    }
+
+    let (db, constants) = load_heartgold_db_and_constants();
+    let binaries = find_dspre_binary_files(&binaries_dir);
+    println!(
+        "Found {} DSPRE HeartGold binaries for round-trip",
+        binaries.len()
+    );
+
+    let result = bulk_round_trip_binaries(binaries, &db, &constants);
+    print_bulk_compile_report("DSPRE HeartGold Round-Trip", &result, verbose);
+    result
+}
+
+#[test]
+fn test_dspre_heartgold_round_trip() {
+    let result = run_dspre_heartgold_round_trip_test(false);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    let rate = 100.0 * matches as f64 / total as f64;
+    assert!(rate >= 30.0, "Expected 30%+ match rate, got {:.1}%", rate);
+}
+
+#[test]
+#[ignore]
+fn test_dspre_heartgold_round_trip_verbose() {
+    let result = run_dspre_heartgold_round_trip_test(true);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    let rate = 100.0 * matches as f64 / total as f64;
+    assert!(rate >= 30.0, "Expected 30%+ match rate, got {:.1}%", rate);
+}
+
+// === DSPRE HEARTGOLD COMPILE TESTS ===
+
+fn run_dspre_heartgold_compile_test(verbose: bool) -> BulkCompileResult {
+    let scripts_dir = get_dspre_heartgold_scripts_dir();
+    if !scripts_dir.exists() {
+        panic!("DSPRE HeartGold scripts not found at {:?}", scripts_dir);
+    }
+
+    let (db, constants) = load_heartgold_db_and_constants();
+    let scripts = find_dspre_script_files(&scripts_dir);
+    println!("Found {} DSPRE HeartGold scripts to compile", scripts.len());
+
+    let result = bulk_compile_dspre_scripts(scripts, &db, &constants);
+    print_bulk_compile_report("DSPRE HeartGold Compile", &result, verbose);
+    result
+}
+
+#[test]
+fn test_dspre_heartgold_compile() {
+    let result = run_dspre_heartgold_compile_test(false);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    let rate = 100.0 * matches as f64 / total as f64;
+    assert!(
+        rate >= 65.0,
+        "Expected 65%+ compile success rate, got {:.1}%",
+        rate
+    );
+}
+
+#[test]
+#[ignore]
+fn test_dspre_heartgold_compile_verbose() {
+    let result = run_dspre_heartgold_compile_test(true);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    let rate = 100.0 * matches as f64 / total as f64;
+    assert!(
+        rate >= 65.0,
+        "Expected 65%+ compile success rate, got {:.1}%",
+        rate
+    );
 }
