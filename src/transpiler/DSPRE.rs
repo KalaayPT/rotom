@@ -43,35 +43,27 @@ use std::sync::LazyLock;
 // Cached Regexes
 // ============================================================================
 
-/// Script header: "Script N:"
 static RE_SCRIPT_HEADER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^Script\s+(\d+)\s*:").expect("static regex is valid"));
 
-/// Function header: "Function N:"
 static RE_FUNCTION_HEADER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^Function\s+(\d+)\s*:").expect("static regex is valid"));
 
-/// Action header: "Action N:"
 static RE_ACTION_HEADER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^Action\s+(\d+)\s*:").expect("static regex is valid"));
 
-/// Script reference in arguments: "Script#N"
 static RE_SCRIPT_REF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Script#(\d+)").expect("static regex is valid"));
 
-/// Function reference in arguments: "Function#N"
 static RE_FUNCTION_REF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Function#(\d+)").expect("static regex is valid"));
 
-/// Action reference in arguments: "Action#N"
 static RE_ACTION_REF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Action#(\d+)").expect("static regex is valid"));
 
-/// UseScript workaround: "UseScript_#N"
 static RE_USE_SCRIPT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*UseScript_#(\d+)\s*$").expect("static regex is valid"));
 
-/// Descriptor pattern: Word.Value -> Value (e.g., "Overworld.0" -> "0")
 static RE_DESCRIPTOR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z0-9_]+)").expect("static regex is valid")
 });

@@ -16,7 +16,6 @@ use uxie::SymbolTable;
 // Hardcoded Enums (fixed across all games)
 // ============================================================================
 
-/// Pokemon Gen 4 game families
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameFamily {
     DP,       // Diamond, Pearl
@@ -56,7 +55,6 @@ impl GameFamily {
     }
 }
 
-/// Comparison operators for conditional jumps
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ComparisonOperator {
@@ -104,7 +102,6 @@ impl ComparisonOperator {
     }
 }
 
-/// Overworld facing/movement directions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Direction {
@@ -507,7 +504,7 @@ impl ConstantDb {
                     Ok(count) => {
                         total += count;
                     }
-                    Err(e) => eprintln!("Warning: Failed to load '{}': {}", path.display(), e),
+                    Err(_) => {}
                 }
             }
         }

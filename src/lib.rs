@@ -25,20 +25,15 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize)]
 pub struct CompileResult {
-    /// The input file path
     pub input: PathBuf,
-    /// The output file path (where the binary was written)
     pub output: PathBuf,
-    /// Size of the compiled binary in bytes
     pub size: usize,
 }
 
 /// A compilation failure with enough context for rich error display
 #[derive(Debug, Serialize)]
 pub struct CompileFailure {
-    /// The input file path that failed
     pub path: PathBuf,
-    /// The compilation error
     pub error: CompileError,
     /// The source code (transpiled if applicable) for codespan-reporting
     /// Skipped in JSON output to avoid bloating machine-readable responses
@@ -49,9 +44,7 @@ pub struct CompileFailure {
 /// Result of compiling a path (file or directory)
 #[derive(Debug, Serialize)]
 pub struct BatchCompileResult {
-    /// Successfully compiled files
     pub successes: Vec<CompileResult>,
-    /// Failed compilations with source context for rich error display
     pub failures: Vec<CompileFailure>,
 }
 
