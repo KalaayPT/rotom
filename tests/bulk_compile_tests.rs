@@ -24,8 +24,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -73,7 +73,7 @@ pub struct BulkCompileResult {
     pub outcomes: Mutex<HashMap<String, CompileOutcome>>,
 }
 
-const DEFAULT_POKEPLATINUM_ROOT: &str = "C:/dev/pokeplatinum";
+const DEFAULT_POKEPLATINUM_ROOT: &str = "/home/kalaay/dev/pokeplatinum";
 
 fn get_pokeplatinum_root() -> PathBuf {
     std::env::var("POKEPLATINUM_ROOT")
@@ -129,6 +129,82 @@ fn find_levelscripts() -> Vec<PathBuf> {
                     .unwrap()
                     .contains("_init_")
         })
+        .collect();
+    scripts.sort();
+    scripts
+}
+
+const DEFAULT_POKEHEARTGOLD_ROOT: &str = "/home/kalaay/dev/pokeheartgold";
+const DEFAULT_DSPRE_PLATINUM_ROOT: &str = "/home/kalaay/Desktop/pt_DSPRE_contents";
+const DEFAULT_DSPRE_HEARTGOLD_ROOT: &str = "/home/kalaay/Desktop/hg_DSPRE_contents";
+
+fn get_pokeheartgold_root() -> PathBuf {
+    std::env::var("POKEHEARTGOLD_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_POKEHEARTGOLD_ROOT))
+}
+
+fn get_dspre_platinum_root() -> PathBuf {
+    std::env::var("DSPRE_PLATINUM_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_DSPRE_PLATINUM_ROOT))
+}
+
+fn get_dspre_heartgold_root() -> PathBuf {
+    std::env::var("DSPRE_HEARTGOLD_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_DSPRE_HEARTGOLD_ROOT))
+}
+
+fn get_dspre_platinum_scripts_dir() -> PathBuf {
+    get_dspre_platinum_root().join("expanded/scripts")
+}
+
+fn get_dspre_platinum_binaries_dir() -> PathBuf {
+    get_dspre_platinum_root().join("unpacked/scripts")
+}
+
+fn get_dspre_heartgold_scripts_dir() -> PathBuf {
+    get_dspre_heartgold_root().join("expanded/scripts")
+}
+
+fn get_dspre_heartgold_binaries_dir() -> PathBuf {
+    get_dspre_heartgold_root().join("unpacked/scripts")
+}
+
+fn get_heartgold_scripts_dir() -> PathBuf {
+    get_pokeheartgold_root().join("files/fielddata/script/scr_seq")
+}
+
+fn find_dspre_script_files(dir: &Path) -> Vec<PathBuf> {
+    let mut scripts: Vec<PathBuf> = std::fs::read_dir(dir)
+        .expect("Failed to read DSPRE scripts directory")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().map(|e| e == "script").unwrap_or(false))
+        .collect();
+    scripts.sort();
+    scripts
+}
+
+fn find_dspre_binary_files(dir: &Path) -> Vec<PathBuf> {
+    let mut binaries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .expect("Failed to read DSPRE binaries directory")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    binaries.sort();
+    binaries
+}
+
+fn find_heartgold_scripts() -> Vec<PathBuf> {
+    let scripts_dir = get_heartgold_scripts_dir();
+    let mut scripts: Vec<PathBuf> = std::fs::read_dir(&scripts_dir)
+        .expect("Failed to read HeartGold scripts directory")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().map(|e| e == "s").unwrap_or(false))
         .collect();
     scripts.sort();
     scripts
