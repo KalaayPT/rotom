@@ -24,8 +24,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -753,7 +753,7 @@ fn test_dspre_platinum_round_trip() {
     let matches = result.stats.matches.load(Ordering::Relaxed);
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
-    assert!(rate >= 45.0, "Expected 45%+ match rate, got {:.1}%", rate);
+    assert!(rate >= 100.0, "Expected 100%+ match rate, got {:.1}%", rate);
 }
 
 #[test]
@@ -763,7 +763,7 @@ fn test_dspre_platinum_round_trip_verbose() {
     let matches = result.stats.matches.load(Ordering::Relaxed);
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
-    assert!(rate >= 45.0, "Expected 45%+ match rate, got {:.1}%", rate);
+    assert!(rate >= 100.0, "Expected 100%+ match rate, got {:.1}%", rate);
 }
 
 // === DSPRE PLATINUM COMPILE TESTS ===
@@ -790,8 +790,8 @@ fn test_dspre_platinum_compile() {
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
     assert!(
-        rate >= 85.0,
-        "Expected 85%+ compile success rate, got {:.1}%",
+        rate >= 100.0,
+        "Expected 100%+ compile success rate, got {:.1}%",
         rate
     );
 }
@@ -804,8 +804,8 @@ fn test_dspre_platinum_compile_verbose() {
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
     assert!(
-        rate >= 85.0,
-        "Expected 85%+ compile success rate, got {:.1}%",
+        rate >= 100.0,
+        "Expected 100%+ compile success rate, got {:.1}%",
         rate
     );
 }
@@ -836,7 +836,7 @@ fn test_dspre_heartgold_round_trip() {
     let matches = result.stats.matches.load(Ordering::Relaxed);
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
-    assert!(rate >= 30.0, "Expected 30%+ match rate, got {:.1}%", rate);
+    assert!(rate >= 100.0, "Expected 100%+ match rate, got {:.1}%", rate);
 }
 
 #[test]
@@ -846,7 +846,7 @@ fn test_dspre_heartgold_round_trip_verbose() {
     let matches = result.stats.matches.load(Ordering::Relaxed);
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
-    assert!(rate >= 30.0, "Expected 30%+ match rate, got {:.1}%", rate);
+    assert!(rate >= 100.0, "Expected 100%+ match rate, got {:.1}%", rate);
 }
 
 // === DSPRE HEARTGOLD COMPILE TESTS ===
@@ -873,8 +873,8 @@ fn test_dspre_heartgold_compile() {
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
     assert!(
-        rate >= 65.0,
-        "Expected 65%+ compile success rate, got {:.1}%",
+        rate >= 100.0,
+        "Expected 100%+ compile success rate, got {:.1}%",
         rate
     );
 }
@@ -887,8 +887,8 @@ fn test_dspre_heartgold_compile_verbose() {
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
     assert!(
-        rate >= 65.0,
-        "Expected 65%+ compile success rate, got {:.1}%",
+        rate >= 100.0,
+        "Expected 100%+ compile success rate, got {:.1}%",
         rate
     );
 }
