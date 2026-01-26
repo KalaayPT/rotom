@@ -892,3 +892,148 @@ fn test_dspre_heartgold_compile_verbose() {
         rate
     );
 }
+
+// === HEARTGOLD DECOMP COMPILE TESTS ===
+
+fn load_heartgold_decomp_db_and_constants() -> (DatabaseV2, ConstantDb) {
+    let db = DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
+        .expect("Failed to load HeartGold database");
+
+    let mut constants = ConstantDb::new();
+    constants.load_from_db(&db);
+
+    let decomp_root = get_pokeheartgold_root();
+    if decomp_root.exists() {
+        constants
+            .load_decomp_project(&decomp_root)
+            .expect("Failed to load HeartGold decomp constants");
+    }
+
+    (db, constants)
+}
+
+fn compile_heartgold_single_script(
+    script_path: &Path,
+    db: &DatabaseV2,
+    base_constants: &ConstantDb,
+) -> CompileOutcome {
+    let source = match std::fs::read_to_string(script_path) {
+        Ok(s) => s,
+        Err(e) => return CompileOutcome::IoError(format!("{}", e)),
+    };
+
+    // Check for levelscript
+    let is_levelscript = is_levelscript_source(&source);
+
+    let mut constants = base_constants.clone();
+    let decomp_root = get_pokeheartgold_root();
+    let _ = constants.load_map_events(&decomp_root, script_path);
+
+    if is_levelscript {
+        match compile_levelscript_to_bytes(&source, &constants) {
+            Ok(_) => CompileOutcome::Match, // Compiled successfully
+            Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
+        }
+    } else {
+        let transpile_result = transpile_decomp(&source, Some(db));
+        match compile_to_bytes_with_options(
+            &transpile_result.source,
+            db,
+            &constants,
+            transpile_result.emit_end_marker,
+        ) {
+            Ok(_) => CompileOutcome::Match, // Compiled successfully
+            Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
+        }
+    }
+}
+
+fn bulk_compile_heartgold_scripts(
+    scripts: Vec<PathBuf>,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> BulkCompileResult {
+    let result = BulkCompileResult {
+        stats: BulkCompileStats {
+            total: scripts.len(),
+            ..Default::default()
+        },
+        outcomes: Mutex::new(HashMap::new()),
+    };
+
+    scripts.par_iter().for_each(|script_path| {
+        let script_name = script_path
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let outcome = compile_heartgold_single_script(script_path, db, constants);
+
+        match &outcome {
+            CompileOutcome::Match => {
+                result.stats.matches.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::CompileError(_) => {
+                result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::IoError(_) => {
+                result.stats.io_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+
+        result.outcomes.lock().unwrap().insert(script_name, outcome);
+    });
+
+    result
+}
+
+fn run_heartgold_scripts_test(verbose: bool) -> BulkCompileResult {
+    let scripts_dir = get_heartgold_scripts_dir();
+    if !scripts_dir.exists() {
+        panic!(
+            "HeartGold scripts directory not found at {:?}. Set POKEHEARTGOLD_ROOT env var.",
+            scripts_dir
+        );
+    }
+
+    let (db, constants) = load_heartgold_decomp_db_and_constants();
+    let scripts = find_heartgold_scripts();
+    println!(
+        "Found {} HeartGold decomp scripts to compile",
+        scripts.len()
+    );
+
+    let result = bulk_compile_heartgold_scripts(scripts, &db, &constants);
+    print_bulk_compile_report("HeartGold Decomp Scripts", &result, verbose);
+    result
+}
+
+#[test]
+fn test_bulk_compile_heartgold_scripts() {
+    let result = run_heartgold_scripts_test(false);
+    // Just report stats, don't fail - no reference binaries exist
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    println!(
+        "HeartGold decomp compile: {}/{} ({:.1}%)",
+        matches,
+        total,
+        100.0 * matches as f64 / total as f64
+    );
+}
+
+#[test]
+#[ignore]
+fn test_bulk_compile_heartgold_scripts_verbose() {
+    let result = run_heartgold_scripts_test(true);
+    let matches = result.stats.matches.load(Ordering::Relaxed);
+    let total = result.stats.total;
+    println!(
+        "HeartGold decomp compile: {}/{} ({:.1}%)",
+        matches,
+        total,
+        100.0 * matches as f64 / total as f64
+    );
+}
