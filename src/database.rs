@@ -96,8 +96,8 @@ impl ComparisonOperator {
             "LESS" => Some(Self::Less),
             "EQUAL" => Some(Self::Equal),
             "GREATER" => Some(Self::Greater),
-            "LESS/EQUAL" | "LESSEQUAL" => Some(Self::LessEqual),
-            "GREATER/EQUAL" | "GREATEREQUAL" => Some(Self::GreaterEqual),
+            "LESS/EQUAL" | "LESSEQUAL" | "LESS_EQUAL" => Some(Self::LessEqual),
+            "GREATER/EQUAL" | "GREATEREQUAL" | "GREATER_EQUAL" => Some(Self::GreaterEqual),
             "DIFFERENT" => Some(Self::Different),
             _ => None,
         }
@@ -283,11 +283,12 @@ impl DatabaseV2 {
 
         if let Some(id_str) = name.strip_prefix("ScrCmd_")
             && let Ok(id) = i32::from_str_radix(id_str, 16)
-                && let Some((_, cmd)) = self.commands.iter().find(|(_, cmd)| {
-                    cmd.id == Some(id as u16) && cmd.cmd_type == CommandType::ScriptCmd
-                }) {
-                    return Ok(cmd);
-                }
+            && let Some((_, cmd)) = self.commands.iter().find(|(_, cmd)| {
+                cmd.id == Some(id as u16) && cmd.cmd_type == CommandType::ScriptCmd
+            })
+        {
+            return Ok(cmd);
+        }
 
         Err(database_error(format!(
             "Command '{}' not found in database",
@@ -380,9 +381,10 @@ impl Command {
             for variant in variants {
                 if let Some(first_param) = variant.params.first()
                     && let Some(const_val) = &first_param.const_value
-                        && const_val.parse::<u8>().ok() == Some(mode) {
-                            return &variant.params;
-                        }
+                    && const_val.parse::<u8>().ok() == Some(mode)
+                {
+                    return &variant.params;
+                }
             }
         }
         &self.params
@@ -424,6 +426,9 @@ impl ConstantDb {
         self.constants.insert("TRUE".to_string(), 1);
         self.constants.insert("FALSE".to_string(), 0);
         count += 2;
+
+        self.constants.insert("VARS_START".to_string(), 0x4000);
+        count += 1;
 
         for (id_str, name) in &db.comparison_operators {
             if let Ok(id) = id_str.parse::<i32>() {
@@ -567,9 +572,10 @@ impl ConstantDb {
         }
 
         if let Some(symbols) = &self.uxie_symbols
-            && let Some(val) = symbols.resolve_constant(name) {
-                return Some(val as i32);
-            }
+            && let Some(val) = symbols.resolve_constant(name)
+        {
+            return Some(val as i32);
+        }
 
         None
     }

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use crate::database::{Command, ConstantDb, DatabaseV2, ParamType};
+use crate::database::{Command, ComparisonOperator, ConstantDb, DatabaseV2, ParamType};
 
 use super::{
     ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind},
@@ -375,6 +375,11 @@ impl<'a> Analyzer<'a> {
             return Some(SymbolType::Constant(value));
         }
 
+        // 3. Fallback: Check condition identifiers (EQUAL, LESS, etc.)
+        if let Some(cond) = ComparisonOperator::from_str(name) {
+            return Some(SymbolType::Constant(cond as i32));
+        }
+
         None
     }
 
@@ -527,6 +532,7 @@ impl<'a> Analyzer<'a> {
         };
 
         let actual_count = args.len();
+        let is_macro = cmd.is_macro();
 
         if let Some(variants) = &cmd.variants {
             let valid_counts: Vec<usize> = variants.iter().map(|v| v.params.len()).collect();
@@ -574,8 +580,12 @@ impl<'a> Analyzer<'a> {
             ));
         }
 
-        for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
-            self.validate_argument_type(arg, &param.param_type, command, &param.name, i)?;
+        // Skip type validation for macros since their param types are hints,
+        // not actual requirements (the expanded commands determine the real types)
+        if !is_macro {
+            for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
+                self.validate_argument_type(arg, &param.param_type, command, &param.name, i)?;
+            }
         }
 
         Ok(())
@@ -637,12 +647,18 @@ impl<'a> Analyzer<'a> {
         arg_index: usize,
     ) -> ParseResult<()> {
         let (valid, type_desc) = match param_type {
-            ParamType::U8 => (n >= 0 && n <= u8::MAX as i32, "u8 (0-255)"),
+            ParamType::U8 => {
+                let fits_unsigned = n >= 0 && n <= u8::MAX as i32;
+                let fits_signed = n >= i8::MIN as i32 && n <= i8::MAX as i32;
+                (fits_unsigned || fits_signed, "u8 (0-255)")
+            }
             ParamType::U16 | ParamType::Var | ParamType::Flag | ParamType::MsgId => {
-                (n >= 0 && n <= u16::MAX as i32, "u16 (0-65535)")
+                let fits_unsigned = n >= 0 && n <= u16::MAX as i32;
+                let fits_signed = n >= i16::MIN as i32 && n <= i16::MAX as i32;
+                (fits_unsigned || fits_signed, "u16 (0-65535)")
             }
             ParamType::U32 | ParamType::Label | ParamType::ScriptId | ParamType::MovementId => {
-                (n >= 0, "u32 (non-negative)")
+                (true, "u32 (non-negative)")
             }
             ParamType::Unknown => (true, "unknown"),
         };
@@ -818,7 +834,7 @@ function TestFunc #1:
 
         let source = r#"
 function TestFunc #1:
-    match 0x8000 where
+    match 0x8000 with
         case 0:
             Message 1
         else:
@@ -842,7 +858,7 @@ function TestFunc #1:
 
         let source = r#"
 function TestFunc #1:
-    match 5 where
+    match 5 with
         case 0:
             Message 1
     endmatch
@@ -894,7 +910,7 @@ function TestFunc #1:
 
         let source = r#"
 function TestFunc #1:
-    match ShowYesNoMenu() where
+    match ShowYesNoMenu() with
         case 0:
             Message 1
         case 1:
@@ -1354,11 +1370,10 @@ function Test #1:
     fn test_command_u16_range_overflow() {
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
-        use crate::database::DatabaseV2;
         use std::path::Path;
 
         let source = r#"
-function Test #1:
+function TestFunc #1:
     SetFlag 65536
     End
 "#;
@@ -1381,6 +1396,70 @@ function Test #1:
             err_msg.contains("out of range"),
             "Error should mention out of range: {}",
             err_msg
+        );
+    }
+
+    #[test]
+    fn test_macro_param_count_validation() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use std::path::Path;
+
+        let source = r#"
+function Test #1:
+    GoToIfNotEnoughMoney 100000
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let constants = ConstantDb::new();
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+
+        assert!(
+            result.is_err(),
+            "Macro with too few arguments should fail validation"
+        );
+        let err_msg = format!("{:?}", result.err().unwrap());
+        assert!(
+            err_msg.contains("requires") || err_msg.contains("argument"),
+            "Error should mention missing arguments: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_macro_does_not_validate_param_types() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use std::path::Path;
+
+        // GoToIfNotEnoughMoney declares value as u16, but should accept u32 values
+        // since it expands to CheckMoney which takes u32
+        let source = r#"
+function Test #1:
+    GoToIfNotEnoughMoney 100000, TestLabel
+TestLabel:
+    End
+"#;
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let constants = ConstantDb::new();
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+
+        assert!(
+            result.is_ok(),
+            "Macro should not validate param types (value > u16::MAX is OK). Error: {:?}",
+            result.err()
         );
     }
 

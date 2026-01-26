@@ -64,7 +64,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
     // First pass: collect jump table and identify movement labels by their content
     let lines: Vec<&str> = input.lines().collect();
     let mut current_label: Option<String> = None;
-    
+
     for (line_idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
@@ -96,17 +96,14 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         }
 
         if let Some(ref label) = current_label {
-            let cmd_name = trimmed
-                .split([' ', '\t'])
-                .next()
-                .unwrap_or("");
-            
+            let cmd_name = trimmed.split([' ', '\t']).next().unwrap_or("");
+
             let is_movement = if movement_commands.is_empty() {
                 lookahead_for_end_movement(&lines, line_idx)
             } else {
                 movement_commands.contains(cmd_name)
             };
-            
+
             if is_movement {
                 movement_labels.insert(label.clone());
             }
@@ -279,14 +276,14 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
 
             if let Some(db) = db
                 && let Some(id_str) = cmd_name.strip_prefix("ScrCmd_")
-                    && let Ok(id) = u16::from_str_radix(id_str, 16)
-                        && let Some((name, _)) = db
-                            .commands
-                            .iter()
-                            .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
-                        {
-                            cmd_name = name;
-                        }
+                && let Ok(id) = u16::from_str_radix(id_str, 16)
+                && let Some((name, _)) = db
+                    .commands
+                    .iter()
+                    .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
+            {
+                cmd_name = name;
+            }
 
             if args.is_empty() {
                 output.push_str(cmd_name);
@@ -307,14 +304,14 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
             let mut cmd_name = trimmed;
             if let Some(db) = db
                 && let Some(id_str) = cmd_name.strip_prefix("ScrCmd_")
-                    && let Ok(id) = u16::from_str_radix(id_str, 16)
-                        && let Some((name, _)) = db
-                            .commands
-                            .iter()
-                            .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
-                        {
-                            cmd_name = name;
-                        }
+                && let Ok(id) = u16::from_str_radix(id_str, 16)
+                && let Some((name, _)) = db
+                    .commands
+                    .iter()
+                    .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
+            {
+                cmd_name = name;
+            }
             output.push_str(cmd_name);
         }
         if let Some(ref c) = inline_comment {
@@ -328,6 +325,25 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         source: output,
         emit_end_marker: has_script_entry_end,
     }
+}
+
+const AUTOVAR_PARAM_NAMES: &[&str] = &[
+    "destvar",
+    "destvarid",
+    "successvar",
+    "var_dest",
+    "retvar",
+    "variable",
+];
+
+fn is_autovar_param(param: &crate::database::ParamDef) -> bool {
+    if let Some(ref default) = param.default {
+        if default == "VAR_RESULT" || default == "0x800C" {
+            let name_lower = param.name.to_lowercase();
+            return AUTOVAR_PARAM_NAMES.iter().any(|&n| name_lower.contains(n));
+        }
+    }
+    false
 }
 
 fn reorder_decomp_args_to_binary(
@@ -348,7 +364,9 @@ fn reorder_decomp_args_to_binary(
     let mut required_indices: Vec<usize> = Vec::new();
     let mut optional_indices: Vec<usize> = Vec::new();
     for (i, p) in params.iter().enumerate() {
-        if p.default.is_none() {
+        // Autovar params (destVar with VAR_RESULT default) are always provided
+        // explicitly in decomp sources, so treat them as required for reordering
+        if p.default.is_none() || is_autovar_param(p) {
             required_indices.push(i);
         } else {
             optional_indices.push(i);
@@ -426,36 +444,33 @@ fn substitute_defines(args: &str, defines: &std::collections::HashMap<String, St
 
 fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
     const MAX_LOOKAHEAD: usize = 32;
-    
+
     for i in start_idx..std::cmp::min(start_idx + MAX_LOOKAHEAD, lines.len()) {
         let trimmed = lines[i].trim();
-        
+
         if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
             continue;
         }
-        
+
         if trimmed.starts_with('.') {
             continue;
         }
-        
+
         if trimmed.ends_with(':') {
             return false;
         }
-        
-        let cmd_name = trimmed
-            .split([' ', '\t'])
-            .next()
-            .unwrap_or("");
-        
+
+        let cmd_name = trimmed.split([' ', '\t']).next().unwrap_or("");
+
         if cmd_name == "EndMovement" {
             return true;
         }
-        
+
         if cmd_name == "End" || cmd_name == "Return" {
             return false;
         }
     }
-    
+
     false
 }
 

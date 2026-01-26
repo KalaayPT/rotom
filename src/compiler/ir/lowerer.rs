@@ -16,7 +16,7 @@ use crate::compiler::ast::{Expression, ExpressionKind, ScriptFile, Statement, St
 use crate::compiler::parse_error::{ParseResult, lowering_error};
 use crate::compiler::token::TokenType;
 use crate::compiler::{Lexer, Parser};
-use crate::database::{Command, DatabaseV2, ParamDef};
+use crate::database::{Command, ComparisonOperator, DatabaseV2, ParamDef};
 
 use super::{Arg, Condition, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
 
@@ -32,9 +32,6 @@ const AUTOVAR_PARAM_NAMES: &[&str] = &[
 ];
 
 const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
-
-/// Macro condition parameter substitution: matches \paramName
-static RE_MACRO_PARAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(\w+)").unwrap());
 
 /// Macro condition for argument count: matches "1 arg(s)", "2 args", "3 args", etc.
 static RE_ARG_COUNT: LazyLock<Regex> =
@@ -182,8 +179,6 @@ impl<'a> Lowerer<'a> {
                 cases,
                 default,
             } => {
-                let label_end = self.new_label("end_match");
-
                 let effective_subject =
                     if let ExpressionKind::Call { function, args } = &subject.node {
                         self.lower_autovar_call(function, args)?;
@@ -195,62 +190,12 @@ impl<'a> Lowerer<'a> {
                         subject.as_ref().clone()
                     };
 
-                for (i, case) in cases.iter().enumerate() {
-                    let label_next = if i + 1 < cases.len() {
-                        self.new_label("match_next")
-                    } else if default.is_some() {
-                        self.new_label("match_default")
-                    } else {
-                        label_end.clone()
-                    };
-
-                    let label_body = self.new_label("match_case");
-
-                    for (vi, value) in case.values.iter().enumerate() {
-                        let is_last_value = vi + 1 >= case.values.len();
-                        let jump_target = if is_last_value {
-                            &label_next
-                        } else {
-                            &label_body
-                        };
-
-                        let condition = Expression {
-                            node: ExpressionKind::Infix {
-                                left: Box::new(effective_subject.clone()),
-                                operator: TokenType::Equal,
-                                right: Box::new(value.clone()),
-                            },
-                            span: value.span.clone(),
-                        };
-
-                        if is_last_value {
-                            self.lower_condition(&condition, jump_target)?;
-                        } else {
-                            self.lower_condition_non_inverted(&condition, jump_target)?;
-                        }
-                    }
-
-                    self.output.push(IrOpcode::Label(label_body));
-                    for s in &case.body {
-                        self.lower_statement_with_depth(s, macro_depth)?;
-                    }
-                    self.output.push(IrOpcode::Command {
-                        name: "GoTo".to_string(),
-                        args: vec![Arg::Pointer(label_end.clone())],
-                    });
-
-                    if i + 1 < cases.len() || default.is_some() {
-                        self.output.push(IrOpcode::Label(label_next));
-                    }
-                }
-
-                if let Some(default_body) = default {
-                    for s in default_body {
-                        self.lower_statement_with_depth(s, macro_depth)?;
-                    }
-                }
-
-                self.output.push(IrOpcode::Label(label_end));
+                self.lower_match_with_per_case_optimization(
+                    &effective_subject,
+                    cases,
+                    default,
+                    macro_depth,
+                )?;
             }
             StatementKind::Break => {
                 if let Some(target) = self.break_targets.last() {
@@ -295,6 +240,117 @@ impl<'a> Lowerer<'a> {
             }
 
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn can_optimize_case_to_gotoif(case: &crate::compiler::ast::MatchCase) -> Option<String> {
+        if case.values.len() != 1 {
+            return None;
+        }
+        if case.body.len() != 1 {
+            return None;
+        }
+        if let StatementKind::ScriptCommand { command, args } = &case.body[0].node {
+            if command == "Call" {
+                if let Some(first_arg) = args.first() {
+                    match &first_arg.node {
+                        ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => {
+                            return Some(name.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn lower_match_with_per_case_optimization(
+        &mut self,
+        effective_subject: &Expression,
+        cases: &[crate::compiler::ast::MatchCase],
+        default: &Option<Vec<Statement>>,
+        macro_depth: usize,
+    ) -> ParseResult<()> {
+        let subject_val = self.resolve_arg(effective_subject)?.unwrap_value();
+        let label_end = self.new_label("end_match");
+        let mut need_end_label = false;
+
+        for (i, case) in cases.iter().enumerate() {
+            if let Some(call_target) = Self::can_optimize_case_to_gotoif(case) {
+                let case_value = self.resolve_arg(&case.values[0])?.unwrap_value();
+                self.output.push(IrOpcode::Command {
+                    name: "CompareVarValue".to_string(),
+                    args: vec![Arg::Value(subject_val), Arg::Value(case_value)],
+                });
+                self.output.push(IrOpcode::Command {
+                    name: "GoToIf".to_string(),
+                    args: vec![
+                        Arg::Value(Condition::Equal as i32),
+                        Arg::Pointer(call_target),
+                    ],
+                });
+            } else {
+                need_end_label = true;
+                let label_next = if i + 1 < cases.len() {
+                    self.new_label("match_next")
+                } else if default.is_some() {
+                    self.new_label("match_default")
+                } else {
+                    label_end.clone()
+                };
+
+                let label_body = self.new_label("match_case");
+
+                for (vi, value) in case.values.iter().enumerate() {
+                    let is_last_value = vi + 1 >= case.values.len();
+                    let jump_target = if is_last_value {
+                        &label_next
+                    } else {
+                        &label_body
+                    };
+
+                    let condition = Expression {
+                        node: ExpressionKind::Infix {
+                            left: Box::new(effective_subject.clone()),
+                            operator: TokenType::Equal,
+                            right: Box::new(value.clone()),
+                        },
+                        span: value.span.clone(),
+                    };
+
+                    if is_last_value {
+                        self.lower_condition(&condition, jump_target)?;
+                    } else {
+                        self.lower_condition_non_inverted(&condition, jump_target)?;
+                    }
+                }
+
+                self.output.push(IrOpcode::Label(label_body));
+                for s in &case.body {
+                    self.lower_statement_with_depth(s, macro_depth)?;
+                }
+                self.output.push(IrOpcode::Command {
+                    name: "GoTo".to_string(),
+                    args: vec![Arg::Pointer(label_end.clone())],
+                });
+
+                if i + 1 < cases.len() || default.is_some() {
+                    self.output.push(IrOpcode::Label(label_next));
+                }
+            }
+        }
+
+        if let Some(default_body) = default {
+            need_end_label = true;
+            for s in default_body {
+                self.lower_statement_with_depth(s, macro_depth)?;
+            }
+        }
+
+        if need_end_label {
+            self.output.push(IrOpcode::Label(label_end));
         }
         Ok(())
     }
@@ -385,49 +441,99 @@ impl<'a> Lowerer<'a> {
             )));
         }
 
-        let required_count = params
-            .iter()
-            .filter(|p| p.default.is_none() && !p.optional)
-            .count();
-        let first_optional_idx = params
-            .iter()
-            .position(|p| p.default.is_some() || p.optional)
-            .unwrap_or(param_count);
+        // Categorize parameters
+        let mut required_indices: Vec<usize> = Vec::new();
+        let mut optional_indices: Vec<usize> = Vec::new();
+
+        for (i, p) in params.iter().enumerate() {
+            if p.default.is_none() && !p.optional {
+                required_indices.push(i);
+            } else {
+                optional_indices.push(i);
+            }
+        }
+
+        let required_count = required_indices.len();
 
         if args.len() < required_count {
-            let min_required = first_optional_idx.min(required_count);
-            if args.len() < min_required {
-                return Err(lowering_error(format!(
-                    "Command '{}' requires at least {} arguments, but got {}",
-                    command,
-                    min_required,
-                    args.len()
-                )));
+            return Err(lowering_error(format!(
+                "Command '{}' requires {} arguments, but got {}",
+                command,
+                required_count,
+                args.len()
+            )));
+        }
+
+        if args.len() > param_count {
+            return Err(lowering_error(format!(
+                "Command '{}' takes at most {} arguments, but got {}",
+                command,
+                param_count,
+                args.len()
+            )));
+        }
+
+        // Check if optional params come before required params (autovar pattern)
+        let has_optional_before_required = optional_indices
+            .iter()
+            .any(|&opt_idx| required_indices.iter().any(|&req_idx| opt_idx < req_idx));
+
+        let mut result: Vec<Option<Expression>> = vec![None; param_count];
+
+        if has_optional_before_required && args.len() < param_count {
+            // Autovar mode: map provided args to required params, fill optionals with defaults
+            for (arg_idx, &param_idx) in required_indices.iter().enumerate() {
+                if arg_idx < args.len() {
+                    result[param_idx] = Some(args[arg_idx].clone());
+                }
+            }
+
+            // Remaining args go to optional params in order
+            let args_for_optionals = args.len().saturating_sub(required_count);
+            for (opt_num, &param_idx) in optional_indices.iter().enumerate() {
+                if opt_num < args_for_optionals {
+                    let arg_idx = required_count + opt_num;
+                    if arg_idx < args.len() {
+                        result[param_idx] = Some(args[arg_idx].clone());
+                    }
+                }
+            }
+        } else {
+            // Normal mode: args map to params in order
+            for (i, arg) in args.iter().enumerate() {
+                result[i] = Some(arg.clone());
             }
         }
 
-        let mut result: Vec<Expression> = Vec::with_capacity(param_count);
-
+        // Fill in defaults for any remaining None values
+        let result_clone = result.clone();
         for (i, param) in params.iter().enumerate() {
-            if i < args.len() {
-                result.push(args[i].clone());
-            } else if let Some(default_str) = &param.default {
-                let substituted = self.substitute_default_params(default_str, params, &result)?;
-                let lexer = Lexer::new(&substituted);
-                let mut parser = Parser::new(lexer);
-                let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
-                result.push(expr);
-            } else if param.optional {
-                break;
-            } else {
-                return Err(lowering_error(format!(
-                    "Command '{}' missing required argument '{}' at position {}",
-                    command, param.name, i
-                )));
+            if result[i].is_none() {
+                if let Some(default_str) = &param.default {
+                    let built_so_far: Vec<Expression> = result_clone
+                        .iter()
+                        .take(i)
+                        .filter_map(|e| e.clone())
+                        .collect();
+                    let substituted =
+                        self.substitute_default_params(default_str, params, &built_so_far)?;
+                    let lexer = Lexer::new(&substituted);
+                    let mut parser = Parser::new(lexer);
+                    let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
+                    result[i] = Some(expr);
+                } else if param.optional {
+                    // Optional param without default - stop here
+                    break;
+                } else {
+                    return Err(lowering_error(format!(
+                        "Command '{}' missing required argument '{}' at position {}",
+                        command, param.name, i
+                    )));
+                }
             }
         }
 
-        Ok(result)
+        Ok(result.into_iter().filter_map(|x| x).collect())
     }
 
     fn expand_macro(
@@ -506,21 +612,14 @@ impl<'a> Lowerer<'a> {
         args: &[Expression],
         params: &[crate::database::ParamDef],
     ) -> ParseResult<bool> {
-        let substituted = RE_MACRO_PARAM.replace_all(condition, |caps: &regex::Captures| {
-            let param_name = &caps[1];
-            if let Some(pos) = params.iter().position(|p| p.name == param_name) {
-                if let Some(arg) = args.get(pos) {
-                    match self.resolve_arg_to_int(arg) {
-                        Ok(val) => val.to_string(),
-                        Err(_) => "0".to_string(),
-                    }
-                } else {
-                    "0".to_string()
+        let mut substituted = condition.to_string();
+        for (pos, param) in params.iter().enumerate() {
+            if let Some(arg) = args.get(pos) {
+                if let Ok(val) = self.resolve_arg_to_int(arg) {
+                    substituted = substituted.replace(&param.name, &val.to_string());
                 }
-            } else {
-                "0".to_string()
             }
-        });
+        }
 
         let lexer = Lexer::new(&substituted);
         let mut parser = Parser::new(lexer);
@@ -562,6 +661,16 @@ impl<'a> Lowerer<'a> {
                     "Could not resolve '{}' to an integer for macro condition",
                     name
                 )))
+            }
+            ExpressionKind::Prefix { operator, id } => {
+                let val = self.resolve_arg_to_int(id)?;
+                match operator {
+                    TokenType::Minus => Ok(-val),
+                    _ => Err(lowering_error(format!(
+                        "Unsupported prefix operator {:?} in macro condition",
+                        operator
+                    ))),
+                }
             }
             _ => Err(lowering_error(format!(
                 "Unsupported argument type for macro condition: {:?}",
@@ -944,6 +1053,10 @@ impl<'a> Lowerer<'a> {
                     && let Some(val) = db.get(name)
                 {
                     return Ok(Arg::Value(val));
+                }
+
+                if let Some(cond) = ComparisonOperator::from_str(name) {
+                    return Ok(Arg::Value(cond as i32));
                 }
 
                 Err(lowering_error(format!(
@@ -1429,7 +1542,7 @@ function TestFunc #1:
     fn test_lower_match_statement() {
         let source = r#"
 function TestFunc #1:
-    match 0x8000 where
+    match 0x8000 with
         case 0:
             Message 1
         case 1, 2:
@@ -1640,7 +1753,7 @@ function TestFunc #1:
     fn test_lower_autovar_in_match() {
         let source = r#"
 function TestFunc #1:
-    match ShowYesNoMenu() where
+    match ShowYesNoMenu() with
         case 0:
             Message 1
         case 1:
@@ -1681,7 +1794,7 @@ function TestFunc #1:
     fn test_lower_autovar_in_match_emits_once() {
         let source = r#"
 function TestFunc #1:
-    match ShowYesNoMenu() where
+    match ShowYesNoMenu() with
         case 0:
             Message 1
         case 1:
@@ -1803,5 +1916,515 @@ function TestFunc #1:
             }
             _ => panic!("Expected function"),
         }
+    }
+
+    #[test]
+    fn test_lower_match_with_keyword() {
+        let source = r#"
+function TestFunc #1:
+    match 0x8000 with
+        case 0:
+            Message 1
+        case 1:
+            Message 2
+    endmatch
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let compare_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| {
+                        matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue")
+                    })
+                    .count();
+                assert!(
+                    compare_count >= 2,
+                    "Should have at least 2 CompareVarValue. Got {}",
+                    compare_count
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_optimized_match_single_calls() {
+        let source = r#"
+function TestFunc #1:
+    match 0x8000 with
+        case 0:
+            Call func_a
+        case 1:
+            Call func_b
+        case 2:
+            Call func_c
+    endmatch
+    End
+
+func_a:
+    Return
+
+func_b:
+    Return
+
+func_c:
+    Return
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let compare_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| {
+                        matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue")
+                    })
+                    .count();
+                assert_eq!(
+                    compare_count, 3,
+                    "Should have exactly 3 CompareVarValue for optimized match. Got {}",
+                    compare_count
+                );
+
+                let gotoif_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf"))
+                    .count();
+                assert_eq!(
+                    gotoif_count, 3,
+                    "Should have exactly 3 GoToIf for optimized match. Got {}",
+                    gotoif_count
+                );
+
+                let goto_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
+                    .count();
+                assert_eq!(
+                    goto_count, 0,
+                    "Optimized match should have no GoTo commands. Got {}",
+                    goto_count
+                );
+
+                let label_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Label(name) if name.starts_with(".")))
+                    .count();
+                assert_eq!(
+                    label_count, 0,
+                    "Optimized match should have no generated labels. Got {}",
+                    label_count
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_mixed_match_per_case_optimization() {
+        let source = r#"
+function TestFunc #1:
+    match 0x8000 with
+        case 0:
+            Call func_a
+        case 1:
+            Message 1
+            Message 2
+        case 2:
+            Call func_b
+    endmatch
+    End
+
+func_a:
+    Return
+
+func_b:
+    Return
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let gotoif_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf"))
+                    .count();
+                assert_eq!(
+                    gotoif_count, 3,
+                    "Should have 2 optimized GoToIf + 1 standard GoToIf. Got {}",
+                    gotoif_count
+                );
+
+                let goto_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
+                    .count();
+                assert!(
+                    goto_count >= 1,
+                    "Non-optimized case should have at least 1 GoTo. Got {}",
+                    goto_count
+                );
+
+                let message_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "Message"))
+                    .count();
+                assert_eq!(message_count, 2, "Should have 2 Message commands");
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_condition_identifier() {
+        let source = r#"
+function TestFunc #1:
+    CompareVarValue 0x8000, 5
+    GoToIf EQUAL, some_label
+    End
+some_label:
+    Return
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let has_gotoif_equal = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                        if name == "GoToIf"
+                        && args.len() == 2
+                        && matches!(&args[0], Arg::Value(1)))
+                });
+                assert!(
+                    has_gotoif_equal,
+                    "GoToIf should have condition value 1 (EQUAL)"
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_all_condition_identifiers() {
+        let source = r#"
+function TestFunc #1:
+    CompareVarValue 0x8000, 5
+    GoToIf LESS, label1
+    GoToIf EQUAL, label2
+    GoToIf GREATER, label3
+    GoToIf LESS_EQUAL, label4
+    GoToIf GREATER_EQUAL, label5
+    GoToIf DIFFERENT, label6
+    End
+label1:
+label2:
+label3:
+label4:
+label5:
+label6:
+    Return
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let gotoif_conditions: Vec<i32> = ir_func
+                    .instructions
+                    .iter()
+                    .filter_map(|op| {
+                        if let IrOpcode::Command { name, args } = op {
+                            if name == "GoToIf" && !args.is_empty() {
+                                if let Arg::Value(v) = &args[0] {
+                                    return Some(*v);
+                                }
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+
+                assert_eq!(gotoif_conditions, vec![0, 1, 2, 3, 4, 5]);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_macro_condition_with_constants() {
+        let db = create_test_db();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let source = r#"
+function Test #1:
+    CompareVar 0x8000, 100
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let first_cmd = ir_func.instructions.iter().find(|op| {
+                    matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarToValue")
+                });
+                assert!(
+                    first_cmd.is_some(),
+                    "CompareVar with value < VARS_START should expand to CompareVarToValue. Got: {:?}",
+                    ir_func.instructions
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_macro_condition_with_var_reference() {
+        let db = create_test_db();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let source = r#"
+function Test #1:
+    CompareVar 0x8000, 0x8001
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let first_cmd = ir_func.instructions.iter().find(
+                    |op| matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarToVar"),
+                );
+                assert!(
+                    first_cmd.is_some(),
+                    "CompareVar with value >= VARS_START should expand to CompareVarToVar. Got: {:?}",
+                    ir_func.instructions
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_nested_macro_expansion_gotoifge() {
+        let db = create_test_db();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let source = r#"
+function Test #1:
+    GoToIfGe 0x8000, 100, TestLabel
+TestLabel:
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+
+        let result = lowerer.lower_script_file(&script_file);
+        assert!(
+            result.is_ok(),
+            "GoToIfGe with literal value should compile successfully. Error: {:?}",
+            result.err()
+        );
+
+        let items = result.unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let has_compare_to_value = ir_func.instructions.iter().any(
+                    |op| matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarToValue"),
+                );
+                assert!(
+                    has_compare_to_value,
+                    "GoToIfGe with value < VARS_START should expand through CompareVar to CompareVarToValue. Got: {:?}",
+                    ir_func.instructions
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_nested_macro_with_named_constant() {
+        use std::path::Path;
+
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let decomp_root = Path::new("C:/dev/pokeplatinum");
+        if decomp_root.exists() {
+            let _ = constants.load_decomp_project(decomp_root);
+        }
+
+        let source = r#"
+function Test #1:
+    GoToIfGe 0x800C, TRAINER_CARD_LEVEL_GOLD, TestLabel
+TestLabel:
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, &db);
+        analyzer.analyze(&script_file).unwrap();
+
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
+
+        let result = lowerer.lower_script_file(&script_file);
+        assert!(
+            result.is_ok(),
+            "GoToIfGe with named constant should compile successfully. Error: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_nested_macro_with_var_constant() {
+        use std::path::Path;
+
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let decomp_root = Path::new("C:/dev/pokeplatinum");
+        if decomp_root.exists() {
+            let _ = constants.load_decomp_project(decomp_root);
+        }
+
+        // VAR_ELEVATOR_FLOORS_ABOVE = 16590 (0x40CE) which is >= VARS_START (0x4000)
+        // So this should expand to CompareVarToVar
+        let source = r#"
+function Test #1:
+    GoToIfEq VAR_ELEVATOR_FLOORS_ABOVE, 3, TestLabel
+TestLabel:
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, &db);
+        analyzer.analyze(&script_file).unwrap();
+
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
+
+        let result = lowerer.lower_script_file(&script_file);
+        assert!(
+            result.is_ok(),
+            "GoToIfEq with VAR constant should compile successfully. Error: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_compile_scripts_common() {
+        use std::path::Path;
+
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let decomp_root = Path::new("C:/dev/pokeplatinum");
+        if !decomp_root.exists() {
+            return; // Skip if decomp not available
+        }
+        let _ = constants.load_decomp_project(decomp_root);
+
+        let script_path = decomp_root.join("res/field/scripts/scripts_common.s");
+        if !script_path.exists() {
+            return;
+        }
+
+        let source = std::fs::read_to_string(&script_path).unwrap();
+        let transpiled = crate::transpiler::decomp::transpile(&source, Some(&db));
+
+        let lexer = crate::compiler::Lexer::new(&transpiled.source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = match parser.parse_script_file() {
+            Ok(f) => f,
+            Err(e) => panic!("Parse error: {:?}", e),
+        };
+
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, &db);
+        if let Err(e) = analyzer.analyze(&script_file) {
+            panic!("Analysis error: {:?}", e);
+        }
+
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
+        let result = lowerer.lower_script_file(&script_file);
+        assert!(
+            result.is_ok(),
+            "scripts_common.s should compile successfully. Error: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_callif_macro_with_named_constant() {
+        use std::path::Path;
+
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let decomp_root = Path::new("C:/dev/pokeplatinum");
+        if decomp_root.exists() {
+            let _ = constants.load_decomp_project(decomp_root);
+        }
+
+        // Test CallIfGe with TRAINER_CARD_LEVEL_GOLD (value 4, which is < VARS_START)
+        let source = r#"
+function Test #1:
+    CallIfGe VAR_RESULT, TRAINER_CARD_LEVEL_GOLD, TestLabel
+    CallIfLt VAR_RESULT, TRAINER_CARD_LEVEL_GOLD, TestLabel
+TestLabel:
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, &db);
+        analyzer.analyze(&script_file).unwrap();
+
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
+
+        let result = lowerer.lower_script_file(&script_file);
+        assert!(
+            result.is_ok(),
+            "CallIfGe/CallIfLt with named constant should compile successfully. Error: {:?}",
+            result.err()
+        );
     }
 }

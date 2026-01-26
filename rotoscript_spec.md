@@ -38,7 +38,7 @@ Labels define locations in code for jumps or pointers.
 Reserved words that cannot be used as identifiers:
 * **Block Delimiters:** `function`, `action`, `End`, `Return`, `EndMovement`
 * **Modifiers:** `alias`, `as`
-* **Control Flow:** `if`, `then`, `else`, `endif`, `while`, `do`, `endwhile`, `Jump`
+* **Control Flow:** `if`, `then`, `else`, `endif`, `while`, `do`, `endwhile`, `match`, `with`, `case`, `endmatch`, `Jump`
 * **Logical Operators:** `and`, `or`, `not`
 * **Literals:** `true`, `false`
 
@@ -172,14 +172,35 @@ alias 1500 as SEQ_SE_CONFIRM
 ### 3.2 Built-in Constants
 
 The compiler loads constants from the database, including:
-- Comparison operators: `EQUAL`, `NOT_EQUAL`, `LESS_THAN`, etc.
 - Sound IDs: `SEQ_SE_CONFIRM`, etc.
 - Special overworld IDs
 - Direction constants
 
 User aliases can shadow (override) built-in constants.
 
-### 3.3 Variable Heuristics (Compiler Logic)
+### 3.3 Condition Identifiers
+
+Commands with a `condition` parameter (like `GoToIf`, `CallIf`) accept symbolic condition names:
+
+| Identifier | Value | Meaning |
+|------------|-------|---------|
+| `LESS` | 0 | Less than |
+| `EQUAL` | 1 | Equal to |
+| `GREATER` | 2 | Greater than |
+| `LESS_EQUAL` | 3 | Less than or equal |
+| `GREATER_EQUAL` | 4 | Greater than or equal |
+| `DIFFERENT` | 5 | Not equal |
+
+Example usage:
+```rotom
+CompareVarValue VAR_TEMP, 5
+GoToIf EQUAL, HandleFive
+GoToIf GREATER, HandleLarge
+```
+
+The decompiler also outputs these symbolic names instead of numeric values.
+
+### 3.4 Variable Heuristics (Compiler Logic)
 
 The compiler infers the "type" of a number based on the Nintendo DS Memory Map:
 * Value (Immediate): 0x0000 to 0x3FFF
@@ -215,7 +236,37 @@ Compiler Behavior:
 * Generates a Compare command followed by a JumpIf (inverted logic).
 * Normalization: The hardware strictly requires Compare VAR, VALUE. If you write if 5 > x, the compiler swaps operands to Compare x, 5 and flips the operator to <=.
 
-### 4.2 Loops (while)
+### 4.2 Match Statements
+
+Match statements provide pattern matching against a variable or expression result:
+
+```rotom
+match VAR_RESULT with
+    case 0:
+        Message 1
+    case 1, 2:
+        Message 2
+    else:
+        Message 3
+endmatch
+```
+
+* **Syntax:** `match <subject> with ... endmatch`
+* **Cases:** `case <value>:` or `case <value1>, <value2>:` for multiple values
+* **Default:** Optional `else:` block for unmatched values
+* **Per-case optimization:** Any case that contains only a single `Call` command with a single value is optimized to emit `CompareVarValue` + `GoToIf EQUAL <target>` instead of the typical compare/jump/body/goto pattern. This optimization is applied per-case, so mixed match statements benefit from it.
+
+Match statements also work with autovar commands:
+```rotom
+match ShowYesNoMenu() with
+    case 0:
+        Call HandleNo
+    case 1:
+        Call HandleYes
+endmatch
+```
+
+### 4.3 Loops (while)
 
 ```rotom
 while x < 10 do
@@ -223,14 +274,14 @@ while x < 10 do
 endwhile
 ```
 
-### 4.3 Jumps and Calls
+### 4.4 Jumps and Calls
 * `Jump LabelName` - Unconditional jump to a label or function
 * `Jump .local_label` - Jump to an inline label within the same function
 * `Call FunctionName` - Call a function, execution returns after `Return`
 
 Restriction: You cannot Jump to a variable alias. You can only jump to Labels or Functions.
 
-### 4.4 Expressions in Conditions
+### 4.5 Expressions in Conditions
 
 Conditions support function-call syntax for commands that return values:
 ```rotom

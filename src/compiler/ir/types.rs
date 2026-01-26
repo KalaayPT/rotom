@@ -134,6 +134,43 @@ pub enum Condition {
     Different = 5,    // 0x05
 }
 
+impl Condition {
+    pub fn from_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(Self::Less),
+            1 => Some(Self::Equal),
+            2 => Some(Self::Greater),
+            3 => Some(Self::LessEqual),
+            4 => Some(Self::GreaterEqual),
+            5 => Some(Self::Different),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Less => "LESS",
+            Self::Equal => "EQUAL",
+            Self::Greater => "GREATER",
+            Self::LessEqual => "LESS_EQUAL",
+            Self::GreaterEqual => "GREATER_EQUAL",
+            Self::Different => "DIFFERENT",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "LESS" => Some(Self::Less),
+            "EQUAL" => Some(Self::Equal),
+            "GREATER" => Some(Self::Greater),
+            "LESS_EQUAL" | "LESSEQUAL" | "LESS/EQUAL" => Some(Self::LessEqual),
+            "GREATER_EQUAL" | "GREATEREQUAL" | "GREATER/EQUAL" => Some(Self::GreaterEqual),
+            "DIFFERENT" => Some(Self::Different),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum OperandType {
     Variable, // VarPointer (0x8000)

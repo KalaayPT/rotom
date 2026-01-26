@@ -45,7 +45,7 @@ impl<'a> Parser<'a> {
             | TokenType::While
             | TokenType::EndWhile
             | TokenType::Match
-            | TokenType::Where
+            | TokenType::With
             | TokenType::Case
             | TokenType::EndMatch
             | TokenType::Break
@@ -422,7 +422,7 @@ impl<'a> Parser<'a> {
         let start = self.current_token.span.start;
         self.expect_advance(TokenType::Match)?;
         let subject = self.parse_expression(Precedence::Lowest)?;
-        self.expect_advance(TokenType::Where)?;
+        self.expect_advance(TokenType::With)?;
 
         let mut cases = Vec::new();
         let mut default = None;
@@ -1115,7 +1115,7 @@ function TestFunc #1:
     fn test_parse_match_statement() {
         let source = r#"
 function TestFunc #1:
-    match 0x8000 where
+    match 0x8000 with
         case 0:
             Message 1
         case 1, 2:
@@ -1165,7 +1165,41 @@ function TestFunc #1:
     fn test_parse_match_without_else() {
         let source = r#"
 function TestFunc #1:
-    match 0x8000 where
+    match 0x8000 with
+        case 0:
+            Message 1
+        case 1:
+            Message 2
+    endmatch
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 1);
+
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => match &body[0].node {
+                StatementKind::MatchStatement { cases, default, .. } => {
+                    assert_eq!(cases.len(), 2);
+                    assert!(default.is_none());
+                }
+                _ => panic!("Expected match statement"),
+            },
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_with_keyword() {
+        let source = r#"
+function TestFunc #1:
+    match 0x8000 with
         case 0:
             Message 1
         case 1:

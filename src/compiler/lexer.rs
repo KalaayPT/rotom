@@ -193,7 +193,7 @@ impl<'a> Lexer<'a> {
             "do" => TokenType::Do,
             "endwhile" => TokenType::EndWhile,
             "match" => TokenType::Match,
-            "where" => TokenType::Where,
+            "with" => TokenType::With,
             "case" => TokenType::Case,
             "endmatch" => TokenType::EndMatch,
             "break" => TokenType::Break,

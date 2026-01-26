@@ -428,7 +428,7 @@ fn decompile_file_internal(
         input.with_extension(extension)
     };
 
-    let source_text = ir_to_source(&script_output);
+    let source_text = ir_to_source(&script_output, db);
     let size = source_text.len();
 
     std::fs::write(&output_path, &source_text).map_err(|e| DecompileFailure {

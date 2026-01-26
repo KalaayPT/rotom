@@ -284,6 +284,80 @@ impl<'a> Disassembler<'a> {
             }
         }
 
+        self.discover_remaining_targets()?;
+
+        Ok(())
+    }
+
+    fn discover_remaining_targets(&mut self) -> DecompileResult<()> {
+        let code_start = self.code_start();
+        let mut missed_targets: Vec<usize> = Vec::new();
+        let mut missed_actions: Vec<usize> = Vec::new();
+
+        let all_starts: Vec<usize> = self.symbols.keys().copied().collect();
+        for start in all_starts {
+            if let Some(info) = self.symbols.get(&start) {
+                if matches!(info.kind, LabelKind::Action { .. }) {
+                    continue;
+                }
+            }
+
+            let mut pc = start;
+            while pc + 2 <= self.bytes.len() {
+                let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
+
+                if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
+                    let cmd_size = self.command_size_at(pc, cmd);
+
+                    if let Some(target) = self.extract_jump_target(pc, cmd) {
+                        if target < self.bytes.len() && !self.symbols.contains_key(&target) {
+                            if self.is_action_reference(name) && target % 4 == 0 {
+                                missed_actions.push(target);
+                            } else if target >= code_start {
+                                missed_targets.push(target);
+                            }
+                        }
+                    }
+
+                    let is_terminator = matches!(name.as_str(), "End" | "Return");
+                    pc += 2 + cmd_size;
+
+                    if is_terminator {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        for target in missed_actions {
+            if !self.symbols.contains_key(&target) {
+                let id = self.action_counter;
+                self.action_counter += 1;
+                self.action_offsets.insert(target);
+                self.symbols.insert(
+                    target,
+                    LabelInfo {
+                        kind: LabelKind::Action { id },
+                        name: format!("action_{}", id),
+                    },
+                );
+            }
+        }
+
+        for target in missed_targets {
+            if !self.symbols.contains_key(&target) {
+                self.symbols.insert(
+                    target,
+                    LabelInfo {
+                        kind: LabelKind::Internal,
+                        name: format!("_L{:04X}", target),
+                    },
+                );
+            }
+        }
+
         Ok(())
     }
 
