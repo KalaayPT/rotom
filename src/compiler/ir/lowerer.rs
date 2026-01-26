@@ -35,7 +35,7 @@ const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
 
 /// Macro condition for argument count: matches "1 arg(s)", "2 args", "3 args", etc.
 static RE_ARG_COUNT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d+)\s+args?\(?s?\)?$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(\d+)\s+args?\(?s?\)?$").expect("static regex pattern is valid"));
 
 /// Maximum depth for macro expansion to prevent infinite recursion
 const MAX_MACRO_DEPTH: usize = 10;
@@ -150,8 +150,8 @@ impl<'a> Lowerer<'a> {
                         name: "GoTo".to_string(),
                         args: vec![Arg::Pointer(label_end.clone())],
                     });
-                    // unwrap is safe here because we already checked if else is some
-                    self.output.push(IrOpcode::Label(label_else.unwrap()));
+                // label_else is guaranteed Some when elseblock is Some (set on line 138-141)
+                    self.output.push(IrOpcode::Label(label_else.expect("label_else is Some when elseblock is Some")));
                     for s in else_b {
                         self.lower_statement_with_depth(s, macro_depth)?;
                     }
