@@ -252,6 +252,9 @@ fn load_platinum_db_and_constants() -> (DatabaseV2, ConstantDb) {
         .expect("Failed to load Platinum database");
     let mut constants = ConstantDb::new();
     constants.load_from_db(&db);
+    constants
+        .load_directory("src/db")
+        .expect("Failed to load Platinum constants directory");
     (db, constants)
 }
 
@@ -260,6 +263,9 @@ fn load_heartgold_db_and_constants() -> (DatabaseV2, ConstantDb) {
         .expect("Failed to load HeartGold database");
     let mut constants = ConstantDb::new();
     constants.load_from_db(&db);
+    constants
+        .load_directory("src/db/hgss")
+        .expect("Failed to load HeartGold constants directory");
     (db, constants)
 }
 
@@ -753,7 +759,7 @@ fn test_dspre_platinum_round_trip() {
     let matches = result.stats.matches.load(Ordering::Relaxed);
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
-    assert!(rate >= 100.0, "Expected 100%+ match rate, got {:.1}%", rate);
+    assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
 
 #[test]
@@ -763,7 +769,7 @@ fn test_dspre_platinum_round_trip_verbose() {
     let matches = result.stats.matches.load(Ordering::Relaxed);
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
-    assert!(rate >= 100.0, "Expected 100%+ match rate, got {:.1}%", rate);
+    assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
 
 // === DSPRE PLATINUM COMPILE TESTS ===
@@ -791,7 +797,7 @@ fn test_dspre_platinum_compile() {
     let rate = 100.0 * matches as f64 / total as f64;
     assert!(
         rate >= 100.0,
-        "Expected 100%+ compile success rate, got {:.1}%",
+        "Expected 100% compile success rate, got {:.1}%",
         rate
     );
 }
@@ -805,7 +811,7 @@ fn test_dspre_platinum_compile_verbose() {
     let rate = 100.0 * matches as f64 / total as f64;
     assert!(
         rate >= 100.0,
-        "Expected 100%+ compile success rate, got {:.1}%",
+        "Expected 100% compile success rate, got {:.1}%",
         rate
     );
 }
@@ -836,7 +842,7 @@ fn test_dspre_heartgold_round_trip() {
     let matches = result.stats.matches.load(Ordering::Relaxed);
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
-    assert!(rate >= 100.0, "Expected 100%+ match rate, got {:.1}%", rate);
+    assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
 
 #[test]
@@ -846,7 +852,7 @@ fn test_dspre_heartgold_round_trip_verbose() {
     let matches = result.stats.matches.load(Ordering::Relaxed);
     let total = result.stats.total;
     let rate = 100.0 * matches as f64 / total as f64;
-    assert!(rate >= 100.0, "Expected 100%+ match rate, got {:.1}%", rate);
+    assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
 
 // === DSPRE HEARTGOLD COMPILE TESTS ===
@@ -874,7 +880,7 @@ fn test_dspre_heartgold_compile() {
     let rate = 100.0 * matches as f64 / total as f64;
     assert!(
         rate >= 100.0,
-        "Expected 100%+ compile success rate, got {:.1}%",
+        "Expected 100% compile success rate, got {:.1}%",
         rate
     );
 }
@@ -888,7 +894,7 @@ fn test_dspre_heartgold_compile_verbose() {
     let rate = 100.0 * matches as f64 / total as f64;
     assert!(
         rate >= 100.0,
-        "Expected 100%+ compile success rate, got {:.1}%",
+        "Expected 100% compile success rate, got {:.1}%",
         rate
     );
 }
