@@ -1,7 +1,7 @@
 //! AST to IR lowering
 //!
 //! The Lowerer transforms parsed AST into IR opcodes, handling:
-//! - Control flow (if/else, while) → `CompareVarValue` + `GoToIf`
+//! - Control flow (if/else, while) → `CompareVarValue` + `JumpIf`
 //! - Macro expansion with parameter substitution
 //! - Default parameter application
 //! - Symbol resolution (aliases, constants, labels)
@@ -34,8 +34,9 @@ const AUTOVAR_PARAM_NAMES: &[&str] = &[
 const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
 
 /// Macro condition for argument count: matches "1 arg(s)", "2 args", "3 args", etc.
-static RE_ARG_COUNT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d+)\s+args?\(?s?\)?$").expect("static regex pattern is valid"));
+static RE_ARG_COUNT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(\d+)\s+args?\(?s?\)?$").expect("static regex pattern is valid")
+});
 
 /// Maximum depth for macro expansion to prevent infinite recursion
 const MAX_MACRO_DEPTH: usize = 10;
@@ -147,11 +148,13 @@ impl<'a> Lowerer<'a> {
                 }
                 if let Some(else_b) = elseblock {
                     self.output.push(IrOpcode::Command {
-                        name: "GoTo".to_string(),
+                        name: "Jump".to_string(),
                         args: vec![Arg::Pointer(label_end.clone())],
                     });
-                // label_else is guaranteed Some when elseblock is Some (set on line 138-141)
-                    self.output.push(IrOpcode::Label(label_else.expect("label_else is Some when elseblock is Some")));
+                    // label_else is guaranteed Some when elseblock is Some (set on line 138-141)
+                    self.output.push(IrOpcode::Label(
+                        label_else.expect("label_else is Some when elseblock is Some"),
+                    ));
                     for s in else_b {
                         self.lower_statement_with_depth(s, macro_depth)?;
                     }
@@ -168,7 +171,7 @@ impl<'a> Lowerer<'a> {
                     self.lower_statement_with_depth(s, macro_depth)?;
                 }
                 self.output.push(IrOpcode::Command {
-                    name: "GoTo".to_string(),
+                    name: "Jump".to_string(),
                     args: vec![Arg::Pointer(label_start)],
                 });
                 self.output.push(IrOpcode::Label(label_end));
@@ -200,7 +203,7 @@ impl<'a> Lowerer<'a> {
             StatementKind::Break => {
                 if let Some(target) = self.break_targets.last() {
                     self.output.push(IrOpcode::Command {
-                        name: "GoTo".to_string(),
+                        name: "Jump".to_string(),
                         args: vec![Arg::Pointer(target.clone())],
                     });
                 } else {
@@ -218,7 +221,7 @@ impl<'a> Lowerer<'a> {
                 if let ExpressionKind::Label(name) | ExpressionKind::Identifier(name) = &target.node
                 {
                     self.output.push(IrOpcode::Command {
-                        name: "GoTo".to_string(),
+                        name: "Jump".to_string(),
                         args: vec![Arg::Pointer(name.clone())],
                     });
                 }
@@ -285,7 +288,7 @@ impl<'a> Lowerer<'a> {
                     args: vec![Arg::Value(subject_val), Arg::Value(case_value)],
                 });
                 self.output.push(IrOpcode::Command {
-                    name: "GoToIf".to_string(),
+                    name: "JumpIf".to_string(),
                     args: vec![
                         Arg::Value(Condition::Equal as i32),
                         Arg::Pointer(call_target),
@@ -332,7 +335,7 @@ impl<'a> Lowerer<'a> {
                     self.lower_statement_with_depth(s, macro_depth)?;
                 }
                 self.output.push(IrOpcode::Command {
-                    name: "GoTo".to_string(),
+                    name: "Jump".to_string(),
                     args: vec![Arg::Pointer(label_end.clone())],
                 });
 
@@ -866,7 +869,7 @@ impl<'a> Lowerer<'a> {
                 Condition::Equal
             };
             self.output.push(IrOpcode::Command {
-                name: "GoToIf".to_string(),
+                name: "JumpIf".to_string(),
                 args: vec![
                     Arg::Value(cond as i32),
                     Arg::Pointer(target_label.to_string()),
@@ -908,7 +911,7 @@ impl<'a> Lowerer<'a> {
                 self.get_condition(operator, swapped)
             };
             self.output.push(IrOpcode::Command {
-                name: "GoToIf".to_string(),
+                name: "JumpIf".to_string(),
                 args: vec![
                     Arg::Value(cond as i32),
                     Arg::Pointer(target_label.to_string()),
@@ -1374,10 +1377,10 @@ function TestFunc #1:
                 let has_jump_if = ir_func
                     .instructions
                     .iter()
-                    .any(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf"));
+                    .any(|op| matches!(op, IrOpcode::Command { name, .. } if name == "JumpIf"));
 
                 assert!(has_compare, "Should have CompareVarValue instruction");
-                assert!(has_jump_if, "Should have GoToIf instruction");
+                assert!(has_jump_if, "Should have JumpIf instruction");
             }
             _ => panic!("Expected function"),
         }
@@ -1408,10 +1411,10 @@ function TestFunc #1:
                 let has_jump_if = ir_func
                     .instructions
                     .iter()
-                    .any(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf"));
+                    .any(|op| matches!(op, IrOpcode::Command { name, .. } if name == "JumpIf"));
 
                 assert!(has_compare, "Should have CompareVarValue instruction");
-                assert!(has_jump_if, "Should have GoToIf instruction");
+                assert!(has_jump_if, "Should have JumpIf instruction");
             }
             _ => panic!("Expected function"),
         }
@@ -1454,11 +1457,11 @@ function TestFunc #1:
                 let goto_count = ir_func
                     .instructions
                     .iter()
-                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "Jump"))
                     .count();
                 assert!(
                     goto_count >= 1,
-                    "if/else should have GoTo to skip else block"
+                    "if/else should have Jump to skip else block"
                 );
             }
             _ => panic!("Expected function"),
@@ -1575,11 +1578,11 @@ function TestFunc #1:
                 let goto_count = ir_func
                     .instructions
                     .iter()
-                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "Jump"))
                     .count();
                 assert!(
                     goto_count >= 2,
-                    "Should have GoTo jumps to skip to end after each case. Got {}",
+                    "Should have Jump jumps to skip to end after each case. Got {}",
                     goto_count
                 );
 
@@ -1632,14 +1635,14 @@ function TestFunc #1:
 
                 let goto_to_while_end = ir_func.instructions.iter().any(|op| {
                     matches!(op, IrOpcode::Command { name, args }
-                    if name == "GoTo" && args.iter().any(|a| {
+                    if name == "Jump" && args.iter().any(|a| {
                         matches!(a, Arg::Pointer(p) if p == while_end_label)
                     }))
                 });
 
                 assert!(
                     goto_to_while_end,
-                    "Break should generate GoTo to while_end label"
+                    "Break should generate Jump to while_end label"
                 );
             }
             _ => panic!("Expected function"),
@@ -2000,22 +2003,22 @@ func_c:
                 let gotoif_count = ir_func
                     .instructions
                     .iter()
-                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf"))
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "JumpIf"))
                     .count();
                 assert_eq!(
                     gotoif_count, 3,
-                    "Should have exactly 3 GoToIf for optimized match. Got {}",
+                    "Should have exactly 3 JumpIf for optimized match. Got {}",
                     gotoif_count
                 );
 
                 let goto_count = ir_func
                     .instructions
                     .iter()
-                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "Jump"))
                     .count();
                 assert_eq!(
                     goto_count, 0,
-                    "Optimized match should have no GoTo commands. Got {}",
+                    "Optimized match should have no Jump commands. Got {}",
                     goto_count
                 );
 
@@ -2065,22 +2068,22 @@ func_b:
                 let gotoif_count = ir_func
                     .instructions
                     .iter()
-                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoToIf"))
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "JumpIf"))
                     .count();
                 assert_eq!(
                     gotoif_count, 3,
-                    "Should have 2 optimized GoToIf + 1 standard GoToIf. Got {}",
+                    "Should have 2 optimized JumpIf + 1 standard JumpIf. Got {}",
                     gotoif_count
                 );
 
                 let goto_count = ir_func
                     .instructions
                     .iter()
-                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "GoTo"))
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "Jump"))
                     .count();
                 assert!(
                     goto_count >= 1,
-                    "Non-optimized case should have at least 1 GoTo. Got {}",
+                    "Non-optimized case should have at least 1 Jump. Got {}",
                     goto_count
                 );
 
@@ -2100,7 +2103,7 @@ func_b:
         let source = r#"
 function TestFunc #1:
     CompareVarValue 0x8000, 5
-    GoToIf EQUAL, some_label
+    JumpIf EQUAL, some_label
     End
 some_label:
     Return
@@ -2112,15 +2115,15 @@ some_label:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                let has_gotoif_equal = ir_func.instructions.iter().any(|op| {
+                let has_jumpif_equal = ir_func.instructions.iter().any(|op| {
                     matches!(op, IrOpcode::Command { name, args }
-                        if name == "GoToIf"
+                        if name == "JumpIf"
                         && args.len() == 2
                         && matches!(&args[0], Arg::Value(1)))
                 });
                 assert!(
-                    has_gotoif_equal,
-                    "GoToIf should have condition value 1 (EQUAL)"
+                    has_jumpif_equal,
+                    "JumpIf should have condition value 1 (EQUAL)"
                 );
             }
             _ => panic!("Expected function"),
@@ -2132,12 +2135,12 @@ some_label:
         let source = r#"
 function TestFunc #1:
     CompareVarValue 0x8000, 5
-    GoToIf LESS, label1
-    GoToIf EQUAL, label2
-    GoToIf GREATER, label3
-    GoToIf LESS_EQUAL, label4
-    GoToIf GREATER_EQUAL, label5
-    GoToIf DIFFERENT, label6
+    JumpIf LESS, label1
+    JumpIf EQUAL, label2
+    JumpIf GREATER, label3
+    JumpIf LESS_EQUAL, label4
+    JumpIf GREATER_EQUAL, label5
+    JumpIf DIFFERENT, label6
     End
 label1:
 label2:
@@ -2154,12 +2157,12 @@ label6:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                let gotoif_conditions: Vec<i32> = ir_func
+                let jumpif_conditions: Vec<i32> = ir_func
                     .instructions
                     .iter()
                     .filter_map(|op| {
                         if let IrOpcode::Command { name, args } = op {
-                            if name == "GoToIf" && !args.is_empty() {
+                            if name == "JumpIf" && !args.is_empty() {
                                 if let Arg::Value(v) = &args[0] {
                                     return Some(*v);
                                 }
@@ -2169,7 +2172,7 @@ label6:
                     })
                     .collect();
 
-                assert_eq!(gotoif_conditions, vec![0, 1, 2, 3, 4, 5]);
+                assert_eq!(jumpif_conditions, vec![0, 1, 2, 3, 4, 5]);
             }
             _ => panic!("Expected function"),
         }

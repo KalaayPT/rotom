@@ -430,22 +430,23 @@ Rotom includes a transpiler for DSPRE script format:
 - [x] Action/function interleaving (preserves source order)
 - [x] Parameter reordering for commands with different arg order in decomps
 - [x] Macro support
+- [x] Simple decompilation
+- [x] Tests
+  - [x] Lexer tests
+  - [x] Parser tests
+  - [x] Semantic analysis tests
+  - [x] Codegen tests (byte-matching verification)
 
 ### In Progress
 
+- [ ] roundtrip matching for dspre scripts
 - [ ] Binary matching against pokeplatinum decompiled scripts
-- [ ] Simple decompilation
 - [ ] Decompilation into high-level logic
 
 ### Future Work
 
-- [ ] Tests
-  - [x] Lexer tests
-  - [x] Parser tests
-  - [x] Semantic analysis tests
-  - [ ] Codegen tests (byte-matching verification)
-- [ ] Register allocation for automatic variable assignment
 - [ ] Constant folding for compile-time arithmetic
 - [ ] Complex expressions in conditions (`if x + 1 == 5`)
 - [ ] Type checking against command parameter expectations
 - [ ] Optimization passes (dead code elimination, jump threading)
+- [ ] Register allocation for automatic variable assignment

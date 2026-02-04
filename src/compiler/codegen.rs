@@ -154,7 +154,9 @@ impl<'a> Emitter<'a> {
                             )));
                         }
                     }
-                } else { u16::from(name != "EndMovement") };
+                } else {
+                    u16::from(name != "EndMovement")
+                };
                 self.emit_u16(param);
             }
         }
@@ -669,7 +671,7 @@ mod tests {
             }],
             instructions: vec![
                 IrOpcode::Command {
-                    name: "GoTo".to_string(),
+                    name: "Jump".to_string(),
                     args: vec![Arg::Pointer(".target".to_string())],
                 },
                 IrOpcode::Command {
@@ -692,7 +694,7 @@ mod tests {
             "Should have generated code with jump and label"
         );
 
-        // The GoTo instruction should have a relative offset to the label
+        // The Jump instruction should have a relative offset to the label
         // We can't easily verify the exact offset without knowing the opcode sizes,
         // but we can verify the output is non-zero (relocation was applied)
     }
