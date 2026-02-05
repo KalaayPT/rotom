@@ -69,12 +69,13 @@ static RE_DESCRIPTOR: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Transpile a DSPRE script to Rotoscript format
-pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> String {
+pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> String {
     // First, strip block comments /* ... */
     let input = strip_block_comments(input);
 
     let mut output = String::new();
     let mut in_action = false; // Track if we're inside an Action block
+    let mut action_has_end_movement = false; // Track if action already has EndMovement from hex opcode
 
     for line in input.lines() {
         let trimmed = line.trim();
@@ -111,6 +112,7 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
             let id: u32 = caps[1].parse().expect("regex guarantees digits");
             output.push_str(&format!("action action_{}\n", id));
             in_action = true;
+            action_has_end_movement = false;
             continue;
         }
 
@@ -126,7 +128,9 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
 
         // Convert End to EndMovement inside Action blocks
         if in_action && trimmed.eq_ignore_ascii_case("End") {
-            output.push_str("EndMovement\n");
+            if !action_has_end_movement {
+                output.push_str("EndMovement\n");
+            }
             in_action = false;
             continue;
         }
@@ -158,7 +162,13 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
 
         // Convert space-separated arguments to comma-separated
         // Command Arg1 Arg2 Arg3 -> Command Arg1, Arg2, Arg3
-        processed = convert_space_to_comma_args(&processed);
+        let (processed_line, is_end_movement) =
+            convert_space_to_comma_args(&processed, db, in_action);
+        processed = processed_line;
+
+        if is_end_movement {
+            action_has_end_movement = true;
+        }
 
         output.push_str(&processed);
         output.push('\n');
@@ -167,45 +177,67 @@ pub fn transpile(input: &str, _db: Option<&crate::database::DatabaseV2>) -> Stri
     output
 }
 
-/// Convert DSPRE space-separated arguments to comma-separated
-/// e.g., "    `WaitTime` 8 0x800C" -> "    `WaitTime` 8, 0x800C"
-/// Only converts if there are no commas already present (to avoid double-comma issues)
-fn convert_space_to_comma_args(line: &str) -> String {
+fn convert_space_to_comma_args(
+    line: &str,
+    db: Option<&crate::database::DatabaseV2>,
+    in_action: bool,
+) -> (String, bool) {
     let trimmed = line.trim();
-
-    // Skip if empty or doesn't look like a command line
     if trimmed.is_empty() {
-        return line.to_string();
+        return (line.to_string(), false);
     }
 
-    // If line already contains commas, assume it's already formatted correctly
-    if line.contains(',') {
-        return line.to_string();
-    }
-
-    // Preserve leading whitespace
     let leading_ws = &line[..line.len() - line.trim_start().len()];
+    let has_commas = line.contains(',');
 
-    // Split into tokens by whitespace
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let (mut command, args): (String, Vec<&str>) = if has_commas {
+        let parts: Vec<&str> = trimmed.split(',').map(str::trim).collect();
+        if parts.is_empty() {
+            return (line.to_string(), false);
+        }
+        let first_tokens: Vec<&str> = parts[0].split_whitespace().collect();
+        if first_tokens.is_empty() {
+            return (line.to_string(), false);
+        }
+        let mut all_args: Vec<&str> = first_tokens[1..].to_vec();
+        all_args.extend(&parts[1..]);
+        (first_tokens[0].to_string(), all_args)
+    } else {
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        if tokens.is_empty() {
+            return (line.to_string(), false);
+        }
+        (tokens[0].to_string(), tokens[1..].to_vec())
+    };
 
-    if tokens.is_empty() {
-        return line.to_string();
+    let mut is_end_movement = false;
+    if let Some(db) = db {
+        if in_action {
+            let hex_str = command.strip_prefix("0x").unwrap_or(&command);
+            if let Ok(id) = u16::from_str_radix(hex_str, 16) {
+                if let Some((name, _)) = db.get_movement_by_id(id) {
+                    command = name.clone();
+                    is_end_movement = command == "EndMovement";
+                }
+            }
+        } else if let Some(id_str) = command.strip_prefix("CMD_") {
+            if let Ok(id) = id_str.parse::<u16>() {
+                if let Some((name, _)) = db.get_script_cmd_by_id(id) {
+                    command = name.clone();
+                }
+            }
+        }
     }
-
-    // First token is the command name, rest are arguments
-    let command = tokens[0];
-    let args = &tokens[1..];
 
     if args.is_empty() {
-        // No arguments, return as-is
-        return line.to_string();
+        return (format!("{}{}", leading_ws, command), is_end_movement);
     }
 
-    // Join arguments with ", "
     let args_str = args.join(", ");
-
-    format!("{}{} {}", leading_ws, command, args_str)
+    (
+        format!("{}{} {}", leading_ws, command, args_str),
+        is_end_movement,
+    )
 }
 
 /// Strip block comments /* ... */ from the input, handling nested and multi-line comments
