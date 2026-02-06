@@ -4,9 +4,7 @@ use clap::{Parser as ClapParser, Subcommand};
 
 // Use the library crate
 use rotom::compile_path;
-use rotom::compiler::codegen::Emitter;
 use rotom::compiler::parse_error::{CompileError, print_error};
-use rotom::compiler::{Analyzer, Lexer, Lowerer, Parser, StatementKind};
 use rotom::database::{ConstantDb, DatabaseV2, GameFamily};
 use rotom::decompile_path;
 
