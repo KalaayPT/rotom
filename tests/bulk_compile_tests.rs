@@ -75,7 +75,10 @@ pub struct BulkCompileResult {
     pub outcomes: Mutex<HashMap<String, CompileOutcome>>,
 }
 
-const DEFAULT_POKEPLATINUM_ROOT: &str = "/home/kalaay/dev/pokeplatinum";
+const DEFAULT_POKEPLATINUM_ROOT: &str = "C:/dev/pokeplatinum";
+const DEFAULT_POKEHEARTGOLD_ROOT: &str = "C:/dev/pokeheartgold";
+const DEFAULT_DSPRE_PLATINUM_ROOT: &str = "C:/Users/micro/Desktop/pt_DSPRE_contents";
+const DEFAULT_DSPRE_HEARTGOLD_ROOT: &str = "C:/Users/micro/Desktop/hg_DSPRE_contents";
 
 fn get_pokeplatinum_root() -> PathBuf {
     std::env::var("POKEPLATINUM_ROOT")
@@ -136,10 +139,6 @@ fn find_levelscripts() -> Vec<PathBuf> {
     scripts
 }
 
-const DEFAULT_POKEHEARTGOLD_ROOT: &str = "/home/kalaay/dev/pokeheartgold";
-const DEFAULT_DSPRE_PLATINUM_ROOT: &str = "/home/kalaay/Desktop/pt_DSPRE_contents";
-const DEFAULT_DSPRE_HEARTGOLD_ROOT: &str = "/home/kalaay/Desktop/hg_DSPRE_contents";
-
 fn get_pokeheartgold_root() -> PathBuf {
     std::env::var("POKEHEARTGOLD_ROOT")
         .map(PathBuf::from)
@@ -174,7 +173,7 @@ fn get_dspre_heartgold_binaries_dir() -> PathBuf {
     get_dspre_heartgold_root().join("unpacked/scripts")
 }
 
-fn get_heartgold_scripts_dir() -> PathBuf {
+fn get_pokeheartgold_scripts_dir() -> PathBuf {
     get_pokeheartgold_root().join("files/fielddata/script/scr_seq")
 }
 
@@ -201,7 +200,7 @@ fn find_dspre_binary_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn find_heartgold_scripts() -> Vec<PathBuf> {
-    let scripts_dir = get_heartgold_scripts_dir();
+    let scripts_dir = get_pokeheartgold_scripts_dir();
     let mut scripts: Vec<PathBuf> = std::fs::read_dir(&scripts_dir)
         .expect("Failed to read HeartGold scripts directory")
         .filter_map(|entry| entry.ok())
@@ -334,10 +333,11 @@ fn round_trip_single_binary(
         Ok(b) => b,
         Err(e) => return CompileOutcome::IoError(format!("{}", e)),
     };
+    let expected_size = original_bytes.len();
     let expected_hash = sha256_hex(&original_bytes);
 
     // 2. Decompile to IR, then to source
-    let ir = match rotom::decompile_to_ir(original_bytes.clone(), db) {
+    let ir = match rotom::decompile_to_ir(original_bytes, db) {
         Ok(ir) => ir,
         Err(e) => return CompileOutcome::CompileError(format!("Decompile failed: {:?}", e)),
     };
@@ -357,7 +357,7 @@ fn round_trip_single_binary(
         CompileOutcome::HashMismatch {
             expected_hash,
             actual_hash,
-            expected_size: original_bytes.len(),
+            expected_size,
             actual_size: actual_bytes.len(),
         }
     }
@@ -996,7 +996,7 @@ fn bulk_compile_heartgold_scripts(
 }
 
 fn run_heartgold_scripts_test(verbose: bool) -> BulkCompileResult {
-    let scripts_dir = get_heartgold_scripts_dir();
+    let scripts_dir = get_pokeheartgold_scripts_dir();
     if !scripts_dir.exists() {
         panic!(
             "HeartGold scripts directory not found at {:?}. Set POKEHEARTGOLD_ROOT env var.",
