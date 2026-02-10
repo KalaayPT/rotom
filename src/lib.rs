@@ -268,6 +268,45 @@ fn generate_output_path_decompile(
     output_dir.join(format!("{}.{}", stem.to_string_lossy(), extension))
 }
 
+fn resolve_decompile_output_path(
+    input: &Path,
+    output_file: Option<&Path>,
+    output_dir: Option<&Path>,
+    is_levelscript: bool,
+) -> PathBuf {
+    if let Some(path) = output_file {
+        path.to_path_buf()
+    } else if let Some(dir) = output_dir {
+        generate_output_path_decompile(input, dir, is_levelscript)
+    } else {
+        let extension = if is_levelscript { "json" } else { "rotom" };
+        input.with_extension(extension)
+    }
+}
+
+fn detect_compile_output_collisions(
+    files: &[PathBuf],
+    output_dir: &Path,
+) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let mut output_to_inputs: std::collections::HashMap<PathBuf, Vec<PathBuf>> =
+        std::collections::HashMap::new();
+
+    for input_file in files {
+        let output_path = generate_output_path_compile(input_file, output_dir);
+        output_to_inputs
+            .entry(output_path)
+            .or_default()
+            .push(input_file.clone());
+    }
+
+    let mut collisions: Vec<(PathBuf, Vec<PathBuf>)> = output_to_inputs
+        .into_iter()
+        .filter(|(_, inputs)| inputs.len() > 1)
+        .collect();
+    collisions.sort_by(|a, b| a.0.cmp(&b.0));
+    collisions
+}
+
 pub fn compile_path(
     input: &Path,
     output: &Path,
@@ -352,6 +391,34 @@ pub fn compile_path(
             });
         }
 
+        let collisions = detect_compile_output_collisions(&files, output);
+        if !collisions.is_empty() {
+            let details = collisions
+                .iter()
+                .map(|(out, inputs)| {
+                    let mut names: Vec<String> = inputs
+                        .iter()
+                        .map(|p| {
+                            p.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                        .collect();
+                    names.sort();
+                    format!("{} <= [{}]", out.display(), names.join(", "))
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+
+            return Err(CompileError::Io {
+                message: format!(
+                    "Output path collision detected for directory compile. Multiple inputs map to the same output: {}",
+                    details
+                ),
+            });
+        }
+
         // Compile all files in parallel
         let results: Vec<Result<CompileResult, CompileFailure>> = files
             .par_iter()
@@ -397,6 +464,7 @@ pub fn compile_path(
 
 fn decompile_file_internal(
     input: &Path,
+    output_file: Option<&Path>,
     output_dir: Option<&Path>,
     db: &DatabaseV2,
 ) -> Result<DecompileFileResult, DecompileFailure> {
@@ -414,12 +482,7 @@ fn decompile_file_internal(
 
     let is_levelscript = matches!(script_output, ScriptOutput::Levelscript(_));
 
-    let output_path = if let Some(dir) = output_dir {
-        generate_output_path_decompile(input, dir, is_levelscript)
-    } else {
-        let extension = if is_levelscript { "json" } else { "rotom" };
-        input.with_extension(extension)
-    };
+    let output_path = resolve_decompile_output_path(input, output_file, output_dir, is_levelscript);
 
     let source_text = ir_to_source(&script_output, db);
     let size = source_text.len();
@@ -447,7 +510,7 @@ pub fn decompile_file(
     output_dir: Option<&Path>,
     db: &DatabaseV2,
 ) -> DecompileResult<DecompileFileResult> {
-    decompile_file_internal(input, output_dir, db).map_err(|f| f.error)
+    decompile_file_internal(input, None, output_dir, db).map_err(|f| f.error)
 }
 
 pub fn decompile_path(
@@ -456,13 +519,13 @@ pub fn decompile_path(
     db: &DatabaseV2,
 ) -> Result<BatchDecompileResult, DecompileError> {
     if input.is_file() {
-        let output_dir = if output.is_dir() {
-            Some(output)
+        let (output_file, output_dir) = if output.is_dir() {
+            (None, Some(output))
         } else {
-            output.parent()
+            (Some(output), None)
         };
 
-        match decompile_file_internal(input, output_dir, db) {
+        match decompile_file_internal(input, output_file, output_dir, db) {
             Ok(result) => Ok(BatchDecompileResult {
                 successes: vec![result],
                 failures: vec![],
@@ -514,7 +577,7 @@ pub fn decompile_path(
 
         let results: Vec<Result<DecompileFileResult, DecompileFailure>> = files
             .par_iter()
-            .map(|input_file| decompile_file_internal(input_file, Some(output), db))
+            .map(|input_file| decompile_file_internal(input_file, None, Some(output), db))
             .collect();
 
         let mut successes = Vec::new();
@@ -535,5 +598,75 @@ pub fn decompile_path(
         Err(DecompileError::Io {
             message: format!("Input path does not exist: {}", input.display()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detect_compile_output_collisions, resolve_decompile_output_path};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn detect_compile_output_collisions_flags_same_stem() {
+        let files = vec![
+            PathBuf::from("in/same.rotom"),
+            PathBuf::from("in/same.script"),
+            PathBuf::from("in/unique.s"),
+        ];
+        let output_dir = Path::new("out");
+
+        let collisions = detect_compile_output_collisions(&files, output_dir);
+
+        assert_eq!(collisions.len(), 1);
+        let (out_path, inputs) = &collisions[0];
+        assert_eq!(*out_path, PathBuf::from("out/same.bin"));
+        assert_eq!(inputs.len(), 2);
+    }
+
+    #[test]
+    fn detect_compile_output_collisions_allows_unique_outputs() {
+        let files = vec![
+            PathBuf::from("in/a.rotom"),
+            PathBuf::from("in/b.script"),
+            PathBuf::from("in/c.s"),
+        ];
+        let output_dir = Path::new("out");
+
+        let collisions = detect_compile_output_collisions(&files, output_dir);
+
+        assert!(collisions.is_empty());
+    }
+
+    #[test]
+    fn resolve_decompile_output_path_prefers_explicit_file() {
+        let input = Path::new("scripts/0001.bin");
+        let output_file = Path::new("custom/output_name.rotom");
+        let output_dir = Path::new("ignored");
+
+        let resolved =
+            resolve_decompile_output_path(input, Some(output_file), Some(output_dir), false);
+
+        assert_eq!(resolved, output_file);
+    }
+
+    #[test]
+    fn resolve_decompile_output_path_uses_dir_and_type_extension() {
+        let input = Path::new("scripts/0010.bin");
+        let output_dir = Path::new("out");
+
+        let levelscript_out = resolve_decompile_output_path(input, None, Some(output_dir), true);
+        let script_out = resolve_decompile_output_path(input, None, Some(output_dir), false);
+
+        assert_eq!(levelscript_out, PathBuf::from("out/0010.json"));
+        assert_eq!(script_out, PathBuf::from("out/0010.rotom"));
+    }
+
+    #[test]
+    fn resolve_decompile_output_path_defaults_to_input_extension_swap() {
+        let input = Path::new("scripts/raw.bin");
+
+        let resolved = resolve_decompile_output_path(input, None, None, false);
+
+        assert_eq!(resolved, PathBuf::from("scripts/raw.rotom"));
     }
 }
