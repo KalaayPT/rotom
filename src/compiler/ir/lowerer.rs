@@ -509,17 +509,11 @@ impl<'a> Lowerer<'a> {
         }
 
         // Fill in defaults for any remaining None values
-        let result_clone = result.clone();
         for (i, param) in params.iter().enumerate() {
             if result[i].is_none() {
                 if let Some(default_str) = &param.default {
-                    let built_so_far: Vec<Expression> = result_clone
-                        .iter()
-                        .take(i)
-                        .filter_map(|e| e.clone())
-                        .collect();
                     let substituted =
-                        self.substitute_default_params(default_str, params, &built_so_far)?;
+                        self.substitute_default_params_sparse(default_str, params, &result[..i])?;
                     let lexer = Lexer::new(&substituted);
                     let mut parser = Parser::new(lexer);
                     let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
@@ -809,12 +803,25 @@ impl<'a> Lowerer<'a> {
         params: &[ParamDef],
         resolved_args: &[Expression],
     ) -> ParseResult<String> {
+        let sparse_args: Vec<Option<Expression>> =
+            resolved_args.iter().cloned().map(Some).collect();
+        self.substitute_default_params_sparse(default_str, params, &sparse_args)
+    }
+
+    fn substitute_default_params_sparse(
+        &self,
+        default_str: &str,
+        params: &[ParamDef],
+        resolved_args: &[Option<Expression>],
+    ) -> ParseResult<String> {
         let mut result = default_str.to_string();
 
         for (i, param) in params.iter().enumerate() {
             let placeholder = format!("${}", param.name);
-            if result.contains(&placeholder) && i < resolved_args.len() {
-                let formatted = self.format_arg_for_substitution(&resolved_args[i])?;
+            if result.contains(&placeholder)
+                && let Some(arg) = resolved_args.get(i).and_then(|arg| arg.as_ref())
+            {
+                let formatted = self.format_arg_for_substitution(arg)?;
                 result = result.replace(&placeholder, &formatted);
             }
         }
@@ -1916,6 +1923,40 @@ function TestFunc #1:
                         && matches!(&args[0], Arg::Value(0x800C)))
                 });
                 assert!(has_compare, "Should emit CompareVarValue with VAR_RESULT");
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_defaults_can_reference_prior_defaulted_param() {
+        let source = r#"
+alias 0x800C as VAR_RESULT
+
+function TestFunc #1:
+    ShowCurrentFloor 1, 2
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let has_show_current_floor = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                        if name == "ShowCurrentFloor"
+                        && args.len() == 4
+                        && matches!(&args[0], Arg::Value(1))
+                        && matches!(&args[1], Arg::Value(2))
+                        && matches!(&args[2], Arg::Value(0x800C))
+                        && matches!(&args[3], Arg::Value(0x800C)))
+                });
+                assert!(
+                    has_show_current_floor,
+                    "ShowCurrentFloor should default both destVarID params to VAR_RESULT"
+                );
             }
             _ => panic!("Expected function"),
         }
