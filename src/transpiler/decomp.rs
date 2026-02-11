@@ -353,12 +353,12 @@ fn reorder_decomp_args_to_binary(
 ) -> String {
     let cmd = match db.get_command(cmd_name) {
         Ok(c) => c,
-        Err(_) => return args_str.to_string(),
+        Err(_) => return args_str.to_owned(),
     };
 
     let params = &cmd.params;
     if params.is_empty() {
-        return args_str.to_string();
+        return args_str.to_owned();
     }
 
     let mut required_indices: Vec<usize> = Vec::new();
@@ -374,14 +374,14 @@ fn reorder_decomp_args_to_binary(
     }
 
     if optional_indices.is_empty() {
-        return args_str.to_string();
+        return args_str.to_owned();
     }
 
     let all_optional_at_end = optional_indices
         .iter()
         .all(|&i| i >= required_indices.len());
     if all_optional_at_end {
-        return args_str.to_string();
+        return args_str.to_owned();
     }
 
     let args: Vec<&str> = args_str.split(',').map(str::trim).collect();
@@ -390,16 +390,16 @@ fn reorder_decomp_args_to_binary(
     let total_params = params.len();
 
     if args.len() < req_count || args.len() > total_params {
-        return args_str.to_string();
+        return args_str.to_owned();
     }
 
     let provided_optional_count = args.len() - req_count;
 
-    let mut result: Vec<Option<String>> = vec![None; total_params];
+    let mut result: Vec<Option<&str>> = vec![None; total_params];
 
     for (decomp_idx, &binary_idx) in required_indices.iter().enumerate() {
         if decomp_idx < args.len() {
-            result[binary_idx] = Some(args[decomp_idx].to_string());
+            result[binary_idx] = Some(args[decomp_idx]);
         }
     }
 
@@ -407,39 +407,38 @@ fn reorder_decomp_args_to_binary(
         if opt_num < provided_optional_count {
             let decomp_idx = req_count + opt_num;
             if decomp_idx < args.len() {
-                result[binary_idx] = Some(args[decomp_idx].to_string());
+                result[binary_idx] = Some(args[decomp_idx]);
             }
         } else {
-            result[binary_idx] = Some(params[binary_idx].default.clone().unwrap_or_default());
+            result[binary_idx] = Some(params[binary_idx].default.as_deref().unwrap_or_default());
         }
     }
 
-    let final_args: Vec<String> = result.into_iter().flatten().collect();
+    let final_args: Vec<&str> = result.into_iter().flatten().collect();
     final_args.join(", ")
 }
 
 /// Substitute local #define macros in argument string
 fn substitute_defines(args: &str, defines: &std::collections::HashMap<String, String>) -> String {
     if defines.is_empty() {
-        return args.to_string();
+        return args.to_owned();
     }
 
-    // Split by comma to handle each argument separately
-    let parts: Vec<&str> = args.split(',').collect();
-    let substituted: Vec<String> = parts
-        .iter()
-        .map(|part| {
-            let trimmed = part.trim();
-            // Check if this is an identifier that needs substitution
-            if let Some(replacement) = defines.get(trimmed) {
-                replacement.clone()
-            } else {
-                trimmed.to_string()
-            }
-        })
-        .collect();
-
-    substituted.join(", ")
+    let mut out = String::with_capacity(args.len());
+    let mut first = true;
+    for part in args.split(',') {
+        if !first {
+            out.push_str(", ");
+        }
+        first = false;
+        let trimmed = part.trim();
+        if let Some(replacement) = defines.get(trimmed) {
+            out.push_str(replacement);
+        } else {
+            out.push_str(trimmed);
+        }
+    }
+    out
 }
 
 fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
