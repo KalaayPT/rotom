@@ -184,19 +184,8 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
 
         output.push_str("    ");
         if let Some(cmd_end_idx) = trimmed.find([' ', '\t']) {
-            let mut cmd_name = &trimmed[..cmd_end_idx];
+            let cmd_name = resolve_script_command_name(&trimmed[..cmd_end_idx], db);
             let args = trimmed[cmd_end_idx..].trim();
-
-            if let Some(db) = db
-                && let Some(id_str) = cmd_name.strip_prefix("ScrCmd_")
-                && let Ok(id) = u16::from_str_radix(id_str, 16)
-                && let Some((name, _)) = db
-                    .commands
-                    .iter()
-                    .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
-            {
-                cmd_name = name;
-            }
 
             if args.is_empty() {
                 output.push_str(cmd_name);
@@ -214,17 +203,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
                 }
             }
         } else {
-            let mut cmd_name = trimmed;
-            if let Some(db) = db
-                && let Some(id_str) = cmd_name.strip_prefix("ScrCmd_")
-                && let Ok(id) = u16::from_str_radix(id_str, 16)
-                && let Some((name, _)) = db
-                    .commands
-                    .iter()
-                    .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
-            {
-                cmd_name = name;
-            }
+            let cmd_name = resolve_script_command_name(trimmed, db);
             output.push_str(cmd_name);
         }
         if let Some(ref c) = inline_comment {
@@ -353,6 +332,28 @@ fn collect_local_defines(input: &str) -> HashMap<String, String> {
     }
 
     local_defines
+}
+
+fn resolve_script_command_name<'a>(
+    cmd_name: &'a str,
+    db: Option<&'a crate::database::DatabaseV2>,
+) -> &'a str {
+    let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") else {
+        return cmd_name;
+    };
+
+    let Some(db) = db else {
+        return cmd_name;
+    };
+
+    let Ok(id) = u16::from_str_radix(id_str, 16) else {
+        return cmd_name;
+    };
+
+    db.commands
+        .iter()
+        .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
+        .map_or(cmd_name, |(name, _)| name.as_str())
 }
 
 fn reorder_decomp_args_to_binary(
@@ -485,6 +486,7 @@ fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_collect_prepass_data_keeps_duplicate_function_slots() {
@@ -499,6 +501,24 @@ Main:
 
         let prepass = collect_prepass_data(input, None);
         assert_eq!(prepass.function_to_slots.get("Main"), Some(&vec![0, 1]));
+    }
+
+    #[test]
+    fn test_resolve_script_command_name_maps_scrcmd_opcode() {
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
+            .expect("test database should load");
+        let end_id = db
+            .get_command("End")
+            .expect("End command should exist")
+            .id
+            .expect("End command should have opcode");
+        let opcode_name = format!("ScrCmd_{:04X}", end_id);
+
+        assert_eq!(resolve_script_command_name(&opcode_name, Some(&db)), "End");
+        assert_eq!(
+            resolve_script_command_name("NotAnOpcodeAlias", Some(&db)),
+            "NotAnOpcodeAlias"
+        );
     }
 
     #[test]
