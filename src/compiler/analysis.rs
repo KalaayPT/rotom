@@ -7,17 +7,6 @@ use super::{
     parse_error::{CompileError, ParseResult, analysis_error},
 };
 
-const AUTOVAR_PARAM_NAMES: &[&str] = &[
-    "destvar",
-    "destvarid",
-    "successvar",
-    "var_dest",
-    "retvar",
-    "variable",
-];
-
-const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
-
 #[derive(Debug, Clone)]
 pub enum SymbolType {
     Function(Option<u32>),
@@ -82,10 +71,9 @@ impl SymbolTable {
         kind: SymbolType,
         span: Range<usize>,
     ) -> Result<(), CompileError> {
-        let current_scope = self
-            .scopes
-            .last_mut()
-            .expect("scopes is never empty; initialized with one element and protected by exit_scope guard");
+        let current_scope = self.scopes.last_mut().expect(
+            "scopes is never empty; initialized with one element and protected by exit_scope guard",
+        );
 
         if let Some((_, original_span)) = current_scope.get(&name) {
             return Err(analysis_error(
@@ -393,36 +381,13 @@ impl<'a> Analyzer<'a> {
 
     /// Check if a command is autovar-compatible (has a result parameter with VAR_RESULT default)
     fn is_autovar_command(&self, name: &str) -> bool {
-        let Some(cmd) = self.get_command(name) else {
-            return false;
-        };
-
-        cmd.params.iter().any(|param| {
-            let name_lower = param.name.to_lowercase();
-            let has_autovar_name = AUTOVAR_PARAM_NAMES.iter().any(|n| name_lower.contains(n));
-            let has_autovar_default = param.default.as_ref().is_some_and(|d| {
-                AUTOVAR_DEFAULT_VALUES
-                    .iter()
-                    .any(|v| d.eq_ignore_ascii_case(v))
-            });
-            has_autovar_name && has_autovar_default
-        })
+        self.get_autovar_param_index(name).is_some()
     }
 
     /// Get the autovar parameter index for a command (the parameter that stores the result)
     fn get_autovar_param_index(&self, name: &str) -> Option<usize> {
         let cmd = self.get_command(name)?;
-
-        cmd.params.iter().position(|param| {
-            let name_lower = param.name.to_lowercase();
-            let has_autovar_name = AUTOVAR_PARAM_NAMES.iter().any(|n| name_lower.contains(n));
-            let has_autovar_default = param.default.as_ref().is_some_and(|d| {
-                AUTOVAR_DEFAULT_VALUES
-                    .iter()
-                    .any(|v| d.eq_ignore_ascii_case(v))
-            });
-            has_autovar_name && has_autovar_default
-        })
+        crate::autovar::autovar_param_index(cmd)
     }
 
     /// Validate that a Call expression is to an autovar-compatible command

@@ -3,6 +3,7 @@
 //! This library provides functionality to compile Rotoscript source files
 //! to binary format and decompile binary scripts back to Rotoscript.
 
+mod autovar;
 pub mod compiler;
 pub mod database;
 pub mod decompiler;

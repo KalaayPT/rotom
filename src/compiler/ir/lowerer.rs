@@ -11,6 +11,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use crate::autovar::{VAR_RESULT, autovar_param_index};
 use crate::compiler::analysis::{SymbolTable, SymbolType};
 use crate::compiler::ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind};
 use crate::compiler::parse_error::{ParseResult, lowering_error};
@@ -19,19 +20,6 @@ use crate::compiler::{Lexer, Parser};
 use crate::database::{Command, ComparisonOperator, DatabaseV2, ParamDef};
 
 use super::{Arg, Condition, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
-
-const VAR_RESULT: i32 = 0x800C;
-
-const AUTOVAR_PARAM_NAMES: &[&str] = &[
-    "destvar",
-    "destvarid",
-    "successvar",
-    "var_dest",
-    "retvar",
-    "variable",
-];
-
-const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
 
 /// Macro condition for argument count: matches "1 arg(s)", "2 args", "3 args", etc.
 static RE_ARG_COUNT: LazyLock<Regex> = LazyLock::new(|| {
@@ -967,7 +955,7 @@ impl<'a> Lowerer<'a> {
 
         let cmd = self.db.get_command(name)?;
 
-        let autovar_index = self.get_autovar_param_index(cmd);
+        let autovar_index = autovar_param_index(cmd);
 
         let mut final_args: Vec<Expression> = args.to_vec();
 
@@ -1024,19 +1012,6 @@ impl<'a> Lowerer<'a> {
         }
 
         Ok(())
-    }
-
-    fn get_autovar_param_index(&self, cmd: &Command) -> Option<usize> {
-        cmd.params.iter().position(|param| {
-            let name_lower = param.name.to_lowercase();
-            let has_autovar_name = AUTOVAR_PARAM_NAMES.iter().any(|n| name_lower.contains(n));
-            let has_autovar_default = param.default.as_ref().is_some_and(|d| {
-                AUTOVAR_DEFAULT_VALUES
-                    .iter()
-                    .any(|v| d.eq_ignore_ascii_case(v))
-            });
-            has_autovar_name && has_autovar_default
-        })
     }
 
     fn resolve_args(&self, args: &[Expression]) -> ParseResult<Vec<Arg>> {

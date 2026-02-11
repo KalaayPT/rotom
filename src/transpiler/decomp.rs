@@ -31,6 +31,7 @@
 //!     EndMovement
 //! ```
 
+use crate::autovar::is_autovar_param;
 use crate::database::CommandType;
 
 #[derive(Debug, Clone)]
@@ -325,25 +326,6 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         source: output,
         emit_end_marker: has_script_entry_end,
     }
-}
-
-const AUTOVAR_PARAM_NAMES: &[&str] = &[
-    "destvar",
-    "destvarid",
-    "successvar",
-    "var_dest",
-    "retvar",
-    "variable",
-];
-
-fn is_autovar_param(param: &crate::database::ParamDef) -> bool {
-    if let Some(ref default) = param.default {
-        if default == "VAR_RESULT" || default == "0x800C" {
-            let name_lower = param.name.to_lowercase();
-            return AUTOVAR_PARAM_NAMES.iter().any(|&n| name_lower.contains(n));
-        }
-    }
-    false
 }
 
 fn reorder_decomp_args_to_binary(
