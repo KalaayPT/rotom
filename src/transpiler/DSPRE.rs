@@ -37,6 +37,7 @@
 //! ```
 
 use regex::Regex;
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 // ============================================================================
@@ -135,42 +136,54 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             continue;
         }
 
-        // For all other lines, replace references in arguments
+        // For all other lines, replace references in arguments.
+        // Keep a single buffer and only allocate when a replacement is needed.
         let mut processed = line.to_string();
 
         // Replace Script#N -> script_N
-        processed = RE_SCRIPT_REF
-            .replace_all(&processed, "script_$1")
-            .to_string();
+        if RE_SCRIPT_REF.is_match(&processed) {
+            processed = RE_SCRIPT_REF
+                .replace_all(&processed, "script_$1")
+                .into_owned();
+        }
 
         // Replace Function#N -> func_N
-        processed = RE_FUNCTION_REF
-            .replace_all(&processed, "func_$1")
-            .to_string();
+        if RE_FUNCTION_REF.is_match(&processed) {
+            processed = RE_FUNCTION_REF
+                .replace_all(&processed, "func_$1")
+                .into_owned();
+        }
 
         // Replace Action#N -> action_N
-        processed = RE_ACTION_REF
-            .replace_all(&processed, "action_$1")
-            .to_string();
+        if RE_ACTION_REF.is_match(&processed) {
+            processed = RE_ACTION_REF
+                .replace_all(&processed, "action_$1")
+                .into_owned();
+        }
 
         // Strip descriptors: Overworld.0 -> 0, Move.HM01 -> HM01
-        processed = RE_DESCRIPTOR.replace_all(&processed, "$1").to_string();
+        if RE_DESCRIPTOR.is_match(&processed) {
+            processed = RE_DESCRIPTOR.replace_all(&processed, "$1").into_owned();
+        }
 
         // Convert DSPRE comparison operators: GREATER/EQUAL -> GREATER_EQUAL, LESS/EQUAL -> LESS_EQUAL
-        processed = processed.replace("GREATER/EQUAL", "GREATER_EQUAL");
-        processed = processed.replace("LESS/EQUAL", "LESS_EQUAL");
+        if processed.contains("GREATER/EQUAL") {
+            processed = processed.replace("GREATER/EQUAL", "GREATER_EQUAL");
+        }
+        if processed.contains("LESS/EQUAL") {
+            processed = processed.replace("LESS/EQUAL", "LESS_EQUAL");
+        }
 
         // Convert space-separated arguments to comma-separated
         // Command Arg1 Arg2 Arg3 -> Command Arg1, Arg2, Arg3
         let (processed_line, is_end_movement) =
             convert_space_to_comma_args(&processed, db, in_action);
-        processed = processed_line;
 
         if is_end_movement {
             action_has_end_movement = true;
         }
 
-        output.push_str(&processed);
+        output.push_str(&processed_line);
         output.push('\n');
     }
 
@@ -190,40 +203,40 @@ fn convert_space_to_comma_args(
     let leading_ws = &line[..line.len() - line.trim_start().len()];
     let has_commas = line.contains(',');
 
-    let (mut command, args): (String, Vec<&str>) = if has_commas {
-        let parts: Vec<&str> = trimmed.split(',').map(str::trim).collect();
-        if parts.is_empty() {
+    let (mut command, args): (Cow<'_, str>, Vec<&str>) = if has_commas {
+        let mut parts = trimmed.split(',').map(str::trim);
+        let Some(first_part) = parts.next() else {
             return (line.to_string(), false);
-        }
-        let first_tokens: Vec<&str> = parts[0].split_whitespace().collect();
-        if first_tokens.is_empty() {
+        };
+        let mut first_tokens = first_part.split_whitespace();
+        let Some(first_command) = first_tokens.next() else {
             return (line.to_string(), false);
-        }
-        let mut all_args: Vec<&str> = first_tokens[1..].to_vec();
-        all_args.extend(&parts[1..]);
-        (first_tokens[0].to_string(), all_args)
+        };
+        let mut all_args: Vec<&str> = first_tokens.collect();
+        all_args.extend(parts);
+        (Cow::Borrowed(first_command), all_args)
     } else {
-        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        if tokens.is_empty() {
+        let mut tokens = trimmed.split_whitespace();
+        let Some(first_command) = tokens.next() else {
             return (line.to_string(), false);
-        }
-        (tokens[0].to_string(), tokens[1..].to_vec())
+        };
+        (Cow::Borrowed(first_command), tokens.collect())
     };
 
     let mut is_end_movement = false;
     if let Some(db) = db {
         if in_action {
-            let hex_str = command.strip_prefix("0x").unwrap_or(&command);
+            let hex_str = command.strip_prefix("0x").unwrap_or(command.as_ref());
             if let Ok(id) = u16::from_str_radix(hex_str, 16) {
                 if let Some((name, _)) = db.get_movement_by_id(id) {
-                    command = name.clone();
+                    command = Cow::Borrowed(name);
                     is_end_movement = command == "EndMovement";
                 }
             }
         } else if let Some(id_str) = command.strip_prefix("CMD_") {
             if let Ok(id) = id_str.parse::<u16>() {
                 if let Some((name, _)) = db.get_script_cmd_by_id(id) {
-                    command = name.clone();
+                    command = Cow::Borrowed(name);
                 }
             }
         }
