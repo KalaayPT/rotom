@@ -604,8 +604,30 @@ pub fn decompile_path(
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_compile_output_collisions, resolve_decompile_output_path};
+    use super::{
+        ConstantDb, DatabaseV2, compile_path, compile_to_bytes, decompile_path,
+        detect_compile_output_collisions, resolve_decompile_output_path,
+    };
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!("rotom_{}_{}_{}", name, std::process::id(), now))
+    }
+
+    fn load_test_db() -> DatabaseV2 {
+        DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
+            .expect("Test database not found at src/db/platinum_v2.json")
+    }
+
+    fn minimal_script_source() -> &'static str {
+        "function Main #1:\nEnd\n"
+    }
 
     #[test]
     fn detect_compile_output_collisions_flags_same_stem() {
@@ -669,5 +691,101 @@ mod tests {
         let resolved = resolve_decompile_output_path(input, None, None, false);
 
         assert_eq!(resolved, PathBuf::from("scripts/raw.rotom"));
+    }
+
+    #[test]
+    fn compile_path_file_mode_respects_explicit_output_file() {
+        let temp_dir = unique_temp_dir("compile_path_file_mode_explicit_output");
+        fs::create_dir_all(&temp_dir).expect("failed to create temp dir");
+
+        let input_path = temp_dir.join("input.rotom");
+        let output_path = temp_dir.join("custom_name.bin");
+        fs::write(&input_path, minimal_script_source()).expect("failed to write input script");
+
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+
+        let result = compile_path(&input_path, &output_path, &db, &constants)
+            .expect("compile_path should return a batch result");
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert!(result.is_success(), "compile_path should succeed");
+        assert_eq!(result.successes.len(), 1);
+        assert_eq!(result.successes[0].output, output_path);
+    }
+
+    #[test]
+    fn compile_path_directory_mode_rejects_file_output_target() {
+        let temp_dir = unique_temp_dir("compile_path_dir_mode_reject_file_output");
+        let input_dir = temp_dir.join("in");
+        fs::create_dir_all(&input_dir).expect("failed to create input dir");
+        fs::write(input_dir.join("a.rotom"), minimal_script_source())
+            .expect("failed to write input script");
+
+        let output_file = temp_dir.join("out.bin");
+        fs::write(&output_file, b"already a file").expect("failed to create output file");
+
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+
+        let result = compile_path(&input_dir, &output_file, &db, &constants);
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert!(
+            result.is_err(),
+            "directory compile should reject file output"
+        );
+        let err_text = format!("{}", result.err().unwrap());
+        assert!(
+            err_text.contains("Output must be a directory"),
+            "unexpected error: {}",
+            err_text
+        );
+    }
+
+    #[test]
+    fn decompile_path_file_mode_respects_explicit_output_file() {
+        let temp_dir = unique_temp_dir("decompile_path_file_mode_explicit_output");
+        fs::create_dir_all(&temp_dir).expect("failed to create temp dir");
+
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+        let bytes = compile_to_bytes(minimal_script_source(), &db, &constants)
+            .expect("failed to compile seed script");
+
+        let input_path = temp_dir.join("input.bin");
+        let output_path = temp_dir.join("custom_out.rotom");
+        fs::write(&input_path, bytes).expect("failed to write input binary");
+
+        let result = decompile_path(&input_path, &output_path, &db)
+            .expect("decompile_path should return a batch result");
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert!(result.is_success(), "decompile_path should succeed");
+        assert_eq!(result.successes.len(), 1);
+        assert_eq!(result.successes[0].output, output_path);
+    }
+
+    #[test]
+    fn decompile_path_directory_mode_accepts_extensionless_binary_inputs() {
+        let temp_dir = unique_temp_dir("decompile_path_dir_mode_extensionless");
+        let input_dir = temp_dir.join("in");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&input_dir).expect("failed to create input dir");
+
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+        let bytes = compile_to_bytes(minimal_script_source(), &db, &constants)
+            .expect("failed to compile seed script");
+
+        fs::write(input_dir.join("0000"), bytes).expect("failed to write extensionless binary");
+
+        let result = decompile_path(&input_dir, &output_dir, &db)
+            .expect("decompile_path should return a batch result");
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert!(result.is_success(), "decompile_path should succeed");
+        assert_eq!(result.successes.len(), 1);
+        assert_eq!(result.successes[0].output, output_dir.join("0000.rotom"));
     }
 }
