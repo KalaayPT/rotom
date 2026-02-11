@@ -484,6 +484,7 @@ impl ConstantDb {
     pub fn load_directory<P: AsRef<Path>>(&mut self, dir: P) -> Result<usize, CompileError> {
         let dir = dir.as_ref();
         let mut total = 0;
+        let mut errors: Vec<String> = Vec::new();
 
         if !dir.exists() || !dir.is_dir() {
             return Ok(0);
@@ -493,7 +494,18 @@ impl ConstantDb {
             message: format!("Failed to read directory '{}': {}", dir.display(), e),
         })?;
 
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    errors.push(format!(
+                        "failed to read directory entry in '{}': {}",
+                        dir.display(),
+                        e
+                    ));
+                    continue;
+                }
+            };
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "json") {
                 let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -504,12 +516,36 @@ impl ConstantDb {
                     Ok(count) => {
                         total += count;
                     }
-                    Err(_) => {}
+                    Err(e) => {
+                        errors.push(format!("{}: {}", path.display(), e));
+                    }
                 }
             }
         }
 
-        Ok(total)
+        if errors.is_empty() {
+            Ok(total)
+        } else {
+            const MAX_ERRORS_IN_MESSAGE: usize = 5;
+            let shown_errors: Vec<&str> = errors
+                .iter()
+                .take(MAX_ERRORS_IN_MESSAGE)
+                .map(String::as_str)
+                .collect();
+            let mut message = format!(
+                "Failed to load one or more constants JSON files from '{}'. Loaded {} constants before failure(s): {}",
+                dir.display(),
+                total,
+                shown_errors.join("; "),
+            );
+            if errors.len() > MAX_ERRORS_IN_MESSAGE {
+                message.push_str(&format!(
+                    "; and {} additional error(s)",
+                    errors.len() - MAX_ERRORS_IN_MESSAGE
+                ));
+            }
+            Err(CompileError::Database { message })
+        }
     }
 
     pub fn load_decomp_project<P: AsRef<Path>>(&mut self, root: P) -> Result<usize, CompileError> {
@@ -593,6 +629,8 @@ impl ConstantDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_comparison_operators() {
@@ -625,5 +663,62 @@ mod tests {
         assert_eq!(ParamType::U32.size(), 4);
         assert_eq!(ParamType::Label.size(), 4);
         assert_eq!(ParamType::Var.size(), 2);
+    }
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!("rotom_{}_{}_{}", name, std::process::id(), now))
+    }
+
+    #[test]
+    fn test_load_directory_reports_invalid_json() {
+        let temp_dir = unique_temp_dir("constants_invalid_json");
+        fs::create_dir_all(&temp_dir).expect("failed to create temp dir");
+        let invalid_json = temp_dir.join("broken.json");
+        fs::write(&invalid_json, "{ invalid json").expect("failed to write invalid json");
+
+        let mut constants = ConstantDb::new();
+        let result = constants.load_directory(&temp_dir);
+        fs::remove_dir_all(&temp_dir).ok();
+
+        let err = result.expect_err("invalid constants JSON should return an error");
+        match err {
+            CompileError::Database { message } => {
+                assert!(
+                    message.contains("broken.json"),
+                    "error should include failing filename, got: {}",
+                    message
+                );
+            }
+            _ => panic!("expected database error"),
+        }
+    }
+
+    #[test]
+    fn test_load_directory_keeps_successes_but_surfaces_failures() {
+        let temp_dir = unique_temp_dir("constants_mixed_json");
+        fs::create_dir_all(&temp_dir).expect("failed to create temp dir");
+        let valid_json = temp_dir.join("ok.json");
+        let invalid_json = temp_dir.join("broken.json");
+        fs::write(&valid_json, "{\"1\":\"CONST_ONE\"}").expect("failed to write valid json");
+        fs::write(&invalid_json, "{ nope").expect("failed to write invalid json");
+
+        let mut constants = ConstantDb::new();
+        let result = constants.load_directory(&temp_dir);
+        let loaded_value = constants.get("CONST_ONE");
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(
+            loaded_value,
+            Some(1),
+            "valid constants should still be loaded before reporting failures"
+        );
+        assert!(
+            result.is_err(),
+            "mixed valid/invalid constants should surface an error"
+        );
     }
 }

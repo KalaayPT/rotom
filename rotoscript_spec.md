@@ -445,6 +445,8 @@ Rotom includes a transpiler for DSPRE script format:
 
 ### Future Work
 
+- [ ] better macro support (user-defined macros)
+- [ ] stdlib (macros, standard definitions, etc.)
 - [ ] compiler flag for raw/optimized compilation (e.g. fixing missing jump table markers)
 - [ ] Constant folding for compile-time arithmetic
 - [ ] Complex expressions in conditions (`if x + 1 == 5`)

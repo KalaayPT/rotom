@@ -124,16 +124,15 @@ fn compile(
     let mut constants = ConstantDb::new();
     let const_count = constants.load_from_db(&db);
 
-    if let Some(db_dir) = db_path.parent()
-        && let Ok(dir_count) = constants.load_directory(db_dir)
-        && !json
-        && dir_count > 0
-    {
-        println!(
-            "Loaded {} additional constants from {}",
-            dir_count,
-            db_dir.display()
-        );
+    if let Some(db_dir) = db_path.parent() {
+        let dir_count = constants.load_directory(db_dir)?;
+        if !json && dir_count > 0 {
+            println!(
+                "Loaded {} additional constants from {}",
+                dir_count,
+                db_dir.display()
+            );
+        }
     }
 
     if !json {
