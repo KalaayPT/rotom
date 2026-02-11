@@ -273,7 +273,7 @@ impl DatabaseV2 {
         if let Some((_, cmd)) = self
             .commands
             .iter()
-            .find(|(_, cmd)| cmd.legacy_name == Some(name.to_string()))
+            .find(|(_, cmd)| cmd.legacy_name.as_deref() == Some(name))
         {
             return Ok(cmd);
         }
@@ -304,7 +304,7 @@ impl DatabaseV2 {
                 if let Some((_, cmd)) = self
                     .commands
                     .iter()
-                    .find(|(_, cmd)| cmd.legacy_name == Some(name.to_string()))
+                    .find(|(_, cmd)| cmd.legacy_name.as_deref() == Some(name))
                     .filter(|(_, cmd)| cmd.cmd_type == CommandType::ScriptCmd)
                 {
                     Ok(cmd)
@@ -329,7 +329,7 @@ impl DatabaseV2 {
                 if let Some((_, cmd)) = self
                     .commands
                     .iter()
-                    .find(|(_, cmd)| cmd.legacy_name == Some(name.to_string()))
+                    .find(|(_, cmd)| cmd.legacy_name.as_deref() == Some(name))
                     .filter(|(_, cmd)| cmd.cmd_type == CommandType::Movement)
                 {
                     Ok(cmd)
@@ -629,8 +629,46 @@ impl ConstantDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_command(cmd_type: CommandType, id: u16, legacy_name: Option<&str>) -> Command {
+        Command {
+            cmd_type,
+            id: Some(id),
+            legacy_name: legacy_name.map(std::string::ToString::to_string),
+            description: None,
+            params: Vec::new(),
+            variants: None,
+            expansion: None,
+        }
+    }
+
+    fn test_db_for_legacy_lookup() -> DatabaseV2 {
+        let mut commands = HashMap::new();
+        commands.insert(
+            "Message".to_string(),
+            test_command(CommandType::ScriptCmd, 1, Some("MessageLegacy")),
+        );
+        commands.insert(
+            "WalkUp".to_string(),
+            test_command(CommandType::Movement, 2, Some("WalkUpLegacy")),
+        );
+
+        DatabaseV2 {
+            meta: DatabaseMeta {
+                version: "test".to_string(),
+                generated_at: None,
+                generated_from: None,
+            },
+            commands,
+            sounds: HashMap::new(),
+            comparison_operators: HashMap::new(),
+            overworld_directions: HashMap::new(),
+            special_overworlds: HashMap::new(),
+        }
+    }
 
     #[test]
     fn test_comparison_operators() {
@@ -663,6 +701,36 @@ mod tests {
         assert_eq!(ParamType::U32.size(), 4);
         assert_eq!(ParamType::Label.size(), 4);
         assert_eq!(ParamType::Var.size(), 2);
+    }
+
+    #[test]
+    fn test_get_command_resolves_legacy_name() {
+        let db = test_db_for_legacy_lookup();
+        let cmd = db
+            .get_command("MessageLegacy")
+            .expect("legacy lookup failed");
+        assert_eq!(cmd.id, Some(1));
+        assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn test_get_script_cmd_resolves_legacy_name() {
+        let db = test_db_for_legacy_lookup();
+        let cmd = db
+            .get_script_cmd("MessageLegacy")
+            .expect("legacy script command lookup failed");
+        assert_eq!(cmd.id, Some(1));
+        assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn test_get_movement_resolves_legacy_name() {
+        let db = test_db_for_legacy_lookup();
+        let cmd = db
+            .get_movement("WalkUpLegacy")
+            .expect("legacy movement lookup failed");
+        assert_eq!(cmd.id, Some(2));
+        assert_eq!(cmd.cmd_type, CommandType::Movement);
     }
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
