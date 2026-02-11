@@ -33,6 +33,7 @@
 
 use crate::autovar::is_autovar_param;
 use crate::database::CommandType;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct TranspileResult {
@@ -40,115 +41,26 @@ pub struct TranspileResult {
     pub emit_end_marker: bool,
 }
 
+#[derive(Debug, Default)]
+struct PrepassData {
+    function_to_slots: HashMap<String, Vec<usize>>,
+    movement_labels: HashSet<String>,
+    local_defines: HashMap<String, String>,
+}
+
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> TranspileResult {
     let mut output = String::new();
     let mut has_script_entry_end = false;
 
-    // Track jump table entries: name -> slot number
-    let mut jump_table: Vec<String> = Vec::new();
-
-    // Track which labels are movements (first command is a movement command)
-    let mut movement_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // Build a set of movement command names from the database
-    let movement_commands: std::collections::HashSet<&str> = if let Some(db) = db {
-        db.commands
-            .iter()
-            .filter(|(_, c)| c.cmd_type == CommandType::Movement)
-            .map(|(name, _)| name.as_str())
-            .collect()
-    } else {
-        std::collections::HashSet::new()
-    };
-
-    // First pass: collect jump table and identify movement labels by their content
-    let lines: Vec<&str> = input.lines().collect();
-    let mut current_label: Option<String> = None;
-
-    for (line_idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
-            continue;
-        }
-
-        // Parse ScriptEntry
-        if let Some(rest) = trimmed.strip_prefix("ScriptEntry") {
-            let rest = rest.trim();
-            let name = rest.split('@').next().unwrap_or(rest).trim();
-            let name = name.split("//").next().unwrap_or(name).trim();
-            if !name.is_empty() {
-                jump_table.push(name.to_string());
-            }
-            continue;
-        }
-
-        // Skip assembler directives
-        if trimmed.starts_with('.') {
-            continue;
-        }
-
-        // Track labels
-        if let Some(label_name) = trimmed.strip_suffix(':') {
-            current_label = Some(label_name.to_string());
-            continue;
-        }
-
-        if let Some(ref label) = current_label {
-            let cmd_name = trimmed.split([' ', '\t']).next().unwrap_or("");
-
-            let is_movement = if movement_commands.is_empty() {
-                lookahead_for_end_movement(&lines, line_idx)
-            } else {
-                movement_commands.contains(cmd_name)
-            };
-
-            if is_movement {
-                movement_labels.insert(label.clone());
-            }
-            current_label = None;
-        }
-    }
-
-    // Create a map from function name to ALL slot numbers it appears in
-    // (A function can appear multiple times in the jump table!)
-    let mut function_to_slots: std::collections::HashMap<String, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (slot_idx, name) in jump_table.iter().enumerate() {
-        function_to_slots
-            .entry(name.clone())
-            .or_default()
-            .push(slot_idx);
-    }
-
-    // Collect local #define macros for substitution
-    let mut local_defines: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for line in input.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("#define ") {
-            // Parse: NAME VALUE
-            let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
-            if parts.len() == 2 {
-                let name = parts[0].trim();
-                let value = parts[1].trim();
-                // Only store simple identifier-to-identifier mappings
-                if !name.is_empty() && !value.is_empty() {
-                    local_defines.insert(name.to_string(), value.to_string());
-                }
-            }
-        }
-    }
+    let prepass = collect_prepass_data(input, db);
 
     // Second pass: generate output
     let mut skip_until_label = false; // Skip lines until we hit the first real label (after jump table)
     let mut seen_script_entry_end = false;
     let mut seen_first_label_after_entry_end = false; // Track if we've seen a real label after ScriptEntryEnd
     // Track which functions have had their body emitted (to avoid duplicates)
-    let mut functions_with_bodies_emitted: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut functions_with_bodies_emitted: HashSet<String> = HashSet::new();
 
     for line in input.lines() {
         let raw_trimmed = line.trim();
@@ -215,14 +127,14 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
             seen_script_entry_end = true;
 
             // Check if this is a movement label
-            if movement_labels.contains(label_name) {
+            if prepass.movement_labels.contains(label_name) {
                 output.push_str(&format!("action {}", label_name));
                 if let Some(ref c) = inline_comment {
                     output.push(' ');
                     output.push_str(c);
                 }
                 output.push('\n');
-            } else if let Some(slots) = function_to_slots.get(label_name) {
+            } else if let Some(slots) = prepass.function_to_slots.get(label_name) {
                 // Public function (in jump table)
                 // Only emit if we haven't seen this function before
                 if functions_with_bodies_emitted.contains(label_name) {
@@ -289,7 +201,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
             if args.is_empty() {
                 output.push_str(cmd_name);
             } else {
-                let substituted_args = substitute_defines(args, &local_defines);
+                let substituted_args = substitute_defines(args, &prepass.local_defines);
                 let reordered_args = if let Some(db) = db {
                     reorder_decomp_args_to_binary(cmd_name, &substituted_args, db)
                 } else {
@@ -326,6 +238,121 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         source: output,
         emit_end_marker: has_script_entry_end,
     }
+}
+
+fn collect_prepass_data(input: &str, db: Option<&crate::database::DatabaseV2>) -> PrepassData {
+    let lines: Vec<&str> = input.lines().collect();
+    let movement_commands = movement_commands_from_db(db);
+    let (jump_table, movement_labels) =
+        collect_jump_table_and_movement_labels(&lines, &movement_commands);
+
+    PrepassData {
+        function_to_slots: build_function_slot_map(&jump_table),
+        movement_labels,
+        local_defines: collect_local_defines(input),
+    }
+}
+
+fn movement_commands_from_db<'a>(db: Option<&'a crate::database::DatabaseV2>) -> HashSet<&'a str> {
+    db.map(|db| {
+        db.commands
+            .iter()
+            .filter(|(_, c)| c.cmd_type == CommandType::Movement)
+            .map(|(name, _)| name.as_str())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn collect_jump_table_and_movement_labels(
+    lines: &[&str],
+    movement_commands: &HashSet<&str>,
+) -> (Vec<String>, HashSet<String>) {
+    let mut jump_table: Vec<String> = Vec::new();
+    let mut movement_labels: HashSet<String> = HashSet::new();
+    let mut current_label: Option<String> = None;
+
+    for (line_idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Skip empty lines and comments
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
+            continue;
+        }
+
+        // Parse ScriptEntry
+        if let Some(rest) = trimmed.strip_prefix("ScriptEntry") {
+            let rest = rest.trim();
+            let name = rest.split('@').next().unwrap_or(rest).trim();
+            let name = name.split("//").next().unwrap_or(name).trim();
+            if !name.is_empty() {
+                jump_table.push(name.to_string());
+            }
+            continue;
+        }
+
+        // Skip assembler directives
+        if trimmed.starts_with('.') {
+            continue;
+        }
+
+        // Track labels
+        if let Some(label_name) = trimmed.strip_suffix(':') {
+            current_label = Some(label_name.to_string());
+            continue;
+        }
+
+        if let Some(ref label) = current_label {
+            let cmd_name = trimmed.split([' ', '\t']).next().unwrap_or("");
+
+            let is_movement = if movement_commands.is_empty() {
+                lookahead_for_end_movement(lines, line_idx)
+            } else {
+                movement_commands.contains(cmd_name)
+            };
+
+            if is_movement {
+                movement_labels.insert(label.clone());
+            }
+            current_label = None;
+        }
+    }
+
+    (jump_table, movement_labels)
+}
+
+fn build_function_slot_map(jump_table: &[String]) -> HashMap<String, Vec<usize>> {
+    // A function can appear multiple times in ScriptEntry; preserve all slots.
+    let mut function_to_slots: HashMap<String, Vec<usize>> = HashMap::new();
+    for (slot_idx, name) in jump_table.iter().enumerate() {
+        function_to_slots
+            .entry(name.clone())
+            .or_default()
+            .push(slot_idx);
+    }
+    function_to_slots
+}
+
+fn collect_local_defines(input: &str) -> HashMap<String, String> {
+    let mut local_defines: HashMap<String, String> = HashMap::new();
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("#define ") {
+            // Parse: NAME VALUE
+            let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+            if parts.len() == 2 {
+                let name = parts[0].trim();
+                let value = parts[1].trim();
+                // Only store simple identifier-to-identifier mappings
+                if !name.is_empty() && !value.is_empty() {
+                    local_defines.insert(name.to_string(), value.to_string());
+                }
+            }
+        }
+    }
+
+    local_defines
 }
 
 fn reorder_decomp_args_to_binary(
@@ -458,6 +485,21 @@ fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_collect_prepass_data_keeps_duplicate_function_slots() {
+        let input = r#"
+    ScriptEntry Main
+    ScriptEntry Main
+    ScriptEntryEnd
+
+Main:
+    End
+"#;
+
+        let prepass = collect_prepass_data(input, None);
+        assert_eq!(prepass.function_to_slots.get("Main"), Some(&vec![0, 1]));
+    }
 
     #[test]
     fn test_jump_table_parsing() {
