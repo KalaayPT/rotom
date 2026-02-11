@@ -56,7 +56,6 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
     let prepass = collect_prepass_data(input, db);
 
     // Second pass: generate output
-    let mut skip_until_label = false; // Skip lines until we hit the first real label (after jump table)
     let mut seen_script_entry_end = false;
     let mut seen_first_label_after_entry_end = false; // Track if we've seen a real label after ScriptEntryEnd
     // Track which functions have had their body emitted (to avoid duplicates)
@@ -67,7 +66,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
 
         // Skip empty lines in output but preserve them
         if raw_trimmed.is_empty() {
-            if seen_script_entry_end && !skip_until_label {
+            if seen_script_entry_end {
                 output.push('\n');
             }
             continue;
@@ -138,9 +137,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
                 // Public function (in jump table)
                 // Only emit if we haven't seen this function before
                 if functions_with_bodies_emitted.contains(label_name) {
-                    // Skip this entire function (headers + body already emitted)
-                    // Skip all commands until next label
-                    //skip_until_label = true;
+                    // Duplicate public header entry: keep only headers, not duplicate body.
                 } else {
                     // Emit header for EACH slot this function appears in
                     for slot in slots {
@@ -162,7 +159,6 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
                 }
                 output.push('\n');
             }
-            skip_until_label = false;
             seen_first_label_after_entry_end = true;
             continue;
         }
