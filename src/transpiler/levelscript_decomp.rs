@@ -327,28 +327,28 @@ InitScriptFrameTable:
 
     #[test]
     fn test_is_levelscript_source() {
-        let levelscript = r#"
+        let levelscript = r"
     InitScriptEntry_OnTransition 1
     InitScriptEntryEnd
-"#;
+";
         assert!(is_levelscript_source(levelscript));
 
-        let normal_script = r#"
+        let normal_script = r"
     ScriptEntry Script1
     ScriptEntryEnd
-"#;
+";
         assert!(!is_levelscript_source(normal_script));
     }
 
     #[test]
     fn test_all_entry_types() {
-        let source = r#"
+        let source = r"
     InitScriptEntry_OnTransition 1
     InitScriptEntry_OnLoad 2
     InitScriptEntry_OnResume 3
     InitScriptEntryEnd
     InitScriptEnd
-"#;
+";
 
         let result = transpile_levelscript(source, None).unwrap();
         assert_eq!(result.levelscript.entries.len(), 3);
@@ -368,10 +368,10 @@ InitScriptFrameTable:
 
     #[test]
     fn test_hex_values() {
-        let source = r#"
+        let source = r"
     InitScriptEntry_OnTransition 0x10
     InitScriptEntryEnd
-"#;
+";
 
         let result = transpile_levelscript(source, None).unwrap();
         assert!(matches!(
@@ -382,12 +382,12 @@ InitScriptFrameTable:
 
     #[test]
     fn test_roundtrip() {
-        let source = r#"
+        let source = r"
     InitScriptEntry_OnTransition 1
     InitScriptEntry_OnLoad 2
     InitScriptEntryEnd
     InitScriptEnd
-"#;
+";
 
         let result = transpile_levelscript(source, None).unwrap();
         let bytes = result.levelscript.to_bytes();
@@ -401,7 +401,7 @@ InitScriptFrameTable:
 
     #[test]
     fn test_roundtrip_with_frame_table() {
-        let source = r#"
+        let source = r"
     InitScriptEntry_OnTransition 1
     InitScriptEntry_OnFrameTable FrameTable
     InitScriptEntryEnd
@@ -412,7 +412,7 @@ FrameTable:
     InitScriptFrameTableEnd
 
     InitScriptEnd
-"#;
+";
 
         let result = transpile_levelscript(source, None).unwrap();
         let bytes = result.levelscript.to_bytes();

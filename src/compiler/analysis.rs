@@ -340,8 +340,7 @@ impl<'a> Analyzer<'a> {
                 }
             }
             // labels already gathered, skip
-            StatementKind::Label(_) => {}
-            StatementKind::Return | StatementKind::End => {}
+            StatementKind::Label(_) | StatementKind::Return | StatementKind::End => {}
             _ => {
                 return Err(analysis_error(
                     stmt.span.clone(),
@@ -379,7 +378,7 @@ impl<'a> Analyzer<'a> {
         self.database?.commands.get(name)
     }
 
-    /// Check if a command is autovar-compatible (has a result parameter with VAR_RESULT default)
+    /// Check if a command is autovar-compatible (has a result parameter with `VAR_RESULT` default)
     fn is_autovar_command(&self, name: &str) -> bool {
         self.get_autovar_param_index(name).is_some()
     }

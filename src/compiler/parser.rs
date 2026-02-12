@@ -786,11 +786,11 @@ mod tests {
 
     #[test]
     fn test_parse_stacked_function_headers() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
 function TestFunc #2:
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -819,14 +819,14 @@ function TestFunc #2:
     #[test]
     fn test_parse_duplicate_function_error() {
         // Test that defining the same function name in separate blocks is an error
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     Message 1
 
 function TestFunc #2:
     Message 2
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let result = parser.parse_script_file();
@@ -953,7 +953,7 @@ function TestFunc #2:
 
     #[test]
     fn test_parse_if_else() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if 0x8000 == 1 then
         Message 1
@@ -961,7 +961,7 @@ function TestFunc #1:
         Message 2
     endif
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1004,13 +1004,13 @@ function TestFunc #1:
 
     #[test]
     fn test_parse_while_loop() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     while 0x8000 != 0 do
         SubVar 0x8000, 1
     endwhile
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1049,12 +1049,12 @@ function TestFunc #1:
 
     #[test]
     fn test_parse_action() {
-        let source = r#"
+        let source = r"
 action TestMovement
     WalkNormalNorth 3
     FaceSouth
     EndMovement
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1077,14 +1077,14 @@ action TestMovement
 
     #[test]
     fn test_parse_alias() {
-        let source = r#"
+        let source = r"
 alias 0x800C as VAR_RESULT
 alias 0x4000 as VAR_GLOBAL
 
 function TestFunc #1:
     SetVar VAR_RESULT, 5
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1113,7 +1113,7 @@ function TestFunc #1:
 
     #[test]
     fn test_parse_match_statement() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 0x8000 with
         case 0:
@@ -1124,7 +1124,7 @@ function TestFunc #1:
             Message 3
     endmatch
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1163,7 +1163,7 @@ function TestFunc #1:
 
     #[test]
     fn test_parse_match_without_else() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 0x8000 with
         case 0:
@@ -1172,7 +1172,7 @@ function TestFunc #1:
             Message 2
     endmatch
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1197,7 +1197,7 @@ function TestFunc #1:
 
     #[test]
     fn test_parse_match_with_keyword() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 0x8000 with
         case 0:
@@ -1206,7 +1206,7 @@ function TestFunc #1:
             Message 2
     endmatch
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1231,7 +1231,7 @@ function TestFunc #1:
 
     #[test]
     fn test_parse_break_statement() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     while 0x8000 != 0 do
         if 0x8000 == 5 then
@@ -1240,7 +1240,7 @@ function TestFunc #1:
         SubVar 0x8000, 1
     endwhile
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();

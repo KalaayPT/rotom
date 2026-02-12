@@ -283,7 +283,7 @@ mod tests {
         let db = create_test_db();
         let mut emitter = Emitter::new(&db);
 
-        emitter.emit_u32(0x12345678);
+        emitter.emit_u32(0x1234_5678);
 
         assert_eq!(emitter.output, vec![0x78, 0x56, 0x34, 0x12]); // Little endian
         assert_eq!(emitter.pc, 4);

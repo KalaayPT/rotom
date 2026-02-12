@@ -270,7 +270,7 @@ fn strip_block_comments(input: &str) -> String {
                         chars.next(); // consume the '/'
                         break;
                     }
-                    Some(_) => continue,
+                    Some(_) => {}
                     None => break, // Unterminated comment, stop
                 }
             }
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_full_dspre_script() {
-        let input = r#"Script 1:
+        let input = r"Script 1:
     PlayFanfare 1500
     LockAll
     FacePlayer
@@ -394,7 +394,7 @@ End
 Action 1:
     LookRight 0x1
 End
-"#;
+";
         let output = transpile(input, None);
 
         assert!(output.contains("function script_1 #1:"));

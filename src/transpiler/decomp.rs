@@ -675,14 +675,14 @@ mod tests {
 
     #[test]
     fn test_collect_prepass_data_keeps_duplicate_function_slots() {
-        let input = r#"
+        let input = r"
     ScriptEntry Main
     ScriptEntry Main
     ScriptEntryEnd
 
 Main:
     End
-"#;
+";
 
         let prepass = collect_prepass_data(input, None);
         assert_eq!(prepass.function_to_slots.get("Main"), Some(&vec![0, 1]));
@@ -822,7 +822,7 @@ Main:
 
     #[test]
     fn test_duplicate_label_definitions_error() {
-        let input = r#"
+        let input = r"
     ScriptEntry Main
     ScriptEntry Main
     ScriptEntryEnd
@@ -837,7 +837,7 @@ Main:
 
 Helper:
     Return
-"#;
+";
 
         let err = transpile(input, None).expect_err("duplicate labels should error");
         assert!(
@@ -867,7 +867,7 @@ Helper:
 
     #[test]
     fn test_jump_table_parsing() {
-        let input = r#"
+        let input = r"
     ScriptEntry Function1
     ScriptEntry Function2
     ScriptEntryEnd
@@ -877,7 +877,7 @@ Function1:
 
 Function2:
     End
-"#;
+";
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("function Function1 #0:"));
         assert!(output.source.contains("function Function2 #1:"));
@@ -885,7 +885,7 @@ Function2:
 
     #[test]
     fn test_private_label() {
-        let input = r#"
+        let input = r"
     ScriptEntry MainFunc
     ScriptEntryEnd
 
@@ -895,7 +895,7 @@ MainFunc:
 
 HelperLabel:
     Return
-"#;
+";
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("function MainFunc #0:"));
         assert!(output.source.contains("HelperLabel:"));
@@ -904,7 +904,7 @@ HelperLabel:
 
     #[test]
     fn test_movement_detection() {
-        let input = r#"
+        let input = r"
     ScriptEntry MainFunc
     ScriptEntryEnd
 
@@ -916,7 +916,7 @@ MainFunc:
 TestMovement:
     WalkNorth
     EndMovement
-"#;
+";
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("function MainFunc #0:"));
         assert!(output.source.contains("action TestMovement"));
@@ -926,7 +926,7 @@ TestMovement:
 
     #[test]
     fn test_movement_without_balign() {
-        let input = r#"
+        let input = r"
     ScriptEntry MainFunc
     ScriptEntryEnd
 
@@ -937,7 +937,7 @@ MainFunc:
 TestMovement:
     WalkNorth
     EndMovement
-"#;
+";
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("function MainFunc #0:"));
         assert!(output.source.contains("action TestMovement"));
@@ -963,7 +963,7 @@ Test:
 
     #[test]
     fn test_commands_preserved() {
-        let input = r#"
+        let input = r"
     ScriptEntry Test
     ScriptEntryEnd
 
@@ -972,7 +972,7 @@ Test:
     Message 0
     ShowYesNoMenu VAR_RESULT
     End
-"#;
+";
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("    SetVar VAR_RESULT, 5"));
         assert!(output.source.contains("    Message 0"));
@@ -981,7 +981,7 @@ Test:
 
     #[test]
     fn test_multiple_movements() {
-        let input = r#"
+        let input = r"
     ScriptEntry Main
     ScriptEntryEnd
 
@@ -997,7 +997,7 @@ Move1:
 Move2:
     WalkSouth
     EndMovement
-"#;
+";
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("action Move1"));
         assert!(output.source.contains("action Move2"));
@@ -1005,7 +1005,7 @@ Move2:
 
     #[test]
     fn test_transpile_acuity_lakefront_fixture() {
-        let content = r#"
+        let content = r"
     ScriptEntry _004E
     ScriptEntry _0012
     ScriptEntryEnd
@@ -1025,7 +1025,7 @@ _00E8:
 
 AcuityLakefront_SetWarpsLakeAcuityNormal:
     Return
-"#;
+";
 
         let output = transpile(content, None).expect("transpile should succeed");
         assert!(output.source.contains("function _0012 #1:"));
@@ -1034,7 +1034,8 @@ AcuityLakefront_SetWarpsLakeAcuityNormal:
         assert!(
             output
                 .source
-                .contains("AcuityLakefront_SetWarpsLakeAcuityNormal:")
+                .contains("AcuityLakefront_SetWarpsLakeAcuityNormal:"),
+            "helper label should be preserved"
         );
     }
 }
