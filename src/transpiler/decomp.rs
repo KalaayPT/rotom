@@ -31,6 +31,8 @@
 //!     EndMovement
 //! ```
 
+use std::fmt::Write;
+
 use crate::autovar::is_autovar_param;
 use crate::database::CommandType;
 use std::collections::{HashMap, HashSet};
@@ -168,7 +170,7 @@ fn render_label_line(
 
     // Check if this is a movement label
     if prepass.movement_labels.contains(label_name) {
-        output.push_str(&format!("action {}", label_name));
+        let _ = write!(output, "action {}", label_name);
         append_inline_comment(output, inline_comment);
         output.push('\n');
         return Ok(());
@@ -177,7 +179,7 @@ fn render_label_line(
     if let Some(slots) = prepass.function_to_slots.get(label_name) {
         // Public function (in jump table): emit header for each slot.
         for slot in slots {
-            output.push_str(&format!("function {} #{}", label_name, slot));
+            let _ = write!(output, "function {} #{}", label_name, slot);
             append_inline_comment(output, inline_comment);
             output.push_str(":\n");
         }
@@ -185,7 +187,7 @@ fn render_label_line(
     }
 
     // Private label
-    output.push_str(&format!("{}:", label_name));
+    let _ = write!(output, "{}:", label_name);
     append_inline_comment(output, inline_comment);
     output.push('\n');
     Ok(())

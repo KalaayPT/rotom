@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use crate::compiler::ir::{Arg, Condition, IrOpcode, TopLevelItem};
 use crate::database::DatabaseV2;
 
@@ -54,26 +56,22 @@ fn normal_script_to_source(items: &[TopLevelItem], db: &DatabaseV2) -> String {
                 for header in &func.headers {
                     if header.is_public {
                         if let Some(id) = header.id {
-                            output.push_str(&format!("function {} #{}:\n", header.name, id));
+                            let _ = writeln!(output, "function {} #{}:", header.name, id);
                         } else {
-                            output.push_str(&format!("function {}:\n", header.name));
+                            let _ = writeln!(output, "function {}:", header.name);
                         }
                     } else {
-                        output.push_str(&format!("{}:\n", header.name));
+                        let _ = writeln!(output, "{}:", header.name);
                     }
                 }
 
                 for instr in &func.instructions {
                     match instr {
                         IrOpcode::Label(name) => {
-                            if name.starts_with('.') || name.starts_with('_') {
-                                output.push_str(&format!("{}:\n", name));
-                            } else {
-                                output.push_str(&format!("{}:\n", name));
-                            }
+                            let _ = writeln!(output, "{}:", name);
                         }
                         IrOpcode::Command { name, args } => {
-                            output.push_str(&format!("    {}", name));
+                            let _ = write!(output, "    {}", name);
                             if !args.is_empty() {
                                 output.push(' ');
                                 let args_str = format_command_args(name, args, db);
@@ -85,15 +83,15 @@ fn normal_script_to_source(items: &[TopLevelItem], db: &DatabaseV2) -> String {
                 }
             }
             TopLevelItem::Action(action) => {
-                output.push_str(&format!("action {}\n", action.name));
+                let _ = writeln!(output, "action {}", action.name);
 
                 for instr in &action.instructions {
                     match instr {
                         IrOpcode::Label(name) => {
-                            output.push_str(&format!("{}:\n", name));
+                            let _ = writeln!(output, "{}:", name);
                         }
                         IrOpcode::Command { name, args } => {
-                            output.push_str(&format!("    {}", name));
+                            let _ = write!(output, "    {}", name);
                             if !args.is_empty() {
                                 output.push(' ');
                                 let args_str: Vec<String> = args

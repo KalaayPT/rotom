@@ -38,6 +38,7 @@
 
 use regex::Regex;
 use std::borrow::Cow;
+use std::fmt::Write;
 use std::sync::LazyLock;
 
 // ============================================================================
@@ -95,7 +96,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
         // Check for Script N: header -> becomes `function script_N #N:`
         if let Some(caps) = RE_SCRIPT_HEADER.captures(trimmed) {
             let id: u32 = caps[1].parse().expect("regex guarantees digits");
-            output.push_str(&format!("function script_{} #{}:\n", id, id));
+            let _ = writeln!(output, "function script_{} #{}:", id, id);
             in_action = false;
             continue;
         }
@@ -103,7 +104,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
         // Check for Function N: header -> becomes bare label `func_N:`
         if let Some(caps) = RE_FUNCTION_HEADER.captures(trimmed) {
             let id: u32 = caps[1].parse().expect("regex guarantees digits");
-            output.push_str(&format!("func_{}:\n", id));
+            let _ = writeln!(output, "func_{}:", id);
             in_action = false;
             continue;
         }
@@ -111,7 +112,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
         // Check for Action N: header
         if let Some(caps) = RE_ACTION_HEADER.captures(trimmed) {
             let id: u32 = caps[1].parse().expect("regex guarantees digits");
-            output.push_str(&format!("action action_{}\n", id));
+            let _ = writeln!(output, "action action_{}", id);
             in_action = true;
             action_has_end_movement = false;
             continue;
@@ -123,7 +124,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             // Preserve leading whitespace
             let leading_ws = &line[..line.len() - line.trim_start().len()];
             output.push_str(leading_ws);
-            output.push_str(&format!("Jump script_{}\n", id));
+            let _ = writeln!(output, "Jump script_{}", id);
             continue;
         }
 

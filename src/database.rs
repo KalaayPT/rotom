@@ -539,10 +539,12 @@ impl ConstantDb {
                 shown_errors.join("; "),
             );
             if errors.len() > MAX_ERRORS_IN_MESSAGE {
-                message.push_str(&format!(
+                use std::fmt::Write;
+                let _ = write!(
+                    message,
                     "; and {} additional error(s)",
                     errors.len() - MAX_ERRORS_IN_MESSAGE
-                ));
+                );
             }
             Err(CompileError::Database { message })
         }
