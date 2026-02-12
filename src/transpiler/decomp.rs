@@ -396,7 +396,7 @@ fn collect_jump_table_and_movement_labels(
         }
 
         if let Some(ref label) = current_label {
-            let cmd_name = trimmed.split([' ', '\t']).next().unwrap_or("");
+            let cmd_name = split_command_and_args(trimmed).0;
 
             let is_movement = if movement_commands.is_empty() {
                 lookahead_for_end_movement(lines, line_idx)
@@ -633,15 +633,15 @@ fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
             continue;
         }
 
-        if trimmed.starts_with('.') {
-            continue;
+        match classify_structural_line(trimmed) {
+            StructuralLine::ScriptEntry(_)
+            | StructuralLine::ScriptEntryEnd
+            | StructuralLine::AssemblerDirective => continue,
+            StructuralLine::Label(_) => return false,
+            StructuralLine::Other => {}
         }
 
-        if trimmed.ends_with(':') {
-            return false;
-        }
-
-        let cmd_name = trimmed.split([' ', '\t']).next().unwrap_or("");
+        let cmd_name = split_command_and_args(trimmed).0;
 
         if cmd_name == "EndMovement" {
             return true;
@@ -749,6 +749,19 @@ Main:
             ("ApplyMovement", Some("0, Move"))
         );
         assert_eq!(split_command_and_args("LockAll   "), ("LockAll", Some("")));
+    }
+
+    #[test]
+    fn test_lookahead_for_end_movement_respects_structural_lines() {
+        let lines = vec![
+            ".align 4",
+            "ScriptEntry Main",
+            "EndMovement",
+            "LaterLabel:",
+            "EndMovement",
+        ];
+        assert!(lookahead_for_end_movement(&lines, 0));
+        assert!(!lookahead_for_end_movement(&lines, 3));
     }
 
     #[test]
