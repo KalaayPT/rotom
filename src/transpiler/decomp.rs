@@ -295,20 +295,17 @@ fn render_command_line(
     db: Option<&crate::database::DatabaseV2>,
     output: &mut String,
 ) {
-    output.push_str("    ");
-    if let Some(cmd_end_idx) = trimmed.find([' ', '\t']) {
-        let cmd_name = resolve_script_command_name(&trimmed[..cmd_end_idx], db);
-        let args = trimmed[cmd_end_idx..].trim();
-        let normalized_args = normalize_command_args(cmd_name, args, prepass, db);
+    let (raw_cmd_name, args) = split_command_and_args(trimmed);
+    let cmd_name = resolve_script_command_name(raw_cmd_name, db);
 
-        output.push_str(cmd_name);
+    output.push_str("    ");
+    output.push_str(cmd_name);
+    if let Some(args) = args {
+        let normalized_args = normalize_command_args(cmd_name, args, prepass, db);
         if !normalized_args.is_empty() {
             output.push(' ');
             output.push_str(&normalized_args);
         }
-    } else {
-        let cmd_name = resolve_script_command_name(trimmed, db);
-        output.push_str(cmd_name);
     }
     if let Some(comment) = inline_comment {
         output.push(' ');
@@ -332,6 +329,16 @@ fn normalize_command_args(
         reorder_decomp_args_to_binary(cmd_name, &substituted_args, db)
     } else {
         substituted_args
+    }
+}
+
+fn split_command_and_args(trimmed: &str) -> (&str, Option<&str>) {
+    if let Some(cmd_end_idx) = trimmed.find([' ', '\t']) {
+        let cmd_name = &trimmed[..cmd_end_idx];
+        let args = trimmed[cmd_end_idx..].trim();
+        (cmd_name, Some(args))
+    } else {
+        (trimmed, None)
     }
 }
 
@@ -731,6 +738,17 @@ Main:
         assert_eq!(parse_local_define_line("#defineFOO BAR"), None);
         assert_eq!(parse_local_define_line("#define FOO"), None);
         assert_eq!(parse_local_define_line("#define  FOO   "), None);
+    }
+
+    #[test]
+    fn test_split_command_and_args_variants() {
+        assert_eq!(split_command_and_args("End"), ("End", None));
+        assert_eq!(split_command_and_args("Message 1"), ("Message", Some("1")));
+        assert_eq!(
+            split_command_and_args("ApplyMovement\t0, Move"),
+            ("ApplyMovement", Some("0, Move"))
+        );
+        assert_eq!(split_command_and_args("LockAll   "), ("LockAll", Some("")));
     }
 
     #[test]
