@@ -229,21 +229,12 @@ fn render_command_line(
     if let Some(cmd_end_idx) = trimmed.find([' ', '\t']) {
         let cmd_name = resolve_script_command_name(&trimmed[..cmd_end_idx], db);
         let args = trimmed[cmd_end_idx..].trim();
+        let normalized_args = normalize_command_args(cmd_name, args, prepass, db);
 
-        if args.is_empty() {
-            output.push_str(cmd_name);
-        } else {
-            let substituted_args = substitute_defines(args, &prepass.local_defines);
-            let reordered_args = if let Some(db) = db {
-                reorder_decomp_args_to_binary(cmd_name, &substituted_args, db)
-            } else {
-                substituted_args
-            };
-            output.push_str(cmd_name);
-            if !reordered_args.is_empty() {
-                output.push(' ');
-                output.push_str(&reordered_args);
-            }
+        output.push_str(cmd_name);
+        if !normalized_args.is_empty() {
+            output.push(' ');
+            output.push_str(&normalized_args);
         }
     } else {
         let cmd_name = resolve_script_command_name(trimmed, db);
@@ -254,6 +245,24 @@ fn render_command_line(
         output.push_str(comment);
     }
     output.push('\n');
+}
+
+fn normalize_command_args(
+    cmd_name: &str,
+    args: &str,
+    prepass: &PrepassData,
+    db: Option<&crate::database::DatabaseV2>,
+) -> String {
+    if args.is_empty() {
+        return String::new();
+    }
+
+    let substituted_args = substitute_defines(args, &prepass.local_defines);
+    if let Some(db) = db {
+        reorder_decomp_args_to_binary(cmd_name, &substituted_args, db)
+    } else {
+        substituted_args
+    }
 }
 
 fn collect_prepass_data(input: &str, db: Option<&crate::database::DatabaseV2>) -> PrepassData {
