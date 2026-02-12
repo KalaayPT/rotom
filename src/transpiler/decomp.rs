@@ -657,19 +657,36 @@ Move2:
 
     #[test]
     fn test_transpile_acuity_lakefront_fixture() {
-        let fixture_path = "tests/fixtures/scripts/scripts_acuity_lakefront.s";
-        let input = std::fs::read_to_string(fixture_path);
+        let content = r#"
+    ScriptEntry _004E
+    ScriptEntry _0012
+    ScriptEntryEnd
 
-        if let Ok(content) = input {
-            let output = transpile(&content, None);
-            assert!(output.source.contains("function _0012 #1:"));
-            assert!(output.source.contains("function _004E #0:"));
-            assert!(output.source.contains("action _00E8"));
-            assert!(
-                output
-                    .source
-                    .contains("AcuityLakefront_SetWarpsLakeAcuityNormal:")
-            );
-        }
+_004E:
+    GoTo AcuityLakefront_SetWarpsLakeAcuityNormal
+    End
+
+_0012:
+    ApplyMovement 0, _00E8
+    End
+
+    .balign 4, 0
+_00E8:
+    WalkNorth
+    EndMovement
+
+AcuityLakefront_SetWarpsLakeAcuityNormal:
+    Return
+"#;
+
+        let output = transpile(content, None);
+        assert!(output.source.contains("function _0012 #1:"));
+        assert!(output.source.contains("function _004E #0:"));
+        assert!(output.source.contains("action _00E8"));
+        assert!(
+            output
+                .source
+                .contains("AcuityLakefront_SetWarpsLakeAcuityNormal:")
+        );
     }
 }
