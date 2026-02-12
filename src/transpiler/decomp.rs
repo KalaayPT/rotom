@@ -69,6 +69,15 @@ enum ScriptEntryDirective<'a> {
     Other,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum StructuralLine<'a> {
+    ScriptEntry(&'a str),
+    ScriptEntryEnd,
+    AssemblerDirective,
+    Label(&'a str),
+    Other,
+}
+
 enum BodyLine<'a> {
     Empty,
     SkipPreprocessor,
@@ -200,42 +209,30 @@ fn process_content_line(
     state: &mut RenderState,
     output: &mut String,
 ) -> Result<(), TranspileError> {
-    // Skip ScriptEntry/ScriptEntryEnd directives in body pass.
-    match parse_script_entry_directive(trimmed) {
-        ScriptEntryDirective::Entry(_) => return Ok(()),
-        ScriptEntryDirective::End => {
+    match classify_structural_line(trimmed) {
+        StructuralLine::ScriptEntry(_) => return Ok(()),
+        StructuralLine::ScriptEntryEnd => {
             state.seen_script_entry_end = true;
             state.has_script_entry_end = true;
             return Ok(());
         }
-        ScriptEntryDirective::Other => {}
-    }
-
-    // Skip .balign directives
-    if trimmed.starts_with(".balign") || trimmed.starts_with(".align") {
-        return Ok(());
-    }
-
-    // Skip other assembler directives
-    if trimmed.starts_with('.') {
-        return Ok(());
-    }
-
-    // Handle labels
-    if let Some(label_name) = trimmed.strip_suffix(':') {
-        // If we see a label, the jump table is definitely done
-        // (handles files without explicit ScriptEntryEnd)
-        state.seen_script_entry_end = true;
-        render_label_line(
-            label_name,
-            inline_comment,
-            prepass,
-            state,
-            line_number,
-            output,
-        )?;
-        state.seen_first_label_after_entry_end = true;
-        return Ok(());
+        StructuralLine::AssemblerDirective => return Ok(()),
+        StructuralLine::Label(label_name) => {
+            // If we see a label, the jump table is definitely done
+            // (handles files without explicit ScriptEntryEnd)
+            state.seen_script_entry_end = true;
+            render_label_line(
+                label_name,
+                inline_comment,
+                prepass,
+                state,
+                line_number,
+                output,
+            )?;
+            state.seen_first_label_after_entry_end = true;
+            return Ok(());
+        }
+        StructuralLine::Other => {}
     }
 
     // Skip lines before we've seen any real content
@@ -378,25 +375,17 @@ fn collect_jump_table_and_movement_labels(
             continue;
         }
 
-        // Parse ScriptEntry
-        match parse_script_entry_directive(trimmed) {
-            ScriptEntryDirective::Entry(name) => {
+        match classify_structural_line(trimmed) {
+            StructuralLine::ScriptEntry(name) => {
                 jump_table.push(name.to_string());
                 continue;
             }
-            ScriptEntryDirective::End => continue,
-            ScriptEntryDirective::Other => {}
-        }
-
-        // Skip assembler directives
-        if trimmed.starts_with('.') {
-            continue;
-        }
-
-        // Track labels
-        if let Some(label_name) = trimmed.strip_suffix(':') {
-            current_label = Some(label_name.to_string());
-            continue;
+            StructuralLine::ScriptEntryEnd | StructuralLine::AssemblerDirective => continue,
+            StructuralLine::Label(label_name) => {
+                current_label = Some(label_name.to_string());
+                continue;
+            }
+            StructuralLine::Other => {}
         }
 
         if let Some(ref label) = current_label {
@@ -477,6 +466,24 @@ fn parse_script_entry_directive(trimmed: &str) -> ScriptEntryDirective<'_> {
     } else {
         ScriptEntryDirective::Entry(name)
     }
+}
+
+fn classify_structural_line(trimmed: &str) -> StructuralLine<'_> {
+    match parse_script_entry_directive(trimmed) {
+        ScriptEntryDirective::Entry(name) => return StructuralLine::ScriptEntry(name),
+        ScriptEntryDirective::End => return StructuralLine::ScriptEntryEnd,
+        ScriptEntryDirective::Other => {}
+    }
+
+    if trimmed.starts_with('.') {
+        return StructuralLine::AssemblerDirective;
+    }
+
+    if let Some(label_name) = trimmed.strip_suffix(':') {
+        return StructuralLine::Label(label_name);
+    }
+
+    StructuralLine::Other
 }
 
 fn resolve_script_command_name<'a>(
@@ -670,6 +677,27 @@ Main:
             parse_script_entry_directive("ScriptEntryMain"),
             ScriptEntryDirective::Other
         );
+    }
+
+    #[test]
+    fn test_classify_structural_line_variants() {
+        assert_eq!(
+            classify_structural_line("ScriptEntry Main"),
+            StructuralLine::ScriptEntry("Main")
+        );
+        assert_eq!(
+            classify_structural_line("ScriptEntryEnd"),
+            StructuralLine::ScriptEntryEnd
+        );
+        assert_eq!(
+            classify_structural_line(".balign 4, 0"),
+            StructuralLine::AssemblerDirective
+        );
+        assert_eq!(
+            classify_structural_line("Main:"),
+            StructuralLine::Label("Main")
+        );
+        assert_eq!(classify_structural_line("Message 1"), StructuralLine::Other);
     }
 
     #[test]
