@@ -424,21 +424,34 @@ fn collect_local_defines(input: &str) -> HashMap<String, String> {
 
     for line in input.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("#define ") {
-            // Parse: NAME VALUE
-            let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
-            if parts.len() == 2 {
-                let name = parts[0].trim();
-                let value = parts[1].trim();
-                // Only store simple identifier-to-identifier mappings
-                if !name.is_empty() && !value.is_empty() {
-                    local_defines.insert(name.to_string(), value.to_string());
-                }
-            }
+        if let Some((name, value)) = parse_local_define_line(trimmed) {
+            // Only store simple identifier-to-identifier mappings.
+            local_defines.insert(name.to_string(), value.to_string());
         }
     }
 
     local_defines
+}
+
+fn parse_local_define_line(trimmed: &str) -> Option<(&str, &str)> {
+    let rest = trimmed.strip_prefix("#define")?;
+
+    let mut chars = rest.chars();
+    let first_char = chars.next()?;
+    if !first_char.is_whitespace() {
+        return None;
+    }
+
+    let rest = rest.trim_start();
+    let split_idx = rest.find(char::is_whitespace)?;
+    let (name, value) = rest.split_at(split_idx);
+    let value = value.trim();
+
+    if name.is_empty() || value.is_empty() {
+        return None;
+    }
+
+    Some((name, value))
 }
 
 fn parse_script_entry_directive(trimmed: &str) -> ScriptEntryDirective<'_> {
@@ -698,6 +711,26 @@ Main:
             StructuralLine::Label("Main")
         );
         assert_eq!(classify_structural_line("Message 1"), StructuralLine::Other);
+    }
+
+    #[test]
+    fn test_parse_local_define_line_accepts_whitespace_variants() {
+        assert_eq!(
+            parse_local_define_line("#define FOO BAR"),
+            Some(("FOO", "BAR"))
+        );
+        assert_eq!(
+            parse_local_define_line("#define\tFOO\tBAR"),
+            Some(("FOO", "BAR"))
+        );
+    }
+
+    #[test]
+    fn test_parse_local_define_line_rejects_invalid_forms() {
+        assert_eq!(parse_local_define_line("#define"), None);
+        assert_eq!(parse_local_define_line("#defineFOO BAR"), None);
+        assert_eq!(parse_local_define_line("#define FOO"), None);
+        assert_eq!(parse_local_define_line("#define  FOO   "), None);
     }
 
     #[test]
