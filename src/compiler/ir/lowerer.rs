@@ -770,7 +770,7 @@ impl<'a> Lowerer<'a> {
                 };
                 Ok(format!("{} {} {}", left_str, op_str, right_str))
             }
-            _ => Err(lowering_error(format!(
+            ExpressionKind::Call { .. } => Err(lowering_error(format!(
                 "Unsupported expression type in macro argument: {:?}",
                 expr.node
             ))),
@@ -1084,7 +1084,7 @@ impl<'a> Lowerer<'a> {
                 };
                 Ok(Arg::Value(result))
             }
-            _ => Err(lowering_error(format!(
+            ExpressionKind::Call { .. } => Err(lowering_error(format!(
                 "Unsupported expression type: {:?}",
                 expr.node
             ))),
@@ -1214,7 +1214,7 @@ function TestFunc #1:
                 assert_eq!(ir_func.headers[0].id, Some(1));
                 assert!(ir_func.is_public());
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1239,10 +1239,10 @@ function TestFunc #1:
                         assert_eq!(args.len(), 1);
                         assert_eq!(args[0].unwrap_value(), 42);
                     }
-                    _ => panic!("Expected command"),
+                    IrOpcode::Label(_) => panic!("Expected command"),
                 }
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1273,7 +1273,7 @@ function TestFunc #1:
                     .count();
                 assert_eq!(label_count, 1);
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1300,7 +1300,7 @@ action TestAction
                 assert_eq!(ir_action.name, "TestAction");
                 assert_eq!(ir_action.instructions.len(), 2);
             }
-            _ => panic!("Expected action"),
+            TopLevelItem::Function(_) => panic!("Expected action"),
         }
     }
 
@@ -1364,7 +1364,7 @@ function TestFunc #1:
                 assert!(has_compare, "Should have CompareVarValue instruction");
                 assert!(has_jump_if, "Should have JumpIf instruction");
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1398,7 +1398,7 @@ function TestFunc #1:
                 assert!(has_compare, "Should have CompareVarValue instruction");
                 assert!(has_jump_if, "Should have JumpIf instruction");
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1446,7 +1446,7 @@ function TestFunc #1:
                     "if/else should have Jump to skip else block"
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1485,7 +1485,7 @@ function TestFunc #1:
                     );
                 }
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1519,7 +1519,7 @@ function TestFunc #1:
                     );
                 }
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1575,7 +1575,7 @@ function TestFunc #1:
                     .count();
                 assert_eq!(message_count, 3, "Should have 3 Message commands");
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1627,7 +1627,7 @@ function TestFunc #1:
                     "Break should generate Jump to while_end label"
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1693,7 +1693,7 @@ function TestFunc #1:
                     "Should emit CompareVarValue with VAR_RESULT and 1"
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1730,7 +1730,7 @@ function TestFunc #1:
                     "Should emit CompareVarValue with VAR_RESULT and 0"
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1771,7 +1771,7 @@ function TestFunc #1:
                     compare_count
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1822,7 +1822,7 @@ function TestFunc #1:
                     compare_count
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1866,7 +1866,7 @@ function TestFunc #1:
                     "Should emit CompareVarValue with VAR_RESULT and 1"
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1899,7 +1899,7 @@ function TestFunc #1:
                 });
                 assert!(has_compare, "Should emit CompareVarValue with VAR_RESULT");
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1933,7 +1933,7 @@ function TestFunc #1:
                     "ShowCurrentFloor should default both destVarID params to VAR_RESULT"
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -1969,7 +1969,7 @@ function TestFunc #1:
                     compare_count
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -2049,7 +2049,7 @@ func_c:
                     label_count
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -2110,7 +2110,7 @@ func_b:
                     .count();
                 assert_eq!(message_count, 2, "Should have 2 Message commands");
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -2142,7 +2142,7 @@ some_label:
                     "JumpIf should have condition value 1 (EQUAL)"
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -2190,7 +2190,7 @@ label6:
 
                 assert_eq!(jumpif_conditions, vec![0, 1, 2, 3, 4, 5]);
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -2220,7 +2220,7 @@ function Test #1:
                     ir_func.instructions
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -2250,7 +2250,7 @@ function Test #1:
                     ir_func.instructions
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 
@@ -2288,7 +2288,7 @@ TestLabel:
                     ir_func.instructions
                 );
             }
-            _ => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }
 

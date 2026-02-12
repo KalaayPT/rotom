@@ -671,7 +671,7 @@ impl<'a> Analyzer<'a> {
             ExpressionKind::Call { function, args } => {
                 self.validate_autovar_call(function, args, &expr.span)?;
             }
-            _ => {}
+            ExpressionKind::Label(_) => {}
         }
         Ok(())
     }

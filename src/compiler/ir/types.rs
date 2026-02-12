@@ -46,13 +46,13 @@ impl Arg {
     pub fn unwrap_value(&self) -> i32 {
         match self {
             Arg::Value(v) => *v,
-            _ => panic!("called unwrap_value on {:?}", self),
+            Arg::Pointer(_) => panic!("called unwrap_value on {:?}", self),
         }
     }
     pub fn unwrap_pointer(&self) -> String {
         match self {
             Arg::Pointer(s) => s.clone(),
-            _ => panic!("called unwrap_pointer on {:?}", self),
+            Arg::Value(_) => panic!("called unwrap_pointer on {:?}", self),
         }
     }
 }
