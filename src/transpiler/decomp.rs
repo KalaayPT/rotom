@@ -395,7 +395,7 @@ fn collect_jump_table_and_movement_labels(
             StructuralLine::Other => {}
         }
 
-        if let Some(ref label) = current_label {
+        if let Some(label) = current_label.take() {
             let cmd_name = split_command_and_args(trimmed).0;
 
             let is_movement = if movement_commands.is_empty() {
@@ -405,9 +405,8 @@ fn collect_jump_table_and_movement_labels(
             };
 
             if is_movement {
-                movement_labels.insert(label.clone());
+                movement_labels.insert(label);
             }
-            current_label = None;
         }
     }
 
@@ -762,6 +761,25 @@ Main:
         ];
         assert!(lookahead_for_end_movement(&lines, 0));
         assert!(!lookahead_for_end_movement(&lines, 3));
+    }
+
+    #[test]
+    fn test_collect_jump_table_and_movement_labels_scopes_pending_label() {
+        let lines = vec![
+            "ScriptEntry Main",
+            "ScriptEntryEnd",
+            "Main:",
+            "LockAll",
+            "Helper:",
+            "WalkNorth",
+            "EndMovement",
+        ];
+        let movement_commands: HashSet<&str> = HashSet::new();
+
+        let (_, movement_labels) =
+            collect_jump_table_and_movement_labels(&lines, &movement_commands);
+        assert!(!movement_labels.contains("Main"));
+        assert!(movement_labels.contains("Helper"));
     }
 
     #[test]
