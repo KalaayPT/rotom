@@ -169,10 +169,7 @@ fn render_label_line(
     // Check if this is a movement label
     if prepass.movement_labels.contains(label_name) {
         output.push_str(&format!("action {}", label_name));
-        if let Some(comment) = inline_comment {
-            output.push(' ');
-            output.push_str(comment);
-        }
+        append_inline_comment(output, inline_comment);
         output.push('\n');
         return Ok(());
     }
@@ -181,10 +178,7 @@ fn render_label_line(
         // Public function (in jump table): emit header for each slot.
         for slot in slots {
             output.push_str(&format!("function {} #{}", label_name, slot));
-            if let Some(comment) = inline_comment {
-                output.push(' ');
-                output.push_str(comment);
-            }
+            append_inline_comment(output, inline_comment);
             output.push_str(":\n");
         }
         return Ok(());
@@ -192,10 +186,7 @@ fn render_label_line(
 
     // Private label
     output.push_str(&format!("{}:", label_name));
-    if let Some(comment) = inline_comment {
-        output.push(' ');
-        output.push_str(comment);
-    }
+    append_inline_comment(output, inline_comment);
     output.push('\n');
     Ok(())
 }
@@ -307,11 +298,15 @@ fn render_command_line(
             output.push_str(&normalized_args);
         }
     }
+    append_inline_comment(output, inline_comment);
+    output.push('\n');
+}
+
+fn append_inline_comment(output: &mut String, inline_comment: Option<&str>) {
     if let Some(comment) = inline_comment {
         output.push(' ');
         output.push_str(comment);
     }
-    output.push('\n');
 }
 
 fn normalize_command_args(
@@ -780,6 +775,16 @@ Main:
             collect_jump_table_and_movement_labels(&lines, &movement_commands);
         assert!(!movement_labels.contains("Main"));
         assert!(movement_labels.contains("Helper"));
+    }
+
+    #[test]
+    fn test_append_inline_comment_only_appends_when_present() {
+        let mut output = String::from("base");
+        append_inline_comment(&mut output, Some("// note"));
+        assert_eq!(output, "base // note");
+
+        append_inline_comment(&mut output, None);
+        assert_eq!(output, "base // note");
     }
 
     #[test]
