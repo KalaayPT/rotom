@@ -51,6 +51,9 @@ pub enum CompileError {
     /// Error during code generation
     Codegen { message: String },
 
+    /// Error during source transpilation/conversion
+    Transpile { message: String },
+
     /// Error loading database
     Database { message: String },
 
@@ -65,6 +68,7 @@ impl fmt::Display for CompileError {
             CompileError::Analysis { message, .. } => write!(f, "Analysis error: {}", message),
             CompileError::Lowering { message } => write!(f, "Lowering error: {}", message),
             CompileError::Codegen { message } => write!(f, "Codegen error: {}", message),
+            CompileError::Transpile { message } => write!(f, "Transpile error: {}", message),
             CompileError::Database { message } => write!(f, "Database error: {}", message),
             CompileError::Io { message } => write!(f, "IO error: {}", message),
         }
@@ -140,6 +144,7 @@ pub fn print_error(filename: &str, source: &str, error: &CompileError) {
         }
         CompileError::Lowering { message } => (None, message.as_str(), "Lowering error"),
         CompileError::Codegen { message } => (None, message.as_str(), "Codegen error"),
+        CompileError::Transpile { message } => (None, message.as_str(), "Transpile error"),
         CompileError::Database { message } => (None, message.as_str(), "Database error"),
         CompileError::Io { message } => (None, message.as_str(), "IO error"),
     };

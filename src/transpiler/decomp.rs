@@ -41,6 +41,20 @@ pub struct TranspileResult {
     pub emit_end_marker: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranspileError {
+    pub message: String,
+    pub line: usize,
+}
+
+impl std::fmt::Display for TranspileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Line {}: {}", self.line, self.message)
+    }
+}
+
+impl std::error::Error for TranspileError {}
+
 #[derive(Debug, Default)]
 struct PrepassData {
     function_to_slots: HashMap<String, Vec<usize>>,
@@ -56,7 +70,10 @@ enum ScriptEntryDirective<'a> {
 }
 
 /// Transpile a decomp script to Rotoscript format
-pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> TranspileResult {
+pub fn transpile(
+    input: &str,
+    db: Option<&crate::database::DatabaseV2>,
+) -> Result<TranspileResult, TranspileError> {
     let mut output = String::new();
     let mut has_script_entry_end = false;
 
@@ -65,10 +82,9 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
     // Second pass: generate output
     let mut seen_script_entry_end = false;
     let mut seen_first_label_after_entry_end = false; // Track if we've seen a real label after ScriptEntryEnd
-    // Track which functions have had their body emitted (to avoid duplicates)
-    let mut functions_with_bodies_emitted: HashSet<String> = HashSet::new();
+    let mut seen_labels: HashSet<String> = HashSet::new();
 
-    for line in input.lines() {
+    for (line_idx, line) in input.lines().enumerate() {
         let raw_trimmed = line.trim();
 
         // Skip empty lines in output but preserve them
@@ -130,6 +146,13 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
 
         // Handle labels
         if let Some(label_name) = trimmed.strip_suffix(':') {
+            if !seen_labels.insert(label_name.to_string()) {
+                return Err(TranspileError {
+                    message: format!("duplicate label definition '{}'", label_name),
+                    line: line_idx + 1,
+                });
+            }
+
             // If we see a label, the jump table is definitely done
             // (handles files without explicit ScriptEntryEnd)
             seen_script_entry_end = true;
@@ -144,20 +167,14 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
                 output.push('\n');
             } else if let Some(slots) = prepass.function_to_slots.get(label_name) {
                 // Public function (in jump table)
-                // Only emit if we haven't seen this function before
-                if functions_with_bodies_emitted.contains(label_name) {
-                    // Duplicate public header entry: keep only headers, not duplicate body.
-                } else {
-                    // Emit header for EACH slot this function appears in
-                    for slot in slots {
-                        output.push_str(&format!("function {} #{}", label_name, slot));
-                        if let Some(ref c) = inline_comment {
-                            output.push(' ');
-                            output.push_str(c);
-                        }
-                        output.push_str(":\n");
+                // Emit header for EACH slot this function appears in.
+                for slot in slots {
+                    output.push_str(&format!("function {} #{}", label_name, slot));
+                    if let Some(ref c) = inline_comment {
+                        output.push(' ');
+                        output.push_str(c);
                     }
-                    functions_with_bodies_emitted.insert(label_name.to_string());
+                    output.push_str(":\n");
                 }
             } else {
                 // Private label
@@ -218,10 +235,10 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
         output.push('\n');
     }
 
-    TranspileResult {
+    Ok(TranspileResult {
         source: output,
         emit_end_marker: has_script_entry_end,
-    }
+    })
 }
 
 fn collect_prepass_data(input: &str, db: Option<&crate::database::DatabaseV2>) -> PrepassData {
@@ -559,6 +576,33 @@ Main:
     }
 
     #[test]
+    fn test_duplicate_label_definitions_error() {
+        let input = r#"
+    ScriptEntry Main
+    ScriptEntry Main
+    ScriptEntryEnd
+
+Main:
+    Message 1
+    End
+
+Main:
+    Message 2
+    End
+
+Helper:
+    Return
+"#;
+
+        let err = transpile(input, None).expect_err("duplicate labels should error");
+        assert!(
+            err.message.contains("duplicate label definition 'Main'"),
+            "unexpected error message: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn test_resolve_script_command_name_maps_scrcmd_opcode() {
         let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
             .expect("test database should load");
@@ -589,7 +633,7 @@ Function1:
 Function2:
     End
 "#;
-        let output = transpile(input, None);
+        let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("function Function1 #0:"));
         assert!(output.source.contains("function Function2 #1:"));
     }
@@ -607,7 +651,7 @@ MainFunc:
 HelperLabel:
     Return
 "#;
-        let output = transpile(input, None);
+        let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("function MainFunc #0:"));
         assert!(output.source.contains("HelperLabel:"));
         assert!(!output.source.contains("function HelperLabel"));
@@ -628,7 +672,7 @@ TestMovement:
     WalkNorth
     EndMovement
 "#;
-        let output = transpile(input, None);
+        let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("function MainFunc #0:"));
         assert!(output.source.contains("action TestMovement"));
         assert!(output.source.contains("    WalkNorth"));
@@ -649,7 +693,7 @@ TestMovement:
     WalkNorth
     EndMovement
 "#;
-        let output = transpile(input, None);
+        let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("function MainFunc #0:"));
         assert!(output.source.contains("action TestMovement"));
         assert!(output.source.contains("    WalkNorth"));
@@ -667,7 +711,7 @@ TestMovement:
 Test:
     End
 "#;
-        let output = transpile(input, None);
+        let output = transpile(input, None).expect("transpile should succeed");
         assert!(!output.source.contains("#include"));
         assert!(output.source.contains("function Test #0:"));
     }
@@ -684,7 +728,7 @@ Test:
     ShowYesNoMenu VAR_RESULT
     End
 "#;
-        let output = transpile(input, None);
+        let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("    SetVar VAR_RESULT, 5"));
         assert!(output.source.contains("    Message 0"));
         assert!(output.source.contains("    ShowYesNoMenu VAR_RESULT"));
@@ -709,7 +753,7 @@ Move2:
     WalkSouth
     EndMovement
 "#;
-        let output = transpile(input, None);
+        let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("action Move1"));
         assert!(output.source.contains("action Move2"));
     }
@@ -738,7 +782,7 @@ AcuityLakefront_SetWarpsLakeAcuityNormal:
     Return
 "#;
 
-        let output = transpile(content, None);
+        let output = transpile(content, None).expect("transpile should succeed");
         assert!(output.source.contains("function _0012 #1:"));
         assert!(output.source.contains("function _004E #0:"));
         assert!(output.source.contains("action _00E8"));

@@ -297,7 +297,12 @@ fn compile_single_script(
             Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
         }
     } else {
-        let transpile_result = transpile_decomp(&source, Some(db));
+        let transpile_result = match transpile_decomp(&source, Some(db)) {
+            Ok(result) => result,
+            Err(e) => {
+                return CompileOutcome::CompileError(format!("Decomp transpile error: {}", e));
+            }
+        };
 
         match compile_to_bytes_with_options(
             &transpile_result.source,
@@ -941,7 +946,12 @@ fn compile_heartgold_single_script(
             Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
         }
     } else {
-        let transpile_result = transpile_decomp(&source, Some(db));
+        let transpile_result = match transpile_decomp(&source, Some(db)) {
+            Ok(result) => result,
+            Err(e) => {
+                return CompileOutcome::CompileError(format!("Decomp transpile error: {}", e));
+            }
+        };
         match compile_to_bytes_with_options(
             &transpile_result.source,
             db,

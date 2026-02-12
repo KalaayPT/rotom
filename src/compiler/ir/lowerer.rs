@@ -2386,7 +2386,8 @@ TestLabel:
         }
 
         let source = std::fs::read_to_string(&script_path).unwrap();
-        let transpiled = crate::transpiler::decomp::transpile(&source, Some(&db));
+        let transpiled = crate::transpiler::decomp::transpile(&source, Some(&db))
+            .expect("decomp transpile should succeed");
 
         let lexer = crate::compiler::Lexer::new(&transpiled.source);
         let mut parser = crate::compiler::Parser::new(lexer);

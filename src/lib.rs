@@ -123,7 +123,7 @@ pub fn compile_levelscript_to_bytes(
     constants: &ConstantDb,
 ) -> Result<Vec<u8>, CompileError> {
     let result = transpiler::transpile_levelscript(source, Some(constants)).map_err(|e| {
-        CompileError::Io {
+        CompileError::Transpile {
             message: format!("Levelscript transpile error: {}", e),
         }
     })?;
@@ -198,7 +198,14 @@ fn compile_file_internal(
             "rotom" => (source, true),
             "script" => (transpiler::transpile_dspre(&source, Some(db)), true),
             "s" => {
-                let result = transpiler::transpile_decomp(&source, Some(db));
+                let result = transpiler::transpile_decomp(&source, Some(db)).map_err(|e| {
+                    CompileFileError::CompileError {
+                        error: CompileError::Transpile {
+                            message: format!("Decomp transpile error at line {}: {}", e.line, e),
+                        },
+                        source: source.clone(),
+                    }
+                })?;
                 (result.source, result.emit_end_marker)
             }
             _ => {
