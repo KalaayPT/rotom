@@ -536,15 +536,20 @@ fn bulk_compile_dspre_scripts(
     result
 }
 
+fn to_f64_count(count: u64) -> f64 {
+    f64::from(u32::try_from(count).expect("bulk test counts should fit in u32"))
+}
+
 fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bool) {
     let stats = &result.stats;
-    let total = stats.total as f64;
+    let total = stats.total as u64;
+    let total_f = to_f64_count(total);
 
-    let matches = stats.matches.load(Ordering::Relaxed);
-    let hash_mismatches = stats.hash_mismatches.load(Ordering::Relaxed);
-    let compile_errors = stats.compile_errors.load(Ordering::Relaxed);
-    let missing_binaries = stats.missing_binaries.load(Ordering::Relaxed);
-    let io_errors = stats.io_errors.load(Ordering::Relaxed);
+    let matches = stats.matches.load(Ordering::Relaxed) as u64;
+    let hash_mismatches = stats.hash_mismatches.load(Ordering::Relaxed) as u64;
+    let compile_errors = stats.compile_errors.load(Ordering::Relaxed) as u64;
+    let missing_binaries = stats.missing_binaries.load(Ordering::Relaxed) as u64;
+    let io_errors = stats.io_errors.load(Ordering::Relaxed) as u64;
 
     println!();
     println!("============================================================");
@@ -555,27 +560,27 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
     println!(
         "Matches:              {:>4} ({:>5.1}%)",
         matches,
-        100.0 * matches as f64 / total
+        100.0 * to_f64_count(matches) / total_f
     );
     println!(
         "Hash mismatches:      {:>4} ({:>5.1}%)",
         hash_mismatches,
-        100.0 * hash_mismatches as f64 / total
+        100.0 * to_f64_count(hash_mismatches) / total_f
     );
     println!(
         "Compile errors:       {:>4} ({:>5.1}%)",
         compile_errors,
-        100.0 * compile_errors as f64 / total
+        100.0 * to_f64_count(compile_errors) / total_f
     );
     println!(
         "Missing binaries:     {:>4} ({:>5.1}%)",
         missing_binaries,
-        100.0 * missing_binaries as f64 / total
+        100.0 * to_f64_count(missing_binaries) / total_f
     );
     println!(
         "IO errors:            {:>4} ({:>5.1}%)",
         io_errors,
-        100.0 * io_errors as f64 / total
+        100.0 * to_f64_count(io_errors) / total_f
     );
     println!("============================================================");
 
@@ -698,17 +703,14 @@ fn run_levelscripts_test(verbose: bool) -> BulkCompileResult {
 }
 
 fn assert_100_percent_match(result: &BulkCompileResult, script_type: &str) {
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
 
     assert_eq!(
-        matches,
-        total,
+        matches, total,
         "{} bulk compile requires 100% hash matches. Got {}/{} ({:.1}%)",
-        script_type,
-        matches,
-        total,
-        100.0 * matches as f64 / total as f64
+        script_type, matches, total, rate
     );
 }
 
@@ -761,9 +763,9 @@ fn run_dspre_platinum_round_trip_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_dspre_platinum_round_trip() {
     let result = run_dspre_platinum_round_trip_test(false);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
-    let rate = 100.0 * matches as f64 / total as f64;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
 
@@ -771,9 +773,9 @@ fn test_dspre_platinum_round_trip() {
 #[ignore]
 fn test_dspre_platinum_round_trip_verbose() {
     let result = run_dspre_platinum_round_trip_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
-    let rate = 100.0 * matches as f64 / total as f64;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
 
@@ -797,9 +799,9 @@ fn run_dspre_platinum_compile_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_dspre_platinum_compile() {
     let result = run_dspre_platinum_compile_test(false);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
-    let rate = 100.0 * matches as f64 / total as f64;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     assert!(
         rate >= 100.0,
         "Expected 100% compile success rate, got {:.1}%",
@@ -811,9 +813,9 @@ fn test_dspre_platinum_compile() {
 #[ignore]
 fn test_dspre_platinum_compile_verbose() {
     let result = run_dspre_platinum_compile_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
-    let rate = 100.0 * matches as f64 / total as f64;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     assert!(
         rate >= 100.0,
         "Expected 100% compile success rate, got {:.1}%",
@@ -844,9 +846,9 @@ fn run_dspre_heartgold_round_trip_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_dspre_heartgold_round_trip() {
     let result = run_dspre_heartgold_round_trip_test(false);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
-    let rate = 100.0 * matches as f64 / total as f64;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
 
@@ -854,9 +856,9 @@ fn test_dspre_heartgold_round_trip() {
 #[ignore]
 fn test_dspre_heartgold_round_trip_verbose() {
     let result = run_dspre_heartgold_round_trip_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
-    let rate = 100.0 * matches as f64 / total as f64;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
 
@@ -880,9 +882,9 @@ fn run_dspre_heartgold_compile_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_dspre_heartgold_compile() {
     let result = run_dspre_heartgold_compile_test(false);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
-    let rate = 100.0 * matches as f64 / total as f64;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     assert!(
         rate >= 100.0,
         "Expected 100% compile success rate, got {:.1}%",
@@ -894,9 +896,9 @@ fn test_dspre_heartgold_compile() {
 #[ignore]
 fn test_dspre_heartgold_compile_verbose() {
     let result = run_dspre_heartgold_compile_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
-    let rate = 100.0 * matches as f64 / total as f64;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     assert!(
         rate >= 100.0,
         "Expected 100% compile success rate, got {:.1}%",
@@ -1030,13 +1032,12 @@ fn run_heartgold_scripts_test(verbose: bool) -> BulkCompileResult {
 fn test_bulk_compile_heartgold_scripts() {
     let result = run_heartgold_scripts_test(false);
     // Just report stats, don't fail - no reference binaries exist
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     println!(
         "HeartGold decomp compile: {}/{} ({:.1}%)",
-        matches,
-        total,
-        100.0 * matches as f64 / total as f64
+        matches, total, rate
     );
 }
 
@@ -1044,12 +1045,11 @@ fn test_bulk_compile_heartgold_scripts() {
 #[ignore]
 fn test_bulk_compile_heartgold_scripts_verbose() {
     let result = run_heartgold_scripts_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
+    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     println!(
         "HeartGold decomp compile: {}/{} ({:.1}%)",
-        matches,
-        total,
-        100.0 * matches as f64 / total as f64
+        matches, total, rate
     );
 }
