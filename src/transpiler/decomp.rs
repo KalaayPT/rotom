@@ -79,6 +79,14 @@ enum BodyLine<'a> {
     },
 }
 
+#[derive(Default)]
+struct RenderState {
+    has_script_entry_end: bool,
+    seen_script_entry_end: bool,
+    seen_first_label_after_entry_end: bool,
+    seen_labels: HashSet<String>,
+}
+
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(
     input: &str,
@@ -94,16 +102,13 @@ fn render_transpile_body(
     db: Option<&crate::database::DatabaseV2>,
 ) -> Result<TranspileResult, TranspileError> {
     let mut output = String::new();
-    let mut has_script_entry_end = false;
-    let mut seen_script_entry_end = false;
-    let mut seen_first_label_after_entry_end = false;
-    let mut seen_labels: HashSet<String> = HashSet::new();
+    let mut state = RenderState::default();
 
     for (line_idx, line) in input.lines().enumerate() {
         let raw_trimmed = line.trim();
         let (trimmed, inline_comment) = match preprocess_body_line(raw_trimmed) {
             BodyLine::Empty => {
-                if seen_script_entry_end {
+                if state.seen_script_entry_end {
                     output.push('\n');
                 }
                 continue;
@@ -120,65 +125,20 @@ fn render_transpile_body(
             } => (trimmed, inline_comment),
         };
 
-        // Skip ScriptEntry/ScriptEntryEnd directives in body pass.
-        match parse_script_entry_directive(trimmed) {
-            ScriptEntryDirective::Entry(_) => continue,
-            ScriptEntryDirective::End => {
-                seen_script_entry_end = true;
-                has_script_entry_end = true;
-                continue;
-            }
-            ScriptEntryDirective::Other => {}
-        }
-
-        // Skip .balign directives
-        if trimmed.starts_with(".balign") || trimmed.starts_with(".align") {
-            continue;
-        }
-
-        // Skip other assembler directives
-        if trimmed.starts_with('.') {
-            continue;
-        }
-
-        // Handle labels
-        if let Some(label_name) = trimmed.strip_suffix(':') {
-            // If we see a label, the jump table is definitely done
-            // (handles files without explicit ScriptEntryEnd)
-            seen_script_entry_end = true;
-            render_label_line(
-                label_name,
-                inline_comment.as_deref(),
-                prepass,
-                &mut seen_labels,
-                line_idx + 1,
-                &mut output,
-            )?;
-            seen_first_label_after_entry_end = true;
-            continue;
-        }
-
-        // Skip lines before we've seen any real content
-        if !seen_script_entry_end {
-            continue;
-        }
-
-        // Handle bare End at top level (before any label has been seen)
-        // Some decomp scripts have an End immediately after ScriptEntryEnd with no label
-        // We need to wrap it in a synthetic label so the parser can handle it
-        if !seen_first_label_after_entry_end && trimmed == "End" {
-            output.push_str("_unused_end:\n");
-            output.push_str("    End\n");
-            seen_first_label_after_entry_end = true;
-            continue;
-        }
-
-        render_command_line(trimmed, inline_comment.as_deref(), prepass, db, &mut output);
+        process_content_line(
+            trimmed,
+            inline_comment.as_deref(),
+            line_idx + 1,
+            prepass,
+            db,
+            &mut state,
+            &mut output,
+        )?;
     }
 
     Ok(TranspileResult {
         source: output,
-        emit_end_marker: has_script_entry_end,
+        emit_end_marker: state.has_script_entry_end,
     })
 }
 
@@ -186,11 +146,11 @@ fn render_label_line(
     label_name: &str,
     inline_comment: Option<&str>,
     prepass: &PrepassData,
-    seen_labels: &mut HashSet<String>,
+    state: &mut RenderState,
     line_number: usize,
     output: &mut String,
 ) -> Result<(), TranspileError> {
-    if !seen_labels.insert(label_name.to_string()) {
+    if !state.seen_labels.insert(label_name.to_string()) {
         return Err(TranspileError {
             message: format!("duplicate label definition '{}'", label_name),
             line: line_number,
@@ -228,6 +188,72 @@ fn render_label_line(
         output.push_str(comment);
     }
     output.push('\n');
+    Ok(())
+}
+
+fn process_content_line(
+    trimmed: &str,
+    inline_comment: Option<&str>,
+    line_number: usize,
+    prepass: &PrepassData,
+    db: Option<&crate::database::DatabaseV2>,
+    state: &mut RenderState,
+    output: &mut String,
+) -> Result<(), TranspileError> {
+    // Skip ScriptEntry/ScriptEntryEnd directives in body pass.
+    match parse_script_entry_directive(trimmed) {
+        ScriptEntryDirective::Entry(_) => return Ok(()),
+        ScriptEntryDirective::End => {
+            state.seen_script_entry_end = true;
+            state.has_script_entry_end = true;
+            return Ok(());
+        }
+        ScriptEntryDirective::Other => {}
+    }
+
+    // Skip .balign directives
+    if trimmed.starts_with(".balign") || trimmed.starts_with(".align") {
+        return Ok(());
+    }
+
+    // Skip other assembler directives
+    if trimmed.starts_with('.') {
+        return Ok(());
+    }
+
+    // Handle labels
+    if let Some(label_name) = trimmed.strip_suffix(':') {
+        // If we see a label, the jump table is definitely done
+        // (handles files without explicit ScriptEntryEnd)
+        state.seen_script_entry_end = true;
+        render_label_line(
+            label_name,
+            inline_comment,
+            prepass,
+            state,
+            line_number,
+            output,
+        )?;
+        state.seen_first_label_after_entry_end = true;
+        return Ok(());
+    }
+
+    // Skip lines before we've seen any real content
+    if !state.seen_script_entry_end {
+        return Ok(());
+    }
+
+    // Handle bare End at top level (before any label has been seen)
+    // Some decomp scripts have an End immediately after ScriptEntryEnd with no label
+    // We need to wrap it in a synthetic label so the parser can handle it
+    if !state.seen_first_label_after_entry_end && trimmed == "End" {
+        output.push_str("_unused_end:\n");
+        output.push_str("    End\n");
+        state.seen_first_label_after_entry_end = true;
+        return Ok(());
+    }
+
+    render_command_line(trimmed, inline_comment, prepass, db, output);
     Ok(())
 }
 
