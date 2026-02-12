@@ -5,7 +5,7 @@
 //! - Macro expansion with parameter substitution
 //! - Default parameter application
 //! - Symbol resolution (aliases, constants, labels)
-//! - Autovar commands in conditions (commands with destVar that default to VAR_RESULT)
+//! - Autovar commands in conditions (commands with destVar that default to `VAR_RESULT`)
 
 use regex::Regex;
 use std::collections::HashMap;

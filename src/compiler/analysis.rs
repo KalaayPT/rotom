@@ -511,10 +511,10 @@ impl<'a> Analyzer<'a> {
                     .count();
                 let max_count = params.len();
 
-                if actual_count < required_count || actual_count > max_count {
-                    if !valid_counts.iter().any(|&vc| actual_count <= vc) {
-                        return Ok(());
-                    }
+                if (actual_count < required_count || actual_count > max_count)
+                    && !valid_counts.iter().any(|&vc| actual_count <= vc)
+                {
+                    return Ok(());
                 }
             }
             return Ok(());
@@ -569,7 +569,7 @@ impl<'a> Analyzer<'a> {
     ) -> ParseResult<()> {
         match &arg.node {
             ExpressionKind::Number(n) => {
-                self.validate_number_for_type(
+                Self::validate_number_for_type(
                     *n, param_type, &arg.span, command, param_name, arg_index,
                 )?;
             }
@@ -592,7 +592,7 @@ impl<'a> Analyzer<'a> {
             }
             ExpressionKind::Identifier(name) => {
                 if let Some(SymbolType::Constant(value)) = self.resolve_symbol(name) {
-                    self.validate_number_for_type(
+                    Self::validate_number_for_type(
                         value, param_type, &arg.span, command, param_name, arg_index,
                     )?;
                 }
@@ -605,7 +605,6 @@ impl<'a> Analyzer<'a> {
 
     /// Validate that a number fits within the range for a parameter type
     fn validate_number_for_type(
-        &self,
         n: i32,
         param_type: &ParamType,
         span: &Range<usize>,
@@ -615,17 +614,17 @@ impl<'a> Analyzer<'a> {
     ) -> ParseResult<()> {
         let (valid, type_desc) = match param_type {
             ParamType::U8 => {
-                let fits_unsigned = n >= 0 && n <= u8::MAX as i32;
-                let fits_signed = n >= i8::MIN as i32 && n <= i8::MAX as i32;
+                let fits_unsigned = u8::try_from(n).is_ok();
+                let fits_signed = i8::try_from(n).is_ok();
                 (fits_unsigned || fits_signed, "u8 (0-255)")
             }
             ParamType::U16 | ParamType::Var | ParamType::Flag | ParamType::MsgId => {
-                let fits_unsigned = n >= 0 && n <= u16::MAX as i32;
-                let fits_signed = n >= i16::MIN as i32 && n <= i16::MAX as i32;
+                let fits_unsigned = u16::try_from(n).is_ok();
+                let fits_signed = i16::try_from(n).is_ok();
                 (fits_unsigned || fits_signed, "u16 (0-65535)")
             }
             ParamType::U32 | ParamType::Label | ParamType::ScriptId | ParamType::MovementId => {
-                (true, "u32 (non-negative)")
+                (n >= 0, "u32 (non-negative)")
             }
             ParamType::Unknown => (true, "unknown"),
         };
@@ -649,9 +648,7 @@ impl<'a> Analyzer<'a> {
 
     pub fn validate_expression(&self, expr: &Expression) -> ParseResult<()> {
         match &expr.node {
-            ExpressionKind::Number(n) => {
-                self.validate_number_range(*n, &expr.span)?;
-            }
+            ExpressionKind::Number(_) => {}
             ExpressionKind::Identifier(name) => {
                 if self.resolve_symbol(name).is_none() {
                     return Err(analysis_error(
@@ -675,21 +672,11 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
-    /// Validate that a standalone number is within reasonable bounds (signed 32-bit)
-    fn validate_number_range(&self, n: i32, span: &Range<usize>) -> ParseResult<()> {
-        // For general expressions, we allow full i32 range since the target might need it
-        // Specific parameter type checking is done in validate_argument_type
-        // Here we just catch obviously problematic values
-        let _ = (n, span);
-        Ok(())
-    }
-
     fn validate_jump_target(&self, expr: &Expression) -> ParseResult<()> {
-        let name = match &expr.node {
-            ExpressionKind::Label(n) => n,      // Jump .local
-            ExpressionKind::Identifier(n) => n, // Jump Global
-            _ => return Ok(()), // Jump 100 is also valid in case anyone ever needs it
+        let (ExpressionKind::Label(name) | ExpressionKind::Identifier(name)) = &expr.node else {
+            return Ok(());
         };
+
         match self.resolve_symbol(name) {
             Some(_) => Ok(()),
             None => Err(analysis_error(

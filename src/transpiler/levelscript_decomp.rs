@@ -21,6 +21,7 @@ impl std::fmt::Display for TranspileError {
 
 impl std::error::Error for TranspileError {}
 
+// #[allow(clippy::needless_continue)]
 pub fn transpile_levelscript(
     source: &str,
     constants: Option<&ConstantDb>,
@@ -40,6 +41,7 @@ pub fn transpile_levelscript(
             || trimmed.starts_with("#include")
             || trimmed.starts_with(".balign")
             || trimmed.starts_with(".align")
+            || matches!(trimmed, "InitScriptEntryEnd" | "InitScriptEnd")
         {
             continue;
         }
@@ -131,10 +133,6 @@ pub fn transpile_levelscript(
             continue;
         }
 
-        if trimmed == "InitScriptEntryEnd" {
-            continue;
-        }
-
         if in_frame_table {
             if let Some(rest) = trimmed.strip_prefix("InitScriptGoToIfEqual") {
                 let args = rest.trim();
@@ -153,12 +151,7 @@ pub fn transpile_levelscript(
 
             if trimmed == "InitScriptFrameTableEnd" {
                 in_frame_table = false;
-                continue;
             }
-        }
-
-        if trimmed == "InitScriptEnd" {
-            continue;
         }
     }
 
