@@ -69,6 +69,16 @@ enum ScriptEntryDirective<'a> {
     Other,
 }
 
+enum BodyLine<'a> {
+    Empty,
+    SkipPreprocessor,
+    FullComment(String),
+    Content {
+        trimmed: &'a str,
+        inline_comment: Option<String>,
+    },
+}
+
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(
     input: &str,
@@ -91,41 +101,23 @@ fn render_transpile_body(
 
     for (line_idx, line) in input.lines().enumerate() {
         let raw_trimmed = line.trim();
-
-        // Skip empty lines in output but preserve them
-        if raw_trimmed.is_empty() {
-            if seen_script_entry_end {
-                output.push('\n');
+        let (trimmed, inline_comment) = match preprocess_body_line(raw_trimmed) {
+            BodyLine::Empty => {
+                if seen_script_entry_end {
+                    output.push('\n');
+                }
+                continue;
             }
-            continue;
-        }
-
-        // Skip preprocessor directives
-        if raw_trimmed.starts_with("#include") || raw_trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Handle assembly comments (full line)
-        if raw_trimmed.starts_with('@') || raw_trimmed.starts_with("//") {
-            // Keep regular comments, and convert @ comments to //
-            let comment = if raw_trimmed.starts_with('@') {
-                raw_trimmed.replacen('@', "//", 1)
-            } else {
-                raw_trimmed.to_string()
-            };
-            output.push_str(&comment);
-            output.push('\n');
-            continue;
-        }
-
-        // Split inline comment
-        let (trimmed, inline_comment) = if let Some(idx) = raw_trimmed.find('@') {
-            (
-                raw_trimmed[..idx].trim(),
-                Some(raw_trimmed[idx..].replace('@', "//")),
-            )
-        } else {
-            (raw_trimmed, None)
+            BodyLine::SkipPreprocessor => continue,
+            BodyLine::FullComment(comment) => {
+                output.push_str(&comment);
+                output.push('\n');
+                continue;
+            }
+            BodyLine::Content {
+                trimmed,
+                inline_comment,
+            } => (trimmed, inline_comment),
         };
 
         // Skip ScriptEntry/ScriptEntryEnd directives in body pass.
@@ -237,6 +229,40 @@ fn render_label_line(
     }
     output.push('\n');
     Ok(())
+}
+
+fn preprocess_body_line(raw_trimmed: &str) -> BodyLine<'_> {
+    if raw_trimmed.is_empty() {
+        return BodyLine::Empty;
+    }
+
+    if raw_trimmed.starts_with("#include") || raw_trimmed.starts_with('#') {
+        return BodyLine::SkipPreprocessor;
+    }
+
+    if raw_trimmed.starts_with('@') || raw_trimmed.starts_with("//") {
+        // Keep regular comments, and convert @ comments to //
+        let comment = if raw_trimmed.starts_with('@') {
+            raw_trimmed.replacen('@', "//", 1)
+        } else {
+            raw_trimmed.to_string()
+        };
+        return BodyLine::FullComment(comment);
+    }
+
+    let (trimmed, inline_comment) = if let Some(idx) = raw_trimmed.find('@') {
+        (
+            raw_trimmed[..idx].trim(),
+            Some(raw_trimmed[idx..].replace('@', "//")),
+        )
+    } else {
+        (raw_trimmed, None)
+    };
+
+    BodyLine::Content {
+        trimmed,
+        inline_comment,
+    }
 }
 
 fn render_command_line(
@@ -618,6 +644,20 @@ Main:
             parse_script_entry_directive("ScriptEntryMain"),
             ScriptEntryDirective::Other
         );
+    }
+
+    #[test]
+    fn test_preprocess_body_line_splits_inline_at_comment() {
+        match preprocess_body_line("Message 1 @ note") {
+            BodyLine::Content {
+                trimmed,
+                inline_comment,
+            } => {
+                assert_eq!(trimmed, "Message 1");
+                assert_eq!(inline_comment.as_deref(), Some("// note"));
+            }
+            _ => panic!("expected content line classification"),
+        }
     }
 
     #[test]
