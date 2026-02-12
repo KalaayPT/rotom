@@ -83,7 +83,7 @@ enum BodyLine<'a> {
     SkipPreprocessor,
     FullComment(String),
     Content {
-        trimmed: &'a str,
+        statement: &'a str,
         inline_comment: Option<String>,
     },
 }
@@ -115,7 +115,7 @@ fn render_transpile_body(
 
     for (line_idx, line) in input.lines().enumerate() {
         let raw_trimmed = line.trim();
-        let (trimmed, inline_comment) = match preprocess_body_line(raw_trimmed) {
+        let (statement, inline_comment) = match preprocess_body_line(raw_trimmed) {
             BodyLine::Empty => {
                 if state.seen_script_entry_end {
                     output.push('\n');
@@ -129,13 +129,13 @@ fn render_transpile_body(
                 continue;
             }
             BodyLine::Content {
-                trimmed,
+                statement,
                 inline_comment,
-            } => (trimmed, inline_comment),
+            } => (statement, inline_comment),
         };
 
         process_content_line(
-            trimmed,
+            statement,
             inline_comment.as_deref(),
             line_idx + 1,
             prepass,
@@ -192,7 +192,7 @@ fn render_label_line(
 }
 
 fn process_content_line(
-    trimmed: &str,
+    statement: &str,
     inline_comment: Option<&str>,
     line_number: usize,
     prepass: &PrepassData,
@@ -200,48 +200,29 @@ fn process_content_line(
     state: &mut RenderState,
     output: &mut String,
 ) -> Result<(), TranspileError> {
-    match classify_structural_line(trimmed) {
-        StructuralLine::ScriptEntry(_) => return Ok(()),
-        StructuralLine::ScriptEntryEnd => {
-            state.seen_script_entry_end = true;
-            state.has_script_entry_end = true;
-            return Ok(());
-        }
-        StructuralLine::AssemblerDirective => return Ok(()),
-        StructuralLine::Label(label_name) => {
-            // If we see a label, the jump table is definitely done
-            // (handles files without explicit ScriptEntryEnd)
-            state.seen_script_entry_end = true;
-            render_label_line(
-                label_name,
-                inline_comment,
-                prepass,
-                state,
-                line_number,
-                output,
-            )?;
-            state.seen_first_label_after_entry_end = true;
-            return Ok(());
-        }
-        StructuralLine::Other => {}
+    if skip_or_handle_structural_line(
+        statement,
+        inline_comment,
+        line_number,
+        prepass,
+        state,
+        output,
+    )? {
+        return Ok(());
     }
 
-    // Skip lines before we've seen any real content
     if !state.seen_script_entry_end {
         return Ok(());
     }
 
-    // Handle bare End at top level (before any label has been seen)
-    // Some decomp scripts have an End immediately after ScriptEntryEnd with no label
-    // We need to wrap it in a synthetic label so the parser can handle it
-    if !state.seen_first_label_after_entry_end && trimmed == "End" {
+    if should_emit_synthetic_unused_end(statement, state) {
         output.push_str("_unused_end:\n");
         output.push_str("    End\n");
         state.seen_first_label_after_entry_end = true;
         return Ok(());
     }
 
-    render_command_line(trimmed, inline_comment, prepass, db, output);
+    render_command_line(statement, inline_comment, prepass, db, output);
     Ok(())
 }
 
@@ -274,19 +255,19 @@ fn preprocess_body_line(raw_trimmed: &str) -> BodyLine<'_> {
     };
 
     BodyLine::Content {
-        trimmed,
+        statement: trimmed,
         inline_comment,
     }
 }
 
 fn render_command_line(
-    trimmed: &str,
+    statement: &str,
     inline_comment: Option<&str>,
     prepass: &PrepassData,
     db: Option<&crate::database::DatabaseV2>,
     output: &mut String,
 ) {
-    let (raw_cmd_name, args) = split_command_and_args(trimmed);
+    let (raw_cmd_name, args) = split_command_and_args(statement);
     let cmd_name = resolve_script_command_name(raw_cmd_name, db);
 
     output.push_str("    ");
@@ -300,6 +281,43 @@ fn render_command_line(
     }
     append_inline_comment(output, inline_comment);
     output.push('\n');
+}
+
+fn skip_or_handle_structural_line(
+    statement: &str,
+    inline_comment: Option<&str>,
+    line_number: usize,
+    prepass: &PrepassData,
+    state: &mut RenderState,
+    output: &mut String,
+) -> Result<bool, TranspileError> {
+    match classify_structural_line(statement) {
+        StructuralLine::ScriptEntry(_) => Ok(true),
+        StructuralLine::ScriptEntryEnd => {
+            state.seen_script_entry_end = true;
+            state.has_script_entry_end = true;
+            Ok(true)
+        }
+        StructuralLine::AssemblerDirective => Ok(true),
+        StructuralLine::Label(label_name) => {
+            state.seen_script_entry_end = true;
+            render_label_line(
+                label_name,
+                inline_comment,
+                prepass,
+                state,
+                line_number,
+                output,
+            )?;
+            state.seen_first_label_after_entry_end = true;
+            Ok(true)
+        }
+        StructuralLine::Other => Ok(false),
+    }
+}
+
+fn should_emit_synthetic_unused_end(statement: &str, state: &RenderState) -> bool {
+    !state.seen_first_label_after_entry_end && statement == "End"
 }
 
 fn append_inline_comment(output: &mut String, inline_comment: Option<&str>) {
@@ -370,14 +388,13 @@ fn collect_jump_table_and_movement_labels(
     let mut current_label: Option<String> = None;
 
     for (line_idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
+        let statement = line.trim();
 
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
+        if statement.is_empty() || statement.starts_with("//") || statement.starts_with('@') {
             continue;
         }
 
-        match classify_structural_line(trimmed) {
+        match classify_structural_line(statement) {
             StructuralLine::ScriptEntry(name) => {
                 jump_table.push(name.to_string());
                 continue;
@@ -391,7 +408,7 @@ fn collect_jump_table_and_movement_labels(
         }
 
         if let Some(label) = current_label.take() {
-            let cmd_name = split_command_and_args(trimmed).0;
+            let cmd_name = split_command_and_args(statement).0;
 
             let is_movement = if movement_commands.is_empty() {
                 lookahead_for_end_movement(lines, line_idx)
@@ -791,10 +808,10 @@ Main:
     fn test_preprocess_body_line_splits_inline_at_comment() {
         match preprocess_body_line("Message 1 @ note") {
             BodyLine::Content {
-                trimmed,
+                statement,
                 inline_comment,
             } => {
-                assert_eq!(trimmed, "Message 1");
+                assert_eq!(statement, "Message 1");
                 assert_eq!(inline_comment.as_deref(), Some("// note"));
             }
             _ => panic!("expected content line classification"),
