@@ -1191,11 +1191,11 @@ mod tests {
 
     #[test]
     fn test_lower_simple_function() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     Message 1
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1220,11 +1220,11 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_simple_command() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     Message 42
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1248,7 +1248,7 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_label() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     Message 1
     Jump .skip
@@ -1256,7 +1256,7 @@ function TestFunc #1:
 .skip:
     Message 3
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1279,11 +1279,11 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_action() {
-        let source = r#"
+        let source = r"
 action TestAction
     WalkNormalNorth 3
     EndMovement
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1336,13 +1336,13 @@ action TestAction
 
     #[test]
     fn test_lower_if_statement() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if 0x8000 == 1 then
         Message 1
     endif
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1370,13 +1370,13 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_while_loop() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     while 0x8000 != 0 do
         SubVar 0x8000, 1
     endwhile
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1404,7 +1404,7 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_if_else() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if 0x8000 == 1 then
         Message 1
@@ -1412,7 +1412,7 @@ function TestFunc #1:
         Message 2
     endif
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1452,13 +1452,13 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_condition_operand_swap() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if 5 == 0x8000 then
         Message 1
     endif
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1491,11 +1491,11 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_arithmetic_expression() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     Message 1 + 2 * 3
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1525,7 +1525,7 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_match_statement() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 0x8000 with
         case 0:
@@ -1536,7 +1536,7 @@ function TestFunc #1:
             Message 3
     endmatch
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1581,7 +1581,7 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_break_statement() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     while 0x8000 != 0 do
         if 0x8000 == 5 then
@@ -1590,7 +1590,7 @@ function TestFunc #1:
         SubVar 0x8000, 1
     endwhile
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1633,11 +1633,11 @@ function TestFunc #1:
 
     #[test]
     fn test_break_outside_loop_fails() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     break
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1662,13 +1662,13 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_autovar_call_bare_condition() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if CheckPlayerOnBike() then
         Message 1
     endif
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1699,13 +1699,13 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_autovar_call_with_comparison() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if ShowYesNoMenu() == 0 then
         Message 1
     endif
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1736,7 +1736,7 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_autovar_in_match() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match ShowYesNoMenu() with
         case 0:
@@ -1745,7 +1745,7 @@ function TestFunc #1:
             Message 2
     endmatch
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1777,7 +1777,7 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_autovar_in_match_emits_once() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match ShowYesNoMenu() with
         case 0:
@@ -1788,7 +1788,7 @@ function TestFunc #1:
             Message 3
     endmatch
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1828,13 +1828,13 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_autovar_call_with_args() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if AddItem(1, 5) then
         Message 1
     endif
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1872,13 +1872,13 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_autovar_call_on_right_side() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if 1 == CheckPlayerOnBike() then
         Message 1
     endif
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1905,13 +1905,13 @@ function TestFunc #1:
 
     #[test]
     fn test_defaults_can_reference_prior_defaulted_param() {
-        let source = r#"
+        let source = r"
 alias 0x800C as VAR_RESULT
 
 function TestFunc #1:
     ShowCurrentFloor 1, 2
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1939,7 +1939,7 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_match_with_keyword() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 0x8000 with
         case 0:
@@ -1948,7 +1948,7 @@ function TestFunc #1:
             Message 2
     endmatch
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -1975,7 +1975,7 @@ function TestFunc #1:
 
     #[test]
     fn test_lower_optimized_match_single_calls() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 0x8000 with
         case 0:
@@ -1995,7 +1995,7 @@ func_b:
 
 func_c:
     Return
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -2055,7 +2055,7 @@ func_c:
 
     #[test]
     fn test_lower_mixed_match_per_case_optimization() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 0x8000 with
         case 0:
@@ -2073,7 +2073,7 @@ func_a:
 
 func_b:
     Return
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -2116,14 +2116,14 @@ func_b:
 
     #[test]
     fn test_lower_condition_identifier() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     CompareVarValue 0x8000, 5
     JumpIf EQUAL, some_label
     End
 some_label:
     Return
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -2148,7 +2148,7 @@ some_label:
 
     #[test]
     fn test_lower_all_condition_identifiers() {
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     CompareVarValue 0x8000, 5
     JumpIf LESS, label1
@@ -2165,7 +2165,7 @@ label4:
 label5:
 label6:
     Return
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
         let mut lowerer = Lowerer::new(&symbols, &db);
@@ -2200,11 +2200,11 @@ label6:
         let mut constants = crate::database::ConstantDb::new();
         constants.load_from_db(&db);
 
-        let source = r#"
+        let source = r"
 function Test #1:
     CompareVar 0x8000, 100
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
 
@@ -2230,11 +2230,11 @@ function Test #1:
         let mut constants = crate::database::ConstantDb::new();
         constants.load_from_db(&db);
 
-        let source = r#"
+        let source = r"
 function Test #1:
     CompareVar 0x8000, 0x8001
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
 
@@ -2260,12 +2260,12 @@ function Test #1:
         let mut constants = crate::database::ConstantDb::new();
         constants.load_from_db(&db);
 
-        let source = r#"
+        let source = r"
 function Test #1:
     GoToIfGe 0x8000, 100, TestLabel
 TestLabel:
     End
-"#;
+";
         let (script_file, symbols) = parse_and_analyze(source);
         let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
 
@@ -2305,12 +2305,12 @@ TestLabel:
             let _ = constants.load_decomp_project(decomp_root);
         }
 
-        let source = r#"
+        let source = r"
 function Test #1:
     GoToIfGe 0x800C, TRAINER_CARD_LEVEL_GOLD, TestLabel
 TestLabel:
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -2343,12 +2343,12 @@ TestLabel:
 
         // VAR_ELEVATOR_FLOORS_ABOVE = 16590 (0x40CE) which is >= VARS_START (0x4000)
         // So this should expand to CompareVarToVar
-        let source = r#"
+        let source = r"
 function Test #1:
     GoToIfEq VAR_ELEVATOR_FLOORS_ABOVE, 3, TestLabel
 TestLabel:
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -2424,13 +2424,13 @@ TestLabel:
         }
 
         // Test CallIfGe with TRAINER_CARD_LEVEL_GOLD (value 4, which is < VARS_START)
-        let source = r#"
+        let source = r"
 function Test #1:
     CallIfGe VAR_RESULT, TRAINER_CARD_LEVEL_GOLD, TestLabel
     CallIfLt VAR_RESULT, TRAINER_CARD_LEVEL_GOLD, TestLabel
 TestLabel:
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
