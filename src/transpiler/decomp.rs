@@ -48,6 +48,13 @@ struct PrepassData {
     local_defines: HashMap<String, String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ScriptEntryDirective<'a> {
+    Entry(&'a str),
+    End,
+    Other,
+}
+
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> TranspileResult {
     let mut output = String::new();
@@ -100,13 +107,15 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Trans
             (raw_trimmed, None)
         };
 
-        // Skip ScriptEntry/ScriptEntryEnd
-        if trimmed.starts_with("ScriptEntry") {
-            if trimmed == "ScriptEntryEnd" {
+        // Skip ScriptEntry/ScriptEntryEnd directives in body pass.
+        match parse_script_entry_directive(trimmed) {
+            ScriptEntryDirective::Entry(_) => continue,
+            ScriptEntryDirective::End => {
                 seen_script_entry_end = true;
                 has_script_entry_end = true;
+                continue;
             }
-            continue;
+            ScriptEntryDirective::Other => {}
         }
 
         // Skip .balign directives
@@ -256,14 +265,13 @@ fn collect_jump_table_and_movement_labels(
         }
 
         // Parse ScriptEntry
-        if let Some(rest) = trimmed.strip_prefix("ScriptEntry") {
-            let rest = rest.trim();
-            let name = rest.split('@').next().unwrap_or(rest).trim();
-            let name = name.split("//").next().unwrap_or(name).trim();
-            if !name.is_empty() {
+        match parse_script_entry_directive(trimmed) {
+            ScriptEntryDirective::Entry(name) => {
                 jump_table.push(name.to_string());
+                continue;
             }
-            continue;
+            ScriptEntryDirective::End => continue,
+            ScriptEntryDirective::Other => {}
         }
 
         // Skip assembler directives
@@ -328,6 +336,33 @@ fn collect_local_defines(input: &str) -> HashMap<String, String> {
     }
 
     local_defines
+}
+
+fn parse_script_entry_directive(trimmed: &str) -> ScriptEntryDirective<'_> {
+    if trimmed == "ScriptEntryEnd" {
+        return ScriptEntryDirective::End;
+    }
+
+    let Some(rest) = trimmed.strip_prefix("ScriptEntry") else {
+        return ScriptEntryDirective::Other;
+    };
+
+    let mut chars = rest.chars();
+    let Some(first_char) = chars.next() else {
+        return ScriptEntryDirective::Other;
+    };
+    if !first_char.is_whitespace() {
+        return ScriptEntryDirective::Other;
+    }
+
+    let rest = rest.trim();
+    let name = rest.split('@').next().unwrap_or(rest).trim();
+    let name = name.split("//").next().unwrap_or(name).trim();
+    if name.is_empty() {
+        ScriptEntryDirective::Other
+    } else {
+        ScriptEntryDirective::Entry(name)
+    }
 }
 
 fn resolve_script_command_name<'a>(
@@ -497,6 +532,30 @@ Main:
 
         let prepass = collect_prepass_data(input, None);
         assert_eq!(prepass.function_to_slots.get("Main"), Some(&vec![0, 1]));
+    }
+
+    #[test]
+    fn test_parse_script_entry_directive_distinguishes_end_and_entries() {
+        assert_eq!(
+            parse_script_entry_directive("ScriptEntry Main"),
+            ScriptEntryDirective::Entry("Main")
+        );
+        assert_eq!(
+            parse_script_entry_directive("ScriptEntry Main // trailing"),
+            ScriptEntryDirective::Entry("Main")
+        );
+        assert_eq!(
+            parse_script_entry_directive("ScriptEntry Main @ trailing"),
+            ScriptEntryDirective::Entry("Main")
+        );
+        assert_eq!(
+            parse_script_entry_directive("ScriptEntryEnd"),
+            ScriptEntryDirective::End
+        );
+        assert_eq!(
+            parse_script_entry_directive("ScriptEntryMain"),
+            ScriptEntryDirective::Other
+        );
     }
 
     #[test]
