@@ -74,14 +74,19 @@ pub fn transpile(
     input: &str,
     db: Option<&crate::database::DatabaseV2>,
 ) -> Result<TranspileResult, TranspileError> {
+    let prepass = collect_prepass_data(input, db);
+    render_transpile_body(input, &prepass, db)
+}
+
+fn render_transpile_body(
+    input: &str,
+    prepass: &PrepassData,
+    db: Option<&crate::database::DatabaseV2>,
+) -> Result<TranspileResult, TranspileError> {
     let mut output = String::new();
     let mut has_script_entry_end = false;
-
-    let prepass = collect_prepass_data(input, db);
-
-    // Second pass: generate output
     let mut seen_script_entry_end = false;
-    let mut seen_first_label_after_entry_end = false; // Track if we've seen a real label after ScriptEntryEnd
+    let mut seen_first_label_after_entry_end = false;
     let mut seen_labels: HashSet<String> = HashSet::new();
 
     for (line_idx, line) in input.lines().enumerate() {
