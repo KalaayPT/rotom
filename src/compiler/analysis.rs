@@ -735,13 +735,13 @@ mod tests {
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     while 0x8000 != 0 do
         break
     endwhile
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -756,11 +756,11 @@ function TestFunc #1:
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     break
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -777,7 +777,7 @@ function TestFunc #1:
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     while 0x8000 != 0 do
         if 0x8000 == 5 then
@@ -785,7 +785,7 @@ function TestFunc #1:
         endif
     endwhile
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -800,7 +800,7 @@ function TestFunc #1:
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 0x8000 with
         case 0:
@@ -809,7 +809,7 @@ function TestFunc #1:
             Message 2
     endmatch
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -824,14 +824,14 @@ function TestFunc #1:
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match 5 with
         case 0:
             Message 1
     endmatch
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -851,13 +851,13 @@ function TestFunc #1:
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if CheckPlayerOnBike() then
         Message 1
     endif
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -876,7 +876,7 @@ function TestFunc #1:
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     match ShowYesNoMenu() with
         case 0:
@@ -885,7 +885,7 @@ function TestFunc #1:
             Message 2
     endmatch
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -904,13 +904,13 @@ function TestFunc #1:
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if Message() then
         End
     endif
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -930,13 +930,13 @@ function TestFunc #1:
         let constants = ConstantDb::new();
         let mut analyzer = Analyzer::with_database(&constants, &db);
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     if ShowYesNoMenu() == 1 then
         Message 1
     endif
     End
-"#;
+";
         let lexer = crate::compiler::Lexer::new(source);
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1014,7 +1014,7 @@ function TestFunc #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
 
-        let source = r#"
+        let source = r"
 alias 0x800C as VAR_RESULT
 
 function MainFunc #0:
@@ -1029,7 +1029,7 @@ function MainFunc #0:
 action TestMovement
     WalkNormalNorth 3
     EndMovement
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1053,13 +1053,13 @@ action TestMovement
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
 
-        let source = r#"
+        let source = r"
 alias 0x8000 as VAR_X
 alias 0x8000 as VAR_X
 
 function Dummy #0:
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1074,7 +1074,7 @@ function Dummy #0:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
 
-        let source = r#"
+        let source = r"
 function Dummy #0:
     End
 
@@ -1083,7 +1083,7 @@ action BadAction
         WalkNorth
     endif
     EndMovement
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1100,11 +1100,11 @@ action BadAction
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
 function TestFunc #2:
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1129,11 +1129,11 @@ function TestFunc #2:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     LockAll
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1158,11 +1158,11 @@ function Test #1:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     SetFlag 100
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1187,11 +1187,11 @@ function Test #1:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     RegValueSet 999, 1
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1219,11 +1219,11 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     SomeUnknownCommand 1, 2, 3, 4, 5
     End
-"#;
+";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -1244,11 +1244,11 @@ function Test #1:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     SetFlag 100, 200, 300
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1278,11 +1278,11 @@ function Test #1:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     SetFlag
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1312,11 +1312,11 @@ function Test #1:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     SetFlag 65535
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1340,11 +1340,11 @@ function Test #1:
         use crate::compiler::parser::Parser;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function TestFunc #1:
     SetFlag 65536
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1373,11 +1373,11 @@ function TestFunc #1:
         use crate::compiler::parser::Parser;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     GoToIfNotEnoughMoney 100000
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let constants = ConstantDb::new();
 
@@ -1408,12 +1408,12 @@ function Test #1:
 
         // GoToIfNotEnoughMoney declares value as u16, but should accept u32 values
         // since it expands to CheckMoney which takes u32
-        let source = r#"
+        let source = r"
 function Test #1:
     GoToIfNotEnoughMoney 100000, TestLabel
 TestLabel:
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let constants = ConstantDb::new();
 
@@ -1438,11 +1438,11 @@ TestLabel:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     PlayCry 440
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1467,11 +1467,11 @@ function Test #1:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     PokeMartCommon
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1496,11 +1496,11 @@ function Test #1:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     CallTVBroadcast 0, 0x800C
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
@@ -1525,11 +1525,11 @@ function Test #1:
         use crate::database::DatabaseV2;
         use std::path::Path;
 
-        let source = r#"
+        let source = r"
 function Test #1:
     StartTrainerBattle 913
     End
-"#;
+";
         let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
         let mut constants = ConstantDb::new();
         constants.load_from_db(&db);
