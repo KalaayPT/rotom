@@ -151,45 +151,17 @@ fn render_transpile_body(
 
         // Handle labels
         if let Some(label_name) = trimmed.strip_suffix(':') {
-            if !seen_labels.insert(label_name.to_string()) {
-                return Err(TranspileError {
-                    message: format!("duplicate label definition '{}'", label_name),
-                    line: line_idx + 1,
-                });
-            }
-
             // If we see a label, the jump table is definitely done
             // (handles files without explicit ScriptEntryEnd)
             seen_script_entry_end = true;
-
-            // Check if this is a movement label
-            if prepass.movement_labels.contains(label_name) {
-                output.push_str(&format!("action {}", label_name));
-                if let Some(ref c) = inline_comment {
-                    output.push(' ');
-                    output.push_str(c);
-                }
-                output.push('\n');
-            } else if let Some(slots) = prepass.function_to_slots.get(label_name) {
-                // Public function (in jump table)
-                // Emit header for EACH slot this function appears in.
-                for slot in slots {
-                    output.push_str(&format!("function {} #{}", label_name, slot));
-                    if let Some(ref c) = inline_comment {
-                        output.push(' ');
-                        output.push_str(c);
-                    }
-                    output.push_str(":\n");
-                }
-            } else {
-                // Private label
-                output.push_str(&format!("{}:", label_name));
-                if let Some(ref c) = inline_comment {
-                    output.push(' ');
-                    output.push_str(c);
-                }
-                output.push('\n');
-            }
+            render_label_line(
+                label_name,
+                inline_comment.as_deref(),
+                prepass,
+                &mut seen_labels,
+                line_idx + 1,
+                &mut output,
+            )?;
             seen_first_label_after_entry_end = true;
             continue;
         }
@@ -216,6 +188,55 @@ fn render_transpile_body(
         source: output,
         emit_end_marker: has_script_entry_end,
     })
+}
+
+fn render_label_line(
+    label_name: &str,
+    inline_comment: Option<&str>,
+    prepass: &PrepassData,
+    seen_labels: &mut HashSet<String>,
+    line_number: usize,
+    output: &mut String,
+) -> Result<(), TranspileError> {
+    if !seen_labels.insert(label_name.to_string()) {
+        return Err(TranspileError {
+            message: format!("duplicate label definition '{}'", label_name),
+            line: line_number,
+        });
+    }
+
+    // Check if this is a movement label
+    if prepass.movement_labels.contains(label_name) {
+        output.push_str(&format!("action {}", label_name));
+        if let Some(comment) = inline_comment {
+            output.push(' ');
+            output.push_str(comment);
+        }
+        output.push('\n');
+        return Ok(());
+    }
+
+    if let Some(slots) = prepass.function_to_slots.get(label_name) {
+        // Public function (in jump table): emit header for each slot.
+        for slot in slots {
+            output.push_str(&format!("function {} #{}", label_name, slot));
+            if let Some(comment) = inline_comment {
+                output.push(' ');
+                output.push_str(comment);
+            }
+            output.push_str(":\n");
+        }
+        return Ok(());
+    }
+
+    // Private label
+    output.push_str(&format!("{}:", label_name));
+    if let Some(comment) = inline_comment {
+        output.push(' ');
+        output.push_str(comment);
+    }
+    output.push('\n');
+    Ok(())
 }
 
 fn render_command_line(
