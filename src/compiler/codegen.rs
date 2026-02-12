@@ -45,9 +45,10 @@ impl<'a> Emitter<'a> {
             relocations: Vec::new(),
         }
     }
+
     pub fn emit_script_file(
         &mut self,
-        items: &Vec<TopLevelItem>,
+        items: &[TopLevelItem],
         emit_end_marker: bool,
     ) -> ParseResult<Vec<u8>> {
         // Collect jump table slots from all functions
@@ -110,8 +111,31 @@ impl<'a> Emitter<'a> {
                 .ok_or_else(|| {
                     codegen_error(format!("Undefined label '{}' for relocation", reloc.target))
                 })?;
-            let relative = (*target_offset as i32) - (reloc.offset as i32) - 4;
-            let offset_bytes = (relative as u32).to_le_bytes();
+
+            let target_offset_i32 = i32::try_from(*target_offset).map_err(|_| {
+                codegen_error(format!(
+                    "Relocation target '{}' offset {} does not fit in i32",
+                    reloc.target, target_offset
+                ))
+            })?;
+
+            let reloc_offset_i32 = i32::try_from(reloc.offset).map_err(|_| {
+                codegen_error(format!(
+                    "Relocation offset {} does not fit in i32 for target '{}'",
+                    reloc.offset, reloc.target
+                ))
+            })?;
+
+            let relative_i64 = i64::from(target_offset_i32) - i64::from(reloc_offset_i32) - 4;
+
+            let relative_i32 = i32::try_from(relative_i64).map_err(|_| {
+                codegen_error(format!(
+                    "Relative jump {} does not fit in i32 for relocation target '{}'",
+                    relative_i64, reloc.target
+                ))
+            })?;
+
+            let offset_bytes = u32::from_le_bytes(relative_i32.to_le_bytes()).to_le_bytes();
             self.output[reloc.offset..reloc.offset + 4].copy_from_slice(&offset_bytes);
         }
         while !self.output.len().is_multiple_of(4) {
@@ -146,7 +170,12 @@ impl<'a> Emitter<'a> {
                 self.emit_u16(opcode);
                 let param = if let Some(arg) = args.first() {
                     match arg {
-                        Arg::Value(v) => *v as u16,
+                        Arg::Value(v) => u16::try_from(*v).map_err(|_| {
+                            codegen_error(format!(
+                                "Movement '{}' parameter value {} does not fit in u16",
+                                name, v
+                            ))
+                        })?,
                         Arg::Pointer(p) => {
                             return Err(codegen_error(format!(
                                 "Movement '{}' expected a value argument, got pointer '{}'",
@@ -162,16 +191,16 @@ impl<'a> Emitter<'a> {
         }
         Ok(())
     }
-    pub fn emit_command(&mut self, name: &str, cmd: &Command, args: &Vec<Arg>) -> ParseResult<()> {
+    pub fn emit_command(&mut self, name: &str, cmd: &Command, args: &[Arg]) -> ParseResult<()> {
         let opcode = cmd.id.ok_or_else(|| {
             codegen_error(format!("Command '{}' has no opcode ID in database", name))
         })?;
         self.emit_u16(opcode);
 
         // Find the matching variant if it exists, otherwise use base params
-        let params = if let Some(first_arg) = args.first() {
-            if let Arg::Value(mode) = first_arg {
-                cmd.get_variant_params(*mode as u8)
+        let params = if let Some(Arg::Value(mode)) = args.first() {
+            if let Ok(mode_u8) = u8::try_from(*mode) {
+                cmd.get_variant_params(mode_u8)
             } else {
                 &cmd.params
             }
@@ -199,7 +228,13 @@ impl<'a> Emitter<'a> {
                         continue;
                     }
                     Arg::Value(v) => {
-                        self.emit_u32(*v as u32);
+                        let v_u32 = u32::try_from(*v).map_err(|_| {
+                            codegen_error(format!(
+                                "Command '{}' parameter 'relative_jump' value {} does not fit in u32",
+                                name, v
+                            ))
+                        })?;
+                        self.emit_u32(v_u32);
                         continue;
                     }
                 }
@@ -215,9 +250,33 @@ impl<'a> Emitter<'a> {
             };
             let param_size = param.param_type.size();
             match param_size {
-                1 => self.emit_u8(value as u8),
-                2 => self.emit_u16(value as u16),
-                4 => self.emit_u32(value as u32),
+                1 => {
+                    let v = u8::try_from(value).map_err(|_| {
+                        codegen_error(format!(
+                            "Command '{}' parameter '{}' value {} does not fit in u8",
+                            name, param.name, value
+                        ))
+                    })?;
+                    self.emit_u8(v);
+                }
+                2 => {
+                    let v = u16::try_from(value).map_err(|_| {
+                        codegen_error(format!(
+                            "Command '{}' parameter '{}' value {} does not fit in u16",
+                            name, param.name, value
+                        ))
+                    })?;
+                    self.emit_u16(v);
+                }
+                4 => {
+                    let v = u32::try_from(value).map_err(|_| {
+                        codegen_error(format!(
+                            "Command '{}' parameter '{}' value {} does not fit in u32",
+                            name, param.name, value
+                        ))
+                    })?;
+                    self.emit_u32(v);
+                }
                 _ => {
                     return Err(codegen_error(format!(
                         "Unsupported parameter size: {}",

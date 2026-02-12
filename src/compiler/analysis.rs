@@ -648,7 +648,7 @@ impl<'a> Analyzer<'a> {
 
     pub fn validate_expression(&self, expr: &Expression) -> ParseResult<()> {
         match &expr.node {
-            ExpressionKind::Number(_) => {}
+            ExpressionKind::Number(_) | ExpressionKind::Label(_) => {}
             ExpressionKind::Identifier(name) => {
                 if self.resolve_symbol(name).is_none() {
                     return Err(analysis_error(
@@ -667,7 +667,6 @@ impl<'a> Analyzer<'a> {
             ExpressionKind::Call { function, args } => {
                 self.validate_autovar_call(function, args, &expr.span)?;
             }
-            ExpressionKind::Label(_) => {}
         }
         Ok(())
     }

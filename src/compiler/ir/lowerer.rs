@@ -124,29 +124,25 @@ impl<'a> Lowerer<'a> {
                 elseblock,
             } => {
                 let label_end = self.new_label("end_if");
-                let label_else = if elseblock.is_some() {
-                    Some(self.new_label("else"))
-                } else {
-                    None
-                };
+                let label_else = elseblock.as_ref().map(|_| self.new_label("else"));
                 let jump_target = label_else.as_ref().unwrap_or(&label_end);
+
                 self.lower_condition(condition, jump_target)?;
                 for s in body {
                     self.lower_statement_with_depth(s, macro_depth)?;
                 }
-                if let Some(else_b) = elseblock {
+
+                if let (Some(else_b), Some(label_else)) = (elseblock, label_else) {
                     self.output.push(IrOpcode::Command {
                         name: "Jump".to_string(),
                         args: vec![Arg::Pointer(label_end.clone())],
                     });
-                    // label_else is guaranteed Some when elseblock is Some (set on line 138-141)
-                    self.output.push(IrOpcode::Label(
-                        label_else.expect("label_else is Some when elseblock is Some"),
-                    ));
+                    self.output.push(IrOpcode::Label(label_else));
                     for s in else_b {
                         self.lower_statement_with_depth(s, macro_depth)?;
                     }
                 }
+
                 self.output.push(IrOpcode::Label(label_end));
             }
             StatementKind::WhileStatement { condition, body } => {
@@ -170,35 +166,24 @@ impl<'a> Lowerer<'a> {
                 cases,
                 default,
             } => {
-                let effective_subject =
-                    if let ExpressionKind::Call { function, args } = &subject.node {
-                        self.lower_autovar_call(function, args)?;
-                        Expression {
-                            node: ExpressionKind::Number(VAR_RESULT),
-                            span: subject.span.clone(),
-                        }
-                    } else {
-                        subject.as_ref().clone()
-                    };
-
+                let effective_subject = self.lower_subject_to_effective_subject(subject)?;
                 self.lower_match_with_per_case_optimization(
                     &effective_subject,
                     cases,
-                    default,
+                    default.as_deref(),
                     macro_depth,
                 )?;
             }
             StatementKind::Break => {
-                if let Some(target) = self.break_targets.last() {
-                    self.output.push(IrOpcode::Command {
-                        name: "Jump".to_string(),
-                        args: vec![Arg::Pointer(target.clone())],
-                    });
-                } else {
+                let Some(target) = self.break_targets.last() else {
                     return Err(lowering_error(
                         "break statement outside of loop".to_string(),
                     ));
-                }
+                };
+                self.output.push(IrOpcode::Command {
+                    name: "Jump".to_string(),
+                    args: vec![Arg::Pointer(target.clone())],
+                });
             }
             StatementKind::ScriptCommand { command, args } => {
                 self.lower_command(command, args, macro_depth)?;
@@ -235,33 +220,40 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    fn lower_subject_to_effective_subject(
+        &mut self,
+        subject: &Expression,
+    ) -> ParseResult<Expression> {
+        if let ExpressionKind::Call { function, args } = &subject.node {
+            self.lower_autovar_call(function, args)?;
+            return Ok(Expression {
+                node: ExpressionKind::Number(VAR_RESULT),
+                span: subject.span.clone(),
+            });
+        }
+
+        Ok(subject.clone())
+    }
+
     fn can_optimize_case_to_gotoif(case: &crate::compiler::ast::MatchCase) -> Option<String> {
-        if case.values.len() != 1 {
-            return None;
+        if let [_value] = case.values.as_slice()
+            && let [stmt] = case.body.as_slice()
+            && let StatementKind::ScriptCommand { command, args } = &stmt.node
+            && command == "Call"
+            && let Some(first_arg) = args.first()
+            && let ExpressionKind::Identifier(name) | ExpressionKind::Label(name) = &first_arg.node
+        {
+            Some(name.clone())
+        } else {
+            None
         }
-        if case.body.len() != 1 {
-            return None;
-        }
-        if let StatementKind::ScriptCommand { command, args } = &case.body[0].node {
-            if command == "Call" {
-                if let Some(first_arg) = args.first() {
-                    match &first_arg.node {
-                        ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => {
-                            return Some(name.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        None
     }
 
     fn lower_match_with_per_case_optimization(
         &mut self,
         effective_subject: &Expression,
         cases: &[crate::compiler::ast::MatchCase],
-        default: &Option<Vec<Statement>>,
+        default: Option<&[Statement]>,
         macro_depth: usize,
     ) -> ParseResult<()> {
         let subject_val = self.resolve_arg(effective_subject)?.unwrap_value();
@@ -432,7 +424,6 @@ impl<'a> Lowerer<'a> {
             )));
         }
 
-        // Categorize parameters
         let mut required_indices: Vec<usize> = Vec::new();
         let mut optional_indices: Vec<usize> = Vec::new();
 
@@ -464,7 +455,6 @@ impl<'a> Lowerer<'a> {
             )));
         }
 
-        // Check if optional params come before required params (autovar pattern)
         let has_optional_before_required = optional_indices
             .iter()
             .any(|&opt_idx| required_indices.iter().any(|&req_idx| opt_idx < req_idx));
@@ -472,14 +462,12 @@ impl<'a> Lowerer<'a> {
         let mut result: Vec<Option<Expression>> = vec![None; param_count];
 
         if has_optional_before_required && args.len() < param_count {
-            // Autovar mode: map provided args to required params, fill optionals with defaults
             for (arg_idx, &param_idx) in required_indices.iter().enumerate() {
                 if arg_idx < args.len() {
                     result[param_idx] = Some(args[arg_idx].clone());
                 }
             }
 
-            // Remaining args go to optional params in order
             let args_for_optionals = args.len().saturating_sub(required_count);
             for (opt_num, &param_idx) in optional_indices.iter().enumerate() {
                 if opt_num < args_for_optionals {
@@ -490,13 +478,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
         } else {
-            // Normal mode: args map to params in order
             for (i, arg) in args.iter().enumerate() {
                 result[i] = Some(arg.clone());
             }
         }
 
-        // Fill in defaults for any remaining None values
         for (i, param) in params.iter().enumerate() {
             if result[i].is_none() {
                 if let Some(default_str) = &param.default {
@@ -507,7 +493,6 @@ impl<'a> Lowerer<'a> {
                     let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
                     result[i] = Some(expr);
                 } else if param.optional {
-                    // Optional param without default - stop here
                     break;
                 } else {
                     return Err(lowering_error(format!(
@@ -518,7 +503,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        Ok(result.into_iter().filter_map(|x| x).collect())
+        Ok(result.into_iter().flatten().collect())
     }
 
     fn expand_macro(
