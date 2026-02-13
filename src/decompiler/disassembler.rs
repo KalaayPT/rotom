@@ -639,7 +639,7 @@ impl<'a> Disassembler<'a> {
                 instructions.push(IrOpcode::Label(info.name.clone()));
             }
 
-            if pc + 2 > self.bytes.len() {
+            if pc + 2 > end || pc + 2 > self.bytes.len() {
                 break;
             }
 
