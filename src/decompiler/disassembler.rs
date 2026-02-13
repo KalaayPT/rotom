@@ -423,8 +423,8 @@ impl<'a> Disassembler<'a> {
                 }
 
                 if actual_end < chunk_end {
-                    let gap_actions = self.scan_gap_for_movements(actual_end, chunk_end)?;
-                    items.extend(gap_actions);
+                    let gap_items = self.recover_gap_items(actual_end, chunk_end)?;
+                    items.extend(gap_items);
                 }
             } else {
                 let (func_opt, actual_end) =
@@ -434,9 +434,51 @@ impl<'a> Disassembler<'a> {
                 }
 
                 if actual_end < chunk_end {
-                    let gap_actions = self.scan_gap_for_movements(actual_end, chunk_end)?;
-                    items.extend(gap_actions);
+                    let gap_items = self.recover_gap_items(actual_end, chunk_end)?;
+                    items.extend(gap_items);
                 }
+            }
+        }
+
+        Ok(items)
+    }
+
+    fn recover_gap_items(
+        &mut self,
+        gap_start: usize,
+        gap_end: usize,
+    ) -> DecompileResult<Vec<TopLevelItem>> {
+        if gap_start >= gap_end {
+            return Ok(Vec::new());
+        }
+
+        let mut items = self.scan_gap_for_movements(gap_start, gap_end)?;
+        let movement_covered_end = items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevelItem::Action(action) => action
+                    .instructions
+                    .last()
+                    .and_then(|last| {
+                        if let IrOpcode::Command { name, .. } = last {
+                            if name == "EndMovement" {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|_| ()),
+                TopLevelItem::Function(_) => None,
+            })
+            .count();
+
+        if movement_covered_end == 0 {
+            let (func_opt, _) = self.disassemble_function_with_span(gap_start, gap_end)?;
+            if let Some(func) = func_opt {
+                items.push(TopLevelItem::Function(func));
             }
         }
 
@@ -583,7 +625,7 @@ impl<'a> Disassembler<'a> {
                     break;
                 }
             } else {
-                pc += 2;
+                break;
             }
         }
 

@@ -628,12 +628,7 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
                         );
                     }
                     CompileOutcome::CompileError(msg) => {
-                        let short_msg = if msg.len() > 80 {
-                            format!("{}...", &msg[..80])
-                        } else {
-                            msg.clone()
-                        };
-                        println!("  {} - COMPILE ERROR: {}", name, short_msg);
+                        println!("  {} - COMPILE ERROR: {}", name, msg);
                     }
                     CompileOutcome::MissingExpectedBinary(path) => {
                         println!("  {} - MISSING BINARY: {:?}", name, path);
