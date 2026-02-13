@@ -330,27 +330,32 @@ fn compile_single_script(
     }
 }
 
+fn has_jump_table_end_marker(bytes: &[u8]) -> bool {
+    const MARKER: [u8; 2] = [0x13, 0xFD];
+    bytes
+        .chunks_exact(4)
+        .any(|chunk| chunk[0] == MARKER[0] && chunk[1] == MARKER[1])
+}
+
 fn round_trip_single_binary(
     binary_path: &Path,
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> CompileOutcome {
-    // 1. Read binary file
     let original_bytes = match std::fs::read(binary_path) {
         Ok(b) => b,
         Err(e) => return CompileOutcome::IoError(format!("{}", e)),
     };
     let expected_size = original_bytes.len();
     let expected_hash = sha256_hex(&original_bytes);
+    let emit_end_marker = has_jump_table_end_marker(&original_bytes);
 
-    // 2. Decompile to IR, then to source
     let ir = match rotom::decompile_to_ir(original_bytes, db) {
         Ok(ir) => ir,
         Err(e) => return CompileOutcome::CompileError(format!("Decompile failed: {:?}", e)),
     };
     let source = ir_to_source(&ir, db);
 
-    // 3. Compile source back to binary
     let actual_bytes = match &ir {
         ScriptOutput::Levelscript(_) => match compile_levelscript_json_to_bytes(&source) {
             Ok(b) => b,
@@ -362,7 +367,7 @@ fn round_trip_single_binary(
             }
         },
         ScriptOutput::Normal(_) => {
-            match compile_to_bytes_with_options(&source, db, constants, true) {
+            match compile_to_bytes_with_options(&source, db, constants, emit_end_marker) {
                 Ok(b) => b,
                 Err(e) => {
                     return CompileOutcome::CompileError(format!("Recompile failed: {:?}", e));

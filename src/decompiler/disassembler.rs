@@ -443,6 +443,46 @@ impl<'a> Disassembler<'a> {
         Ok(items)
     }
 
+    fn discover_targets_from_offset(&mut self, start: usize) {
+        let code_start = self.code_start();
+        let mut pending: Vec<usize> = Vec::new();
+        self.scan_function_for_targets(start, &mut pending);
+
+        let mut new_targets: Vec<usize> = pending
+            .iter()
+            .filter(|&&t| t >= code_start && t < self.bytes.len() && !self.symbols.contains_key(&t))
+            .copied()
+            .collect();
+
+        while !new_targets.is_empty() {
+            let mut next_round: Vec<usize> = Vec::new();
+
+            for target in new_targets {
+                if let std::collections::hash_map::Entry::Vacant(e) = self.symbols.entry(target) {
+                    if self.action_offsets.contains(&target) {
+                        continue;
+                    }
+                    e.insert(LabelInfo {
+                        kind: LabelKind::Internal,
+                        name: format!("_L{:04X}", target),
+                    });
+
+                    let mut local_targets: Vec<usize> = Vec::new();
+                    self.scan_function_for_targets(target, &mut local_targets);
+
+                    for t in local_targets {
+                        if t >= code_start && t < self.bytes.len() && !self.symbols.contains_key(&t)
+                        {
+                            next_round.push(t);
+                        }
+                    }
+                }
+            }
+
+            new_targets = next_round;
+        }
+    }
+
     fn recover_gap_items(
         &mut self,
         gap_start: usize,
@@ -476,6 +516,7 @@ impl<'a> Disassembler<'a> {
             .count();
 
         if movement_covered_end == 0 {
+            self.discover_targets_from_offset(gap_start);
             let (func_opt, _) = self.disassemble_function_with_span(gap_start, gap_end)?;
             if let Some(func) = func_opt {
                 items.push(TopLevelItem::Function(func));
