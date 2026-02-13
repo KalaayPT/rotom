@@ -30,9 +30,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
+use rotom::compile_levelscript_json_to_bytes;
 use rotom::compile_levelscript_to_bytes;
 use rotom::compile_to_bytes_with_options;
 use rotom::database::{ConstantDb, DatabaseV2};
+use rotom::decompiler::disassembler::ScriptOutput;
 use rotom::decompiler::ir_to_source;
 use rotom::transpiler::decomp::transpile as transpile_decomp;
 use rotom::transpiler::is_levelscript_source;
@@ -349,9 +351,24 @@ fn round_trip_single_binary(
     let source = ir_to_source(&ir, db);
 
     // 3. Compile source back to binary
-    let actual_bytes = match compile_to_bytes_with_options(&source, db, constants, true) {
-        Ok(b) => b,
-        Err(e) => return CompileOutcome::CompileError(format!("Recompile failed: {:?}", e)),
+    let actual_bytes = match &ir {
+        ScriptOutput::Levelscript(_) => match compile_levelscript_json_to_bytes(&source) {
+            Ok(b) => b,
+            Err(e) => {
+                return CompileOutcome::CompileError(format!(
+                    "Recompile failed (levelscript): {:?}",
+                    e
+                ));
+            }
+        },
+        ScriptOutput::Normal(_) => {
+            match compile_to_bytes_with_options(&source, db, constants, true) {
+                Ok(b) => b,
+                Err(e) => {
+                    return CompileOutcome::CompileError(format!("Recompile failed: {:?}", e));
+                }
+            }
+        }
     };
 
     // 4. Compare hashes
@@ -629,8 +646,52 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
             if failures.len() > 50 {
                 println!("  ... and {} more failures", failures.len() - 50);
             }
+
+            let mut compile_error_categories: HashMap<String, usize> = HashMap::new();
+            for (_, outcome) in &failures {
+                if let CompileOutcome::CompileError(msg) = outcome {
+                    let category = classify_compile_error(msg);
+                    *compile_error_categories.entry(category).or_default() += 1;
+                }
+            }
+
+            if !compile_error_categories.is_empty() {
+                let mut category_counts: Vec<_> = compile_error_categories.into_iter().collect();
+                category_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+                println!();
+                println!("Compile error categories:");
+                println!("------------------------------------------------------------");
+                for (category, count) in category_counts.iter().take(20) {
+                    println!("  {:>4}  {}", count, category);
+                }
+                if category_counts.len() > 20 {
+                    println!("  ... and {} more categories", category_counts.len() - 20);
+                }
+            }
         }
     }
+}
+
+fn classify_compile_error(msg: &str) -> String {
+    let normalized = msg.trim();
+
+    if normalized.is_empty() {
+        return "empty".to_string();
+    }
+
+    if let Some(idx) = normalized.find(':') {
+        let head = normalized[..idx].trim();
+        if !head.is_empty() {
+            return head.to_string();
+        }
+    }
+
+    normalized
+        .split_whitespace()
+        .take(6)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
