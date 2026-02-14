@@ -319,7 +319,8 @@ impl<'a> Disassembler<'a> {
                         }
                     }
 
-                    let is_terminator = matches!(name.as_str(), "End" | "Return");
+                    let is_terminator =
+                        Self::is_hard_terminator_name(name) || Self::is_soft_terminator_name(name);
                     pc += 2 + cmd_size;
 
                     if is_terminator {
@@ -384,7 +385,7 @@ impl<'a> Disassembler<'a> {
                     self.action_offsets.insert(action_offset);
                 }
 
-                let is_hard_terminator = name.as_str() == "End";
+                let is_hard_terminator = Self::is_hard_terminator_name(name);
 
                 pc += 2 + cmd_size;
 
@@ -501,7 +502,7 @@ impl<'a> Disassembler<'a> {
                     .last()
                     .and_then(|last| {
                         if let IrOpcode::Command { name, .. } = last {
-                            if name == "EndMovement" {
+                            if Self::is_end_movement_name(name) {
                                 Some(())
                             } else {
                                 None
@@ -648,8 +649,8 @@ impl<'a> Disassembler<'a> {
             if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
                 let (args, bytes_consumed) = self.decode_command_args(pc + 2, cmd)?;
 
-                let is_hard_terminator = name.as_str() == "End";
-                let is_soft_terminator = name.as_str() == "Return";
+                let is_hard_terminator = Self::is_hard_terminator_name(name);
+                let is_soft_terminator = Self::is_soft_terminator_name(name);
 
                 instructions.push(IrOpcode::Command {
                     name: name.clone(),
@@ -903,6 +904,20 @@ impl<'a> Disassembler<'a> {
             name,
             "ApplyMovement" | "ApplyMovementEx" | "LockForMovement"
         )
+    }
+
+    fn is_hard_terminator_name(name: &str) -> bool {
+        name.eq_ignore_ascii_case("end")
+    }
+
+    fn is_soft_terminator_name(name: &str) -> bool {
+        name.eq_ignore_ascii_case("return")
+    }
+
+    fn is_end_movement_name(name: &str) -> bool {
+        name.eq_ignore_ascii_case("EndMovement")
+            || name.eq_ignore_ascii_case("end_movement")
+            || name.eq_ignore_ascii_case("step_end")
     }
 
     fn extract_jump_target(&self, pc: usize, cmd: &Command) -> Option<usize> {
