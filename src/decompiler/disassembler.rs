@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::compiler::ast::FunctionHeader;
 use crate::compiler::ir::{Arg, IrAction, IrFunction, IrOpcode, TopLevelItem};
-use crate::database::{Command, DatabaseV2};
+use crate::database::{Command, DatabaseV2, normalize_command_name};
 
 use super::decomp_error::{DecompileResult, invalid_format};
 use super::levelscript::LevelScript;
@@ -896,13 +896,14 @@ impl<'a> Disassembler<'a> {
     }
 
     fn is_jump_command(&self, name: &str) -> bool {
-        matches!(name, "GoTo" | "GoToIf" | "Call" | "CallIf" | "Jump")
+        let key = normalize_command_name(name);
+        key.contains("goto") || key.contains("jump") || key.starts_with("call")
     }
 
     fn is_action_reference(&self, name: &str) -> bool {
         matches!(
-            name,
-            "ApplyMovement" | "ApplyMovementEx" | "LockForMovement"
+            normalize_command_name(name).as_str(),
+            "applymovement" | "applymovementex" | "lockformovement"
         )
     }
 

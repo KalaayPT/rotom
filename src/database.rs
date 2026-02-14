@@ -12,6 +12,10 @@ use crate::compiler::ParseResult;
 use crate::compiler::parse_error::{CompileError, database_error};
 use uxie::SymbolTable;
 
+pub fn normalize_command_name(name: &str) -> String {
+    name.replace('_', "").to_ascii_lowercase()
+}
+
 // ============================================================================
 // Hardcoded Enums (fixed across all games)
 // ============================================================================
@@ -703,6 +707,13 @@ mod tests {
         assert_eq!(ParamType::U32.size(), 4);
         assert_eq!(ParamType::Label.size(), 4);
         assert_eq!(ParamType::Var.size(), 2);
+    }
+
+    #[test]
+    fn test_normalize_command_name() {
+        assert_eq!(normalize_command_name("GoToIf"), "gotoif");
+        assert_eq!(normalize_command_name("goto_if"), "gotoif");
+        assert_eq!(normalize_command_name("APPLY_MOVEMENT"), "applymovement");
     }
 
     #[test]
