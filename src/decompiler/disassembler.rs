@@ -517,10 +517,20 @@ impl<'a> Disassembler<'a> {
             .count();
 
         if movement_covered_end == 0 {
-            self.discover_targets_from_offset(gap_start);
-            let (func_opt, _) = self.disassemble_function_with_span(gap_start, gap_end)?;
-            if let Some(func) = func_opt {
-                items.push(TopLevelItem::Function(func));
+            let gap_size = gap_end - gap_start;
+            let is_small_zero_padding =
+                gap_size < 4 && self.bytes[gap_start..gap_end].iter().all(|&b| b == 0);
+            if !is_small_zero_padding {
+                self.discover_targets_from_offset(gap_start);
+                let (func_opt, actual_end) =
+                    self.disassemble_function_with_span(gap_start, gap_end)?;
+                if let Some(func) = func_opt {
+                    items.push(TopLevelItem::Function(func));
+                }
+                if actual_end > gap_start && actual_end < gap_end {
+                    let remaining = self.recover_gap_items(actual_end, gap_end)?;
+                    items.extend(remaining);
+                }
             }
         }
 
@@ -580,8 +590,9 @@ impl<'a> Disassembler<'a> {
             return None;
         }
 
+        let aligned_start = (start + 3) & !3;
         let search_end = end.min(self.bytes.len() - 3);
-        for pos in (start..search_end).step_by(4) {
+        for pos in (aligned_start..search_end).step_by(4) {
             if pos + 4 <= self.bytes.len() {
                 let window = &self.bytes[pos..pos + 4];
                 if window == END_MOVEMENT_PATTERN {
@@ -981,8 +992,44 @@ impl<'a> Disassembler<'a> {
                 });
                 !has_code_between
             }
-            None => false,
+            None => {
+                let has_code_label_ahead = self.symbols.iter().any(|(&off, info)| {
+                    off >= pc && off < end && !matches!(info.kind, LabelKind::Action { .. })
+                });
+                if has_code_label_ahead {
+                    return false;
+                }
+                let aligned_pc = (pc + 3) & !3;
+                self.has_movement_sequence_at(aligned_pc, end)
+            }
         }
+    }
+
+    fn has_movement_sequence_at(&self, start: usize, end: usize) -> bool {
+        if start + 4 > self.bytes.len() || start >= end {
+            return false;
+        }
+
+        let scan_limit = end.min(self.bytes.len());
+        let mut pos = start;
+        let mut count = 0;
+
+        while pos + 4 <= scan_limit {
+            let opcode = u16::from_le_bytes([self.bytes[pos], self.bytes[pos + 1]]);
+
+            if opcode == END_MOVEMENT_OPCODE {
+                return count > 0;
+            }
+
+            if self.db.get_movement_by_id(opcode).is_none() {
+                return false;
+            }
+
+            count += 1;
+            pos += 4;
+        }
+
+        false
     }
 }
 
