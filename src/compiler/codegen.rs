@@ -7,7 +7,7 @@ use crate::{
         parse_error::codegen_error,
         parser::JUMP_TABLE_END_MARKER,
     },
-    database::{Command, DatabaseV2},
+    database::{Command, DatabaseV2, ParamType},
 };
 
 pub struct Emitter<'a> {
@@ -228,12 +228,8 @@ impl<'a> Emitter<'a> {
                         continue;
                     }
                     Arg::Value(v) => {
-                        let v_u32 = u32::try_from(*v).map_err(|_| {
-                            codegen_error(format!(
-                                "Command '{}' parameter 'relative_jump' value {} does not fit in u32",
-                                name, v
-                            ))
-                        })?;
+                        // U32 fields may appear as signed i32 literals in decompiled output.
+                        let v_u32 = *v as u32;
                         self.emit_u32(v_u32);
                         continue;
                     }
@@ -269,12 +265,17 @@ impl<'a> Emitter<'a> {
                     self.emit_u16(v);
                 }
                 4 => {
-                    let v = u32::try_from(value).map_err(|_| {
-                        codegen_error(format!(
-                            "Command '{}' parameter '{}' value {} does not fit in u32",
-                            name, param.name, value
-                        ))
-                    })?;
+                    let v = if param.param_type == ParamType::U32 {
+                        // U32 fields may appear as signed i32 literals in decompiled output.
+                        value as u32
+                    } else {
+                        u32::try_from(value).map_err(|_| {
+                            codegen_error(format!(
+                                "Command '{}' parameter '{}' value {} does not fit in u32",
+                                name, param.name, value
+                            ))
+                        })?
+                    };
                     self.emit_u32(v);
                 }
                 _ => {
