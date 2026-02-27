@@ -127,7 +127,131 @@ impl<'a> Disassembler<'a> {
     fn disassemble_normal_script(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
         self.parse_jump_table()?;
         self.discover_boundaries()?;
-        self.disassemble_chunks()
+        self.discover_gap_targets()?;
+        let items = self.disassemble_chunks()?;
+        self.validate_pointer_labels(&items)?;
+        Ok(items)
+    }
+
+    fn discover_gap_targets(&mut self) -> DecompileResult<()> {
+        let code_start = self.code_start();
+
+        loop {
+            let symbols_before = self.symbols.len();
+            let actions_before = self.action_offsets.len();
+
+            let mut all_offsets: BTreeSet<usize> = self.symbols.keys().copied().collect();
+            all_offsets.insert(code_start);
+            all_offsets.insert(self.bytes.len());
+            let offsets: Vec<usize> = all_offsets.into_iter().collect();
+
+            for i in 0..offsets.len().saturating_sub(1) {
+                let gap_start = offsets[i];
+                let gap_end = offsets[i + 1];
+
+                if gap_start < code_start || gap_start >= gap_end {
+                    continue;
+                }
+
+                let gap_size = gap_end - gap_start;
+                let is_small_zero_padding =
+                    gap_size < 4 && self.bytes[gap_start..gap_end].iter().all(|&b| b == 0);
+                if is_small_zero_padding {
+                    continue;
+                }
+
+                let aligned_gap_start = (gap_start + 3) & !3;
+                if self.has_movement_sequence_at(aligned_gap_start, gap_end) {
+                    continue;
+                }
+
+                let mut cursor = gap_start;
+                while cursor < gap_end {
+                    let stop = self.discover_targets_from_offset(cursor);
+                    if stop <= cursor || stop >= gap_end {
+                        break;
+                    }
+
+                    let aligned_stop = (stop + 3) & !3;
+                    if self.has_movement_sequence_at(aligned_stop, gap_end) {
+                        break;
+                    }
+
+                    cursor = stop;
+                }
+            }
+
+            if self.symbols.len() == symbols_before && self.action_offsets.len() == actions_before {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_pointer_labels(&self, items: &[TopLevelItem]) -> DecompileResult<()> {
+        let mut defined_labels: HashSet<String> = HashSet::new();
+        let mut unresolved_labels: HashSet<String> = HashSet::new();
+
+        for item in items {
+            match item {
+                TopLevelItem::Function(function) => {
+                    for header in &function.headers {
+                        defined_labels.insert(header.name.clone());
+                    }
+                    for instruction in &function.instructions {
+                        if let IrOpcode::Label(name) = instruction {
+                            defined_labels.insert(name.clone());
+                        }
+                    }
+                }
+                TopLevelItem::Action(action) => {
+                    defined_labels.insert(action.name.clone());
+                }
+            }
+        }
+
+        for item in items {
+            match item {
+                TopLevelItem::Function(function) => {
+                    for instruction in &function.instructions {
+                        if let IrOpcode::Command { args, .. } = instruction {
+                            for arg in args {
+                                if let Arg::Pointer(name) = arg
+                                    && !defined_labels.contains(name)
+                                {
+                                    unresolved_labels.insert(name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                TopLevelItem::Action(action) => {
+                    for instruction in &action.instructions {
+                        if let IrOpcode::Command { args, .. } = instruction {
+                            for arg in args {
+                                if let Arg::Pointer(name) = arg
+                                    && !defined_labels.contains(name)
+                                {
+                                    unresolved_labels.insert(name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if unresolved_labels.is_empty() {
+            return Ok(());
+        }
+
+        let mut unresolved: Vec<String> = unresolved_labels.into_iter().collect();
+        unresolved.sort();
+        Err(invalid_format(format!(
+            "Disassembly emitted unresolved label reference(s): {}",
+            unresolved.join(", ")
+        )))
     }
 
     fn find_jump_table_boundary(&self) -> usize {
@@ -270,21 +394,10 @@ impl<'a> Disassembler<'a> {
             }
         }
 
-        for &offset in &self.action_offsets.clone() {
-            if !self.symbols.contains_key(&offset) {
-                let id = self.action_counter;
-                self.action_counter += 1;
-                self.symbols.insert(
-                    offset,
-                    LabelInfo {
-                        kind: LabelKind::Action { id },
-                        name: format!("action_{}", id),
-                    },
-                );
-            }
-        }
+        self.insert_missing_action_symbols();
 
         self.discover_remaining_targets()?;
+        self.insert_missing_action_symbols();
 
         Ok(())
     }
@@ -362,7 +475,7 @@ impl<'a> Disassembler<'a> {
         Ok(())
     }
 
-    fn scan_function_for_targets(&mut self, start: usize, targets: &mut Vec<usize>) {
+    fn scan_function_for_targets(&mut self, start: usize, targets: &mut Vec<usize>) -> usize {
         let mut pc = start;
 
         while pc + 2 <= self.bytes.len() {
@@ -396,6 +509,8 @@ impl<'a> Disassembler<'a> {
                 break;
             }
         }
+
+        pc
     }
 
     fn disassemble_chunks(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
@@ -444,10 +559,10 @@ impl<'a> Disassembler<'a> {
         Ok(items)
     }
 
-    fn discover_targets_from_offset(&mut self, start: usize) {
+    fn discover_targets_from_offset(&mut self, start: usize) -> usize {
         let code_start = self.code_start();
         let mut pending: Vec<usize> = Vec::new();
-        self.scan_function_for_targets(start, &mut pending);
+        let stop_pc = self.scan_function_for_targets(start, &mut pending);
 
         let mut new_targets: Vec<usize> = pending
             .iter()
@@ -481,6 +596,27 @@ impl<'a> Disassembler<'a> {
             }
 
             new_targets = next_round;
+        }
+
+        self.insert_missing_action_symbols();
+        stop_pc
+    }
+
+    fn insert_missing_action_symbols(&mut self) {
+        for &offset in &self.action_offsets.clone() {
+            if self.symbols.contains_key(&offset) {
+                continue;
+            }
+
+            let id = self.action_counter;
+            self.action_counter += 1;
+            self.symbols.insert(
+                offset,
+                LabelInfo {
+                    kind: LabelKind::Action { id },
+                    name: format!("action_{}", id),
+                },
+            );
         }
     }
 
@@ -556,18 +692,19 @@ impl<'a> Disassembler<'a> {
                 };
 
                 if action_start <= term_pos {
-                    let id = self.action_counter;
-                    self.action_counter += 1;
-                    let name = format!("action_{}", id);
-
                     self.action_offsets.insert(action_start);
-                    self.symbols.insert(
-                        action_start,
-                        LabelInfo {
-                            kind: LabelKind::Action { id },
-                            name: name.clone(),
-                        },
-                    );
+
+                    if !self.symbols.contains_key(&action_start) {
+                        let id = self.action_counter;
+                        self.action_counter += 1;
+                        self.symbols.insert(
+                            action_start,
+                            LabelInfo {
+                                kind: LabelKind::Action { id },
+                                name: format!("action_{}", id),
+                            },
+                        );
+                    }
 
                     if let Some(action) = self.disassemble_action(action_start, movement_end)? {
                         items.push(TopLevelItem::Action(action));
@@ -793,11 +930,23 @@ impl<'a> Disassembler<'a> {
                             self.bytes[offset + 3],
                         ]);
                         let target = (offset as i32 + rel + 4) as usize;
+                        let target_is_action = self.action_offsets.contains(&target);
+                        let target_is_script_boundary = if target + 2 <= self.bytes.len() {
+                            let target_opcode =
+                                u16::from_le_bytes([self.bytes[target], self.bytes[target + 1]]);
+                            self.db.get_script_cmd_by_id(target_opcode).is_some()
+                        } else {
+                            false
+                        };
 
-                        if let Some(info) = self.symbols.get(&target) {
+                        if let Some(info) = self.symbols.get(&target)
+                            && (target_is_action || target_is_script_boundary)
+                        {
                             binary_args.push(Arg::Pointer(info.name.clone()));
                         } else {
-                            binary_args.push(Arg::Pointer(format!("_L{:04X}", target)));
+                            return Err(invalid_format(format!(
+                                "Unresolved relative jump target 0x{target:04X} (rel {rel}) at offset 0x{offset:04X}"
+                            )));
                         }
                         offset += size;
                         continue;
