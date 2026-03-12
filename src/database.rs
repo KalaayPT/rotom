@@ -291,6 +291,15 @@ impl DatabaseV2 {
             return Ok(cmd);
         }
 
+        if let Some(id_str) = name.strip_prefix("Dummy")
+            && let Ok(id) = i32::from_str_radix(id_str, 16)
+            && let Some((_, cmd)) = self.commands.iter().find(|(_, cmd)| {
+                cmd.id == Some(id as u16) && cmd.cmd_type == CommandType::ScriptCmd
+            })
+        {
+            return Ok(cmd);
+        }
+
         Err(database_error(format!(
             "Command '{}' not found in database",
             name
