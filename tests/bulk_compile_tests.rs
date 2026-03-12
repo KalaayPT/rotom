@@ -81,6 +81,7 @@ const DEFAULT_POKEPLATINUM_ROOT: &str = "~/dev/pokeplatinum";
 const DEFAULT_POKEHEARTGOLD_ROOT: &str = "~/dev/pokeheartgold";
 const DEFAULT_DSPRE_PLATINUM_ROOT: &str = "~/Desktop/pt_DSPRE_contents";
 const DEFAULT_DSPRE_HEARTGOLD_ROOT: &str = "~/Desktop/hg_DSPRE_contents";
+const DSPRE_PLATINUM_KNOWN_PADDING_MISMATCH_ID: &str = "0000";
 
 fn get_pokeplatinum_root() -> PathBuf {
     std::env::var("POKEPLATINUM_ROOT")
@@ -838,18 +839,17 @@ fn run_levelscripts_test(verbose: bool) -> BulkCompileResult {
     result
 }
 
-fn percent(numerator: usize, denominator: usize) -> f64 {
+fn percent(numerator: u64, denominator: u64) -> f64 {
     if denominator == 0 {
         return 0.0;
     }
 
-    100.0 * numerator as f64 / denominator as f64
+    100.0 * to_f64_count(numerator) / to_f64_count(denominator)
 }
 
 fn assert_100_percent_match(result: &BulkCompileResult, script_type: &str) {
     let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
     let total = result.stats.total as u64;
-    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
 
     assert_eq!(
         matches,
@@ -911,8 +911,8 @@ fn run_dspre_platinum_round_trip_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_dspre_platinum_round_trip() {
     let result = run_dspre_platinum_round_trip_test(false);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
     let rate = percent(matches, total);
     assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
@@ -921,8 +921,8 @@ fn test_dspre_platinum_round_trip() {
 #[ignore]
 fn test_dspre_platinum_round_trip_verbose() {
     let result = run_dspre_platinum_round_trip_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
     let rate = percent(matches, total);
     assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
@@ -947,8 +947,8 @@ fn run_dspre_platinum_compile_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_dspre_platinum_compile() {
     let result = run_dspre_platinum_compile_test(false);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
     let rate = percent(matches, total);
     assert!(
         rate >= 100.0,
@@ -961,8 +961,8 @@ fn test_dspre_platinum_compile() {
 #[ignore]
 fn test_dspre_platinum_compile_verbose() {
     let result = run_dspre_platinum_compile_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
     let rate = percent(matches, total);
     assert!(
         rate >= 100.0,
@@ -994,8 +994,8 @@ fn run_dspre_heartgold_round_trip_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_dspre_heartgold_round_trip() {
     let result = run_dspre_heartgold_round_trip_test(false);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
     let rate = percent(matches, total);
     assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
@@ -1004,8 +1004,8 @@ fn test_dspre_heartgold_round_trip() {
 #[ignore]
 fn test_dspre_heartgold_round_trip_verbose() {
     let result = run_dspre_heartgold_round_trip_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
     let rate = percent(matches, total);
     assert!(rate >= 100.0, "Expected 100% match rate, got {:.1}%", rate);
 }
@@ -1030,8 +1030,8 @@ fn run_dspre_heartgold_compile_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_dspre_heartgold_compile() {
     let result = run_dspre_heartgold_compile_test(false);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
     let rate = percent(matches, total);
     assert!(
         rate >= 100.0,
@@ -1044,8 +1044,8 @@ fn test_dspre_heartgold_compile() {
 #[ignore]
 fn test_dspre_heartgold_compile_verbose() {
     let result = run_dspre_heartgold_compile_test(true);
-    let matches = result.stats.matches.load(Ordering::Relaxed);
-    let total = result.stats.total;
+    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
+    let total = result.stats.total as u64;
     let rate = percent(matches, total);
     assert!(
         rate >= 100.0,
@@ -1095,10 +1095,8 @@ fn test_clone_map_events_preserves_base_when_script_has_no_map_events() {
 
 #[test]
 fn test_clone_map_events_does_not_mutate_base_constants() {
-    let mut base_constants = ConstantDb::new();
-    base_constants
-        .constants
-        .insert("TEST_CONST".to_string(), 123);
+    let (_, base_constants) = load_platinum_db_and_constants();
+    let original_len = base_constants.len();
 
     let script_path = Path::new("scripts_test_map.s");
     let decomp_root = Path::new(".");
@@ -1106,13 +1104,13 @@ fn test_clone_map_events_does_not_mutate_base_constants() {
     let cloned_constants = clone_map_events(&base_constants, decomp_root, script_path);
 
     assert_eq!(
-        base_constants.get("TEST_CONST"),
-        Some(123),
+        base_constants.len(),
+        original_len,
         "base constants should remain unchanged after cloning + map event loading"
     );
     assert_eq!(
-        cloned_constants.get("TEST_CONST"),
-        Some(123),
+        cloned_constants.get("TRUE"),
+        base_constants.get("TRUE"),
         "cloned constants should retain base constants even when no map events are loaded"
     );
 }
@@ -1225,7 +1223,6 @@ fn test_bulk_compile_heartgold_scripts() {
     // Just report stats, don't fail - no reference binaries exist
     let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
     let total = result.stats.total as u64;
-    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     println!(
         "HeartGold decomp compile: {}/{} ({:.1}%)",
         matches,
@@ -1240,7 +1237,6 @@ fn test_bulk_compile_heartgold_scripts_verbose() {
     let result = run_heartgold_scripts_test(true);
     let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
     let total = result.stats.total as u64;
-    let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
     println!(
         "HeartGold decomp compile: {}/{} ({:.1}%)",
         matches,
