@@ -1531,4 +1531,171 @@ function Test #1:
             result.err()
         );
     }
+
+    #[test]
+    fn test_nested_labels_in_if_are_registered() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r"
+function Test #1:
+    if 0x8000 == 1 then
+        Jump IfBranch
+    else
+        Jump ElseBranch
+    endif
+IfBranch:
+    End
+ElseBranch:
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "labels defined for if/else branches should be registered: {:?}",
+            result.err()
+        );
+        assert!(analyzer.symbols.resolve("IfBranch").is_some());
+        assert!(analyzer.symbols.resolve("ElseBranch").is_some());
+    }
+
+    #[test]
+    fn test_nested_labels_in_while_are_registered() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r"
+function Test #1:
+    while 0x8000 != 0 do
+        Jump LoopExit
+    endwhile
+LoopExit:
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "labels referenced from while bodies should be registered: {:?}",
+            result.err()
+        );
+        assert!(analyzer.symbols.resolve("LoopExit").is_some());
+    }
+
+    #[test]
+    fn test_nested_labels_in_match_are_registered() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r"
+function Test #1:
+    match 0x8000 with
+        case 0:
+            Jump CaseZero
+        else:
+            Jump CaseDefault
+    endmatch
+CaseZero:
+    End
+CaseDefault:
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "labels referenced from match branches should be registered: {:?}",
+            result.err()
+        );
+        assert!(analyzer.symbols.resolve("CaseZero").is_some());
+        assert!(analyzer.symbols.resolve("CaseDefault").is_some());
+    }
+
+    #[test]
+    fn test_autovar_call_rejects_explicit_result_argument() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r"
+function TestFunc #1:
+    if ShowYesNoMenu(0x800C) then
+        Message 1
+    endif
+    End
+";
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_err(),
+            "explicit autovar destination should be rejected in conditions"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(err.contains("do not specify the result variable"));
+    }
+
+    #[test]
+    fn test_match_with_named_variable_alias_is_valid() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+        use crate::database::DatabaseV2;
+        use std::path::Path;
+
+        let source = r"
+alias 0x8000 as VAR_TEST
+
+function Test #1:
+    match VAR_TEST with
+        case 0:
+            End
+    endmatch
+";
+        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "named variable aliases should be accepted as match subjects: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_validate_number_for_type_rejects_negative_u32_like_params() {
+        let result =
+            Analyzer::validate_number_for_type(-1, &ParamType::Label, &(0..1), "Jump", "target", 0);
+        assert!(
+            result.is_err(),
+            "negative values must not fit u32-like params"
+        );
+        let err_msg = format!("{:?}", result.err());
+        assert!(
+            err_msg.contains("out of range"),
+            "error should mention out of range: {}",
+            err_msg
+        );
+    }
 }
