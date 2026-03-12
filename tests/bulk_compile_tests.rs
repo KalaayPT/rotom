@@ -77,11 +77,10 @@ pub struct BulkCompileResult {
     pub outcomes: Mutex<HashMap<String, CompileOutcome>>,
 }
 
-const DEFAULT_POKEPLATINUM_ROOT: &str = "C:/dev/pokeplatinum";
-const DEFAULT_POKEHEARTGOLD_ROOT: &str = "C:/dev/pokeheartgold";
-const DEFAULT_DSPRE_PLATINUM_ROOT: &str = "C:/Users/micro/Desktop/pt_DSPRE_contents";
-const DEFAULT_DSPRE_HEARTGOLD_ROOT: &str = "C:/Users/micro/Desktop/hg_DSPRE_contents";
-const DSPRE_PLATINUM_KNOWN_PADDING_MISMATCH_ID: &str = "0620";
+const DEFAULT_POKEPLATINUM_ROOT: &str = "~/dev/pokeplatinum";
+const DEFAULT_POKEHEARTGOLD_ROOT: &str = "~/dev/pokeheartgold";
+const DEFAULT_DSPRE_PLATINUM_ROOT: &str = "~/Desktop/pt_DSPRE_contents";
+const DEFAULT_DSPRE_HEARTGOLD_ROOT: &str = "~/Desktop/hg_DSPRE_contents";
 
 fn get_pokeplatinum_root() -> PathBuf {
     std::env::var("POKEPLATINUM_ROOT")

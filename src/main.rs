@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser as ClapParser, Subcommand};
 
@@ -96,6 +96,46 @@ fn main() {
     }
 }
 
+fn load_map_event_constants_for_input(
+    constants: &mut ConstantDb,
+    decomp_root: &Path,
+    input: &Path,
+) -> Result<usize, CompileError> {
+    if input.is_file() {
+        return constants.load_map_events(decomp_root, input);
+    }
+
+    if !input.is_dir() {
+        return Ok(0);
+    }
+
+    let mut total = 0;
+    for entry in std::fs::read_dir(input)? {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let is_supported_script =
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("rotom")
+                        || ext.eq_ignore_ascii_case("script")
+                        || ext.eq_ignore_ascii_case("s")
+                        || ext.eq_ignore_ascii_case("json")
+                });
+
+        if !is_supported_script {
+            continue;
+        }
+
+        total += constants.load_map_events(decomp_root, &path)?;
+    }
+
+    Ok(total)
+}
+
 fn compile(
     db_path: &PathBuf,
     input: &PathBuf,
@@ -152,12 +192,9 @@ fn compile(
             println!("Loaded {} constants from decomp project", decomp_count);
         }
 
-        // Load per-map event constants based on script filename (only for single file)
-        if input.is_file() {
-            let map_count = constants.load_map_events(decomp, input)?;
-            if !json && map_count > 0 {
-                println!("Loaded {} map-specific event constants", map_count);
-            }
+        let map_count = load_map_event_constants_for_input(&mut constants, decomp, input)?;
+        if !json && map_count > 0 {
+            println!("Loaded {} map-specific event constants", map_count);
         }
     }
 
