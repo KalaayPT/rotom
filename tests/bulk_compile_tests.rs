@@ -270,6 +270,16 @@ fn load_heartgold_db_and_constants() -> (DatabaseV2, ConstantDb) {
     (db, constants)
 }
 
+fn clone_map_events(
+    base_constants: &ConstantDb,
+    decomp_root: &Path,
+    script_path: &Path,
+) -> ConstantDb {
+    let mut constants = base_constants.clone();
+    let _ = constants.load_map_events(decomp_root, script_path);
+    constants
+}
+
 fn compile_single_script(
     script_path: &Path,
     db: &DatabaseV2,
@@ -287,9 +297,8 @@ fn compile_single_script(
     };
     let expected_hash = sha256_hex(&expected_bytes);
 
-    let mut constants = base_constants.clone();
     let decomp_root = get_pokeplatinum_root();
-    let _ = constants.load_map_events(&decomp_root, script_path);
+    let constants = clone_map_events(base_constants, &decomp_root, script_path);
 
     let is_levelscript = is_levelscript_source(&source);
 
@@ -843,7 +852,8 @@ fn assert_100_percent_match(result: &BulkCompileResult, script_type: &str) {
     let rate = 100.0 * to_f64_count(matches) / to_f64_count(total);
 
     assert_eq!(
-        matches, total,
+        matches,
+        total,
         "{} bulk compile requires 100% hash matches. Got {}/{} ({:.1}%)",
         script_type,
         matches,
@@ -1063,6 +1073,50 @@ fn load_heartgold_decomp_db_and_constants() -> (DatabaseV2, ConstantDb) {
     (db, constants)
 }
 
+#[test]
+fn test_clone_map_events_preserves_base_when_script_has_no_map_events() {
+    let base_constants = ConstantDb::new();
+    let script_path = Path::new("not_a_map_script.s");
+    let decomp_root = Path::new(".");
+
+    let cloned_constants = clone_map_events(&base_constants, decomp_root, script_path);
+
+    assert_eq!(
+        base_constants.len(),
+        cloned_constants.len(),
+        "loading map events for non-map scripts should not mutate or expand the cloned constants"
+    );
+    assert_eq!(
+        base_constants.get("VAR_RESULT"),
+        cloned_constants.get("VAR_RESULT"),
+        "base and cloned constants should remain semantically identical for non-map scripts"
+    );
+}
+
+#[test]
+fn test_clone_map_events_does_not_mutate_base_constants() {
+    let mut base_constants = ConstantDb::new();
+    base_constants
+        .constants
+        .insert("TEST_CONST".to_string(), 123);
+
+    let script_path = Path::new("scripts_test_map.s");
+    let decomp_root = Path::new(".");
+
+    let cloned_constants = clone_map_events(&base_constants, decomp_root, script_path);
+
+    assert_eq!(
+        base_constants.get("TEST_CONST"),
+        Some(123),
+        "base constants should remain unchanged after cloning + map event loading"
+    );
+    assert_eq!(
+        cloned_constants.get("TEST_CONST"),
+        Some(123),
+        "cloned constants should retain base constants even when no map events are loaded"
+    );
+}
+
 fn compile_heartgold_single_script(
     script_path: &Path,
     db: &DatabaseV2,
@@ -1076,9 +1130,8 @@ fn compile_heartgold_single_script(
     // Check for levelscript
     let is_levelscript = is_levelscript_source(&source);
 
-    let mut constants = base_constants.clone();
     let decomp_root = get_pokeheartgold_root();
-    let _ = constants.load_map_events(&decomp_root, script_path);
+    let constants = clone_map_events(base_constants, &decomp_root, script_path);
 
     if is_levelscript {
         match compile_levelscript_to_bytes(&source, &constants) {

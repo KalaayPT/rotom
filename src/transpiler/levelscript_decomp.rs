@@ -151,6 +151,7 @@ pub fn transpile_levelscript(
 
             if trimmed == "InitScriptFrameTableEnd" {
                 in_frame_table = false;
+                continue;
             }
         }
 
