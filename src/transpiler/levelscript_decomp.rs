@@ -153,6 +153,15 @@ pub fn transpile_levelscript(
                 in_frame_table = false;
             }
         }
+
+        if trimmed == "InitScriptEnd" {
+            continue;
+        }
+
+        return Err(TranspileError {
+            message: format!("unrecognized levelscript line: '{}'", trimmed),
+            line: line_num,
+        });
     }
 
     Ok(LevelscriptTranspileResult {
@@ -506,5 +515,43 @@ InitScriptFrameTable:
         let result = transpile_levelscript(source, None).unwrap();
         assert_eq!(result.levelscript.entries.len(), 2);
         assert_eq!(result.extra_padding, 4);
+    }
+
+    #[test]
+    fn test_rejects_unknown_top_level_line() {
+        let source = r"
+    InitScriptEntry_OnTransition 1
+    InitScriptEntryEnd
+    TotallyUnknownDirective 7
+    InitScriptEnd
+";
+
+        let error = transpile_levelscript(source, None).unwrap_err();
+        assert_eq!(
+            error.message,
+            "unrecognized levelscript line: 'TotallyUnknownDirective 7'"
+        );
+        assert_eq!(error.line, 4);
+    }
+
+    #[test]
+    fn test_rejects_unknown_frame_table_line() {
+        let source = r"
+    InitScriptEntry_OnFrameTable FrameTable
+    InitScriptEntryEnd
+
+FrameTable:
+    UnknownFrameCommand 1, 2, 3
+    InitScriptFrameTableEnd
+
+    InitScriptEnd
+";
+
+        let error = transpile_levelscript(source, None).unwrap_err();
+        assert_eq!(
+            error.message,
+            "unrecognized levelscript line: 'UnknownFrameCommand 1, 2, 3'"
+        );
+        assert_eq!(error.line, 6);
     }
 }

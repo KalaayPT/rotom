@@ -138,7 +138,7 @@ pub fn compile_levelscript_to_bytes(
 }
 
 pub fn compile_levelscript_json_to_bytes(source: &str) -> Result<Vec<u8>, CompileError> {
-    let levelscript = LevelScript::from_json(source).map_err(|e| CompileError::Io {
+    let levelscript = LevelScript::from_json(source).map_err(|e| CompileError::Transpile {
         message: format!("Failed to parse levelscript JSON: {}", e),
     })?;
 

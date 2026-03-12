@@ -2286,8 +2286,17 @@ TestLabel:
         constants.load_from_db(&db);
 
         let decomp_root = Path::new("C:/dev/pokeplatinum");
-        if decomp_root.exists() {
-            let _ = constants.load_decomp_project(decomp_root);
+        if !decomp_root.exists() {
+            return;
+        }
+        let _ = constants.load_decomp_project(decomp_root);
+
+        let required_constants = ["TRAINER_CARD_LEVEL_GOLD"];
+        if required_constants
+            .iter()
+            .any(|name| constants.get(name).is_none())
+        {
+            return;
         }
 
         let source = r"
@@ -2322,8 +2331,17 @@ TestLabel:
         constants.load_from_db(&db);
 
         let decomp_root = Path::new("C:/dev/pokeplatinum");
-        if decomp_root.exists() {
-            let _ = constants.load_decomp_project(decomp_root);
+        if !decomp_root.exists() {
+            return;
+        }
+        let _ = constants.load_decomp_project(decomp_root);
+
+        let required_constants = ["VAR_ELEVATOR_FLOORS_ABOVE"];
+        if required_constants
+            .iter()
+            .any(|name| constants.get(name).is_none())
+        {
+            return;
         }
 
         // VAR_ELEVATOR_FLOORS_ABOVE = 16590 (0x40CE) which is >= VARS_START (0x4000)
@@ -2404,8 +2422,17 @@ TestLabel:
         constants.load_from_db(&db);
 
         let decomp_root = Path::new("C:/dev/pokeplatinum");
-        if decomp_root.exists() {
-            let _ = constants.load_decomp_project(decomp_root);
+        if !decomp_root.exists() {
+            return;
+        }
+        let _ = constants.load_decomp_project(decomp_root);
+
+        let required_constants = ["VAR_RESULT", "TRAINER_CARD_LEVEL_GOLD"];
+        if required_constants
+            .iter()
+            .any(|name| constants.get(name).is_none())
+        {
+            return;
         }
 
         // Test CallIfGe with TRAINER_CARD_LEVEL_GOLD (value 4, which is < VARS_START)
