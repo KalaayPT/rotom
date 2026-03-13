@@ -63,6 +63,9 @@ pub enum LevelScriptEntry {
 pub struct LevelScript {
     /// The trigger entries (`on_transition`, `on_load`, `on_resume`, `on_var_equals`)
     pub entries: Vec<LevelScriptEntry>,
+    /// Additional trailing zero padding beyond normal 4-byte alignment.
+    #[serde(default)]
+    pub padding: u32,
 }
 
 impl LevelScript {
@@ -98,13 +101,17 @@ impl LevelScript {
         let mut levelscript = LevelScript::new();
         let mut pc = 0;
         let mut frame_table_offset: Option<usize> = None;
+        let mut logical_end = 0usize;
 
         while pc < bytes.len() {
             let cmd = bytes[pc];
             pc += 1;
 
             match cmd {
-                cmd_ids::ENTRY_END => break,
+                cmd_ids::ENTRY_END => {
+                    logical_end = pc;
+                    break;
+                }
                 cmd_ids::ON_FRAME_TABLE => {
                     if pc + 4 > bytes.len() {
                         return Err("Levelscript: ON_FRAME_TABLE truncated".to_string());
@@ -117,6 +124,7 @@ impl LevelScript {
                     ]) as usize;
                     let absolute_offset = pc + 4 + relative_offset;
                     pc += 4;
+                    logical_end = pc;
                     frame_table_offset = Some(absolute_offset);
                 }
                 cmd_ids::ON_TRANSITION => {
@@ -124,18 +132,21 @@ impl LevelScript {
                     levelscript
                         .entries
                         .push(LevelScriptEntry::OnTransition { script_id });
+                    logical_end = pc;
                 }
                 cmd_ids::ON_RESUME => {
                     let script_id = parse_script_entry(bytes, &mut pc, "ON_RESUME")?;
                     levelscript
                         .entries
                         .push(LevelScriptEntry::OnResume { script_id });
+                    logical_end = pc;
                 }
                 cmd_ids::ON_LOAD => {
                     let script_id = parse_script_entry(bytes, &mut pc, "ON_LOAD")?;
                     levelscript
                         .entries
                         .push(LevelScriptEntry::OnLoad { script_id });
+                    logical_end = pc;
                 }
                 unknown => {
                     return Err(format!(
@@ -156,6 +167,7 @@ impl LevelScript {
                 let var = u16::from_le_bytes([bytes[ft_pc], bytes[ft_pc + 1]]);
 
                 if var == 0 {
+                    logical_end = ft_pc + 2;
                     break;
                 }
 
@@ -172,6 +184,19 @@ impl LevelScript {
                     value,
                     script_id,
                 });
+                logical_end = ft_pc;
+            }
+        }
+
+        if logical_end == 0 {
+            logical_end = bytes.len();
+        }
+
+        let aligned_end = (logical_end + 3) & !3;
+        if bytes.len() > aligned_end {
+            let extra = &bytes[aligned_end..];
+            if extra.iter().all(|&b| b == 0) {
+                levelscript.padding = (bytes.len() - aligned_end) as u32;
             }
         }
 
@@ -255,6 +280,8 @@ impl LevelScript {
         while bytes.len() % 4 != 0 {
             bytes.push(0);
         }
+
+        bytes.extend(std::iter::repeat_n(0, self.padding as usize));
 
         bytes
     }
@@ -376,5 +403,31 @@ mod tests {
 
         let bytes = ls.to_bytes();
         assert_eq!(bytes.len() % 4, 0);
+    }
+
+    #[test]
+    fn test_preserves_padding_beyond_normal_alignment() {
+        let bytes = vec![
+            cmd_ids::ON_RESUME,
+            0x4C,
+            0x26,
+            0x00,
+            0x00,
+            cmd_ids::ON_TRANSITION,
+            0x4A,
+            0x26,
+            0x00,
+            0x00,
+            cmd_ids::ENTRY_END,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+
+        let parsed = LevelScript::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.padding, 4);
+        assert_eq!(parsed.to_bytes(), bytes);
     }
 }
