@@ -16,8 +16,8 @@ pub use compiler::{
 };
 pub use database::{ConstantDb, DatabaseV2, GameFamily};
 pub use decompiler::{
-    DecompileError, DecompileResult, Disassembler, LevelScript, LevelScriptEntry, ScriptOutput,
-    ScriptType, disassemble_bytes, ir_to_source,
+    DecompileError, DecompileResult, Disassembler, LevelScript, LevelScriptHeaderEntry,
+    LevelScriptVarConditionEntry, ScriptOutput, ScriptType, disassemble_bytes, ir_to_source,
 };
 
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};

@@ -1,5 +1,7 @@
 use crate::database::ConstantDb;
-use crate::decompiler::levelscript::{LevelScript, LevelScriptEntry};
+use crate::decompiler::levelscript::{
+    LevelScript, LevelScriptHeaderEntry, LevelScriptVarConditionEntry,
+};
 
 #[derive(Debug, Clone)]
 pub struct LevelscriptTranspileResult {
@@ -21,14 +23,13 @@ impl std::fmt::Display for TranspileError {
 
 impl std::error::Error for TranspileError {}
 
-// #[allow(clippy::needless_continue)]
 pub fn transpile_levelscript(
     source: &str,
     constants: Option<&ConstantDb>,
 ) -> Result<LevelscriptTranspileResult, TranspileError> {
     let mut levelscript = LevelScript::new();
-    let mut frame_table_label: Option<String> = None;
-    let mut in_frame_table = false;
+    let mut var_conditions_label: Option<String> = None;
+    let mut in_var_conditions = false;
     let mut extra_padding: u32 = 0;
 
     for (line_no, line) in source.lines().enumerate() {
@@ -76,11 +77,11 @@ pub fn transpile_levelscript(
 
         if trimmed.ends_with(':') {
             let label = trimmed.trim_end_matches(':');
-            if frame_table_label
+            if var_conditions_label
                 .as_ref()
-                .is_some_and(|ft_label| label == ft_label)
+                .is_some_and(|var_conditions_label| label == var_conditions_label)
             {
-                in_frame_table = true;
+                in_var_conditions = true;
             }
             continue;
         }
@@ -92,8 +93,8 @@ pub fn transpile_levelscript(
                     line: line_num,
                 })?;
             levelscript
-                .entries
-                .push(LevelScriptEntry::OnTransition { script_id });
+                .header_entries
+                .push(LevelScriptHeaderEntry::OnTransition { script_id });
             continue;
         }
 
@@ -104,8 +105,8 @@ pub fn transpile_levelscript(
                     line: line_num,
                 })?;
             levelscript
-                .entries
-                .push(LevelScriptEntry::OnLoad { script_id });
+                .header_entries
+                .push(LevelScriptHeaderEntry::OnLoad { script_id });
             continue;
         }
 
@@ -116,8 +117,8 @@ pub fn transpile_levelscript(
                     line: line_num,
                 })?;
             levelscript
-                .entries
-                .push(LevelScriptEntry::OnResume { script_id });
+                .header_entries
+                .push(LevelScriptHeaderEntry::OnResume { script_id });
             continue;
         }
 
@@ -129,11 +130,14 @@ pub fn transpile_levelscript(
                     line: line_num,
                 });
             }
-            frame_table_label = Some(label);
+            var_conditions_label = Some(label);
+            levelscript
+                .header_entries
+                .push(LevelScriptHeaderEntry::OnVarCondition);
             continue;
         }
 
-        if in_frame_table {
+        if in_var_conditions {
             if let Some(rest) = trimmed.strip_prefix("InitScriptGoToIfEqual") {
                 let args = rest.trim();
                 let (var, value, script_id) =
@@ -141,16 +145,18 @@ pub fn transpile_levelscript(
                         message: format!("InitScriptGoToIfEqual: {}", e),
                         line: line_num,
                     })?;
-                levelscript.entries.push(LevelScriptEntry::OnVarEquals {
-                    var,
-                    value,
-                    script_id,
-                });
+                levelscript
+                    .var_conditions
+                    .push(LevelScriptVarConditionEntry {
+                        var,
+                        value,
+                        script_id,
+                    });
                 continue;
             }
 
             if trimmed == "InitScriptFrameTableEnd" {
-                in_frame_table = false;
+                in_var_conditions = false;
                 continue;
             }
         }
@@ -264,16 +270,16 @@ mod tests {
 "#;
 
         let result = transpile_levelscript(source, None).unwrap();
-        assert_eq!(result.levelscript.entries.len(), 2);
+        assert_eq!(result.levelscript.header_entries.len(), 2);
         assert_eq!(result.extra_padding, 0);
 
         assert!(matches!(
-            &result.levelscript.entries[0],
-            LevelScriptEntry::OnLoad { script_id: 2 }
+            &result.levelscript.header_entries[0],
+            LevelScriptHeaderEntry::OnLoad { script_id: 2 }
         ));
         assert!(matches!(
-            &result.levelscript.entries[1],
-            LevelScriptEntry::OnTransition { script_id: 1 }
+            &result.levelscript.header_entries[1],
+            LevelScriptHeaderEntry::OnTransition { script_id: 1 }
         ));
     }
 
@@ -296,36 +302,42 @@ InitScriptFrameTable:
 "#;
 
         let result = transpile_levelscript(source, None).unwrap();
-        assert_eq!(result.levelscript.entries.len(), 4);
+        assert_eq!(result.levelscript.header_entries.len(), 2);
+        assert_eq!(result.levelscript.var_conditions.len(), 3);
 
         assert!(matches!(
-            &result.levelscript.entries[0],
-            LevelScriptEntry::OnTransition { script_id: 15 }
+            &result.levelscript.header_entries[0],
+            LevelScriptHeaderEntry::OnTransition { script_id: 15 }
         ));
         assert!(matches!(
-            &result.levelscript.entries[1],
-            LevelScriptEntry::OnVarEquals {
+            &result.levelscript.header_entries[1],
+            LevelScriptHeaderEntry::OnVarCondition
+        ));
+
+        assert_eq!(
+            result.levelscript.var_conditions[0],
+            LevelScriptVarConditionEntry {
                 var: 0x40BF,
                 value: 1,
-                script_id: 4
+                script_id: 4,
             }
-        ));
-        assert!(matches!(
-            &result.levelscript.entries[2],
-            LevelScriptEntry::OnVarEquals {
+        );
+        assert_eq!(
+            result.levelscript.var_conditions[1],
+            LevelScriptVarConditionEntry {
                 var: 0x40BF,
                 value: 2,
-                script_id: 2
+                script_id: 2,
             }
-        ));
-        assert!(matches!(
-            &result.levelscript.entries[3],
-            LevelScriptEntry::OnVarEquals {
+        );
+        assert_eq!(
+            result.levelscript.var_conditions[2],
+            LevelScriptVarConditionEntry {
                 var: 0x40BF,
                 value: 3,
-                script_id: 5
+                script_id: 5,
             }
-        ));
+        );
     }
 
     #[test]
@@ -354,18 +366,18 @@ InitScriptFrameTable:
 ";
 
         let result = transpile_levelscript(source, None).unwrap();
-        assert_eq!(result.levelscript.entries.len(), 3);
+        assert_eq!(result.levelscript.header_entries.len(), 3);
         assert!(matches!(
-            &result.levelscript.entries[0],
-            LevelScriptEntry::OnTransition { script_id: 1 }
+            &result.levelscript.header_entries[0],
+            LevelScriptHeaderEntry::OnTransition { script_id: 1 }
         ));
         assert!(matches!(
-            &result.levelscript.entries[1],
-            LevelScriptEntry::OnLoad { script_id: 2 }
+            &result.levelscript.header_entries[1],
+            LevelScriptHeaderEntry::OnLoad { script_id: 2 }
         ));
         assert!(matches!(
-            &result.levelscript.entries[2],
-            LevelScriptEntry::OnResume { script_id: 3 }
+            &result.levelscript.header_entries[2],
+            LevelScriptHeaderEntry::OnResume { script_id: 3 }
         ));
     }
 
@@ -378,8 +390,8 @@ InitScriptFrameTable:
 
         let result = transpile_levelscript(source, None).unwrap();
         assert!(matches!(
-            &result.levelscript.entries[0],
-            LevelScriptEntry::OnTransition { script_id: 16 }
+            &result.levelscript.header_entries[0],
+            LevelScriptHeaderEntry::OnTransition { script_id: 16 }
         ));
     }
 
@@ -396,10 +408,8 @@ InitScriptFrameTable:
         let bytes = result.levelscript.to_bytes();
         let parsed = LevelScript::from_bytes(&bytes).unwrap();
 
-        assert_eq!(result.levelscript.entries.len(), parsed.entries.len());
-        for (orig, parsed) in result.levelscript.entries.iter().zip(parsed.entries.iter()) {
-            assert_eq!(orig, parsed);
-        }
+        assert_eq!(result.levelscript.header_entries, parsed.header_entries);
+        assert_eq!(result.levelscript.var_conditions, parsed.var_conditions);
     }
 
     #[test]
@@ -421,10 +431,8 @@ FrameTable:
         let bytes = result.levelscript.to_bytes();
         let parsed = LevelScript::from_bytes(&bytes).unwrap();
 
-        assert_eq!(result.levelscript.entries.len(), parsed.entries.len());
-        for (orig, parsed) in result.levelscript.entries.iter().zip(parsed.entries.iter()) {
-            assert_eq!(orig, parsed);
-        }
+        assert_eq!(result.levelscript.header_entries, parsed.header_entries);
+        assert_eq!(result.levelscript.var_conditions, parsed.var_conditions);
     }
 
     #[test]
@@ -446,8 +454,6 @@ InitScriptFrameTable:
         let result = transpile_levelscript(source, None).unwrap();
         let bytes = result.levelscript.to_bytes();
 
-        // Expected binary from actual game file (20 bytes):
-        // 02 05 00 00 00 01 01 00 00 00 00 56 40 02 00 06 00 00 00 00
         let expected: Vec<u8> = vec![
             0x02, 0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x56, 0x40, 0x02,
             0x00, 0x06, 0x00, 0x00, 0x00, 0x00,
@@ -492,7 +498,7 @@ InitScriptFrameTable:
 
         assert!(json.contains("on_transition"));
         assert!(json.contains("on_load"));
-        assert!(json.contains("on_var_equals"));
+        assert!(json.contains("on_var_condition"));
         assert!(json.contains("\"script_id\": 1"));
         assert!(json.contains("\"script_id\": 2"));
         assert!(json.contains("\"var\": 16535"));
@@ -514,7 +520,7 @@ InitScriptFrameTable:
 "#;
 
         let result = transpile_levelscript(source, None).unwrap();
-        assert_eq!(result.levelscript.entries.len(), 2);
+        assert_eq!(result.levelscript.header_entries.len(), 2);
         assert_eq!(result.extra_padding, 4);
     }
 
