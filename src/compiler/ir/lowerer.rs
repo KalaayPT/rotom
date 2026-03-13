@@ -7,6 +7,7 @@
 //! - Symbol resolution (aliases, constants, labels)
 //! - Autovar commands in conditions (commands with destVar that default to `VAR_RESULT`)
 
+use dashmap::DashMap;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -18,6 +19,7 @@ use crate::compiler::parse_error::{ParseResult, lowering_error};
 use crate::compiler::token::TokenType;
 use crate::compiler::{Lexer, Parser};
 use crate::database::{Command, ComparisonOperator, DatabaseV2, ParamDef};
+use uxie::c_parser::defines::eval_expr_with_parent;
 
 use super::{Arg, Condition, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
 
@@ -582,20 +584,49 @@ impl<'a> Lowerer<'a> {
         args: &[Expression],
         params: &[crate::database::ParamDef],
     ) -> ParseResult<bool> {
-        let mut substituted = condition.to_string();
+        let exprs: HashMap<String, String> = HashMap::new();
+        let mut resolved: HashMap<String, i64> = HashMap::new();
+        let cache: DashMap<String, i64> = DashMap::new();
+
         for (pos, param) in params.iter().enumerate() {
-            if let Some(arg) = args.get(pos) {
-                if let Ok(val) = self.resolve_arg_to_int(arg) {
-                    substituted = substituted.replace(&param.name, &val.to_string());
-                }
+            if let Some(arg) = args.get(pos)
+                && let Ok(val) = self.resolve_arg_to_int(arg)
+            {
+                resolved.insert(param.name.clone(), i64::from(val));
             }
         }
 
-        let lexer = Lexer::new(&substituted);
-        let mut parser = Parser::new(lexer);
-        let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
+        let parent_resolver = |name: &str| -> Option<i64> {
+            match name {
+                "VARS_START" => Some(0x4000),
+                "VARS_END" => Some(0x800D),
+                "SCRIPT_LOCAL_VARS_START" => Some(0x4500),
+                "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
+                _ => {
+                    if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
+                        return Some(i64::from(*val));
+                    }
+                    if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
+                        return Some(i64::from(*val));
+                    }
+                    if let Some(db) = self.constants
+                        && let Some(val) = db.get(name)
+                    {
+                        return Some(i64::from(val));
+                    }
+                    None
+                }
+            }
+        };
 
-        self.eval_bool_expr(&expr)
+        eval_expr_with_parent(condition, &exprs, &resolved, &cache, &parent_resolver)
+            .map(|v| v != 0)
+            .ok_or_else(|| {
+                lowering_error(format!(
+                    "Failed to evaluate macro condition '{}'",
+                    condition
+                ))
+            })
     }
 
     fn evaluate_condition_with_arg_count(
@@ -614,24 +645,32 @@ impl<'a> Lowerer<'a> {
     fn resolve_arg_to_int(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
-            ExpressionKind::Identifier(name) => {
-                if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
-                    return Ok(*val);
-                } else if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
-                    return Ok(*val);
-                }
+            ExpressionKind::Identifier(name) => match name.as_str() {
+                "VARS_START" => Ok(0x4000),
+                "VARS_END" => Ok(0x800D),
+                "SCRIPT_LOCAL_VARS_START" => Ok(0x4500),
+                "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
+                _ => {
+                    if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
+                        return Ok(*val);
+                    } else if let Some(SymbolType::Variable(val)) =
+                        self.global_symbols.resolve(name)
+                    {
+                        return Ok(*val);
+                    }
 
-                if let Some(db) = self.constants
-                    && let Some(val) = db.get(name)
-                {
-                    return Ok(val);
-                }
+                    if let Some(db) = self.constants
+                        && let Some(val) = db.get(name)
+                    {
+                        return Ok(val);
+                    }
 
-                Err(lowering_error(format!(
-                    "Could not resolve '{}' to an integer for macro condition",
-                    name
-                )))
-            }
+                    Err(lowering_error(format!(
+                        "Could not resolve '{}' to an integer for macro condition",
+                        name
+                    )))
+                }
+            },
             ExpressionKind::Prefix { operator, id } => {
                 let val = self.resolve_arg_to_int(id)?;
                 match operator {
@@ -644,74 +683,6 @@ impl<'a> Lowerer<'a> {
             }
             _ => Err(lowering_error(format!(
                 "Unsupported argument type for macro condition: {:?}",
-                expr.node
-            ))),
-        }
-    }
-
-    fn eval_bool_expr(&self, expr: &Expression) -> ParseResult<bool> {
-        match &expr.node {
-            ExpressionKind::Infix {
-                left,
-                operator,
-                right,
-            } => {
-                let left_val = self.eval_int_expr(left)?;
-                let right_val = self.eval_int_expr(right)?;
-
-                match operator {
-                    TokenType::LesserThan => Ok(left_val < right_val),
-                    TokenType::GreaterThan => Ok(left_val > right_val),
-                    TokenType::LesserEqual => Ok(left_val <= right_val),
-                    TokenType::GreaterEqual => Ok(left_val >= right_val),
-                    TokenType::Equal => Ok(left_val == right_val),
-                    TokenType::NotEqual => Ok(left_val != right_val),
-                    _ => Err(lowering_error(format!(
-                        "Unsupported operator {:?} in macro condition",
-                        operator
-                    ))),
-                }
-            }
-            _ => Err(lowering_error(format!(
-                "Expected comparison expression in macro condition, got {:?}",
-                expr.node
-            ))),
-        }
-    }
-
-    fn eval_int_expr(&self, expr: &Expression) -> ParseResult<i32> {
-        match &expr.node {
-            ExpressionKind::Number(n) => Ok(*n),
-            ExpressionKind::Identifier(_) => self.resolve_arg_to_int(expr),
-            ExpressionKind::Prefix { operator, id } => {
-                let val = self.eval_int_expr(id)?;
-                match operator {
-                    TokenType::Minus => Ok(-val),
-                    _ => Err(lowering_error(format!(
-                        "Unsupported prefix operator {:?} in expression",
-                        operator
-                    ))),
-                }
-            }
-            ExpressionKind::Infix {
-                left,
-                operator,
-                right,
-            } => {
-                let left_val = self.eval_int_expr(left)?;
-                let right_val = self.eval_int_expr(right)?;
-                match operator {
-                    TokenType::Plus => Ok(left_val + right_val),
-                    TokenType::Minus => Ok(left_val - right_val),
-                    TokenType::Mul => Ok(left_val * right_val),
-                    _ => Err(lowering_error(format!(
-                        "Unsupported arithmetic operator {:?} in macro condition",
-                        operator
-                    ))),
-                }
-            }
-            _ => Err(lowering_error(format!(
-                "Cannot evaluate expression to integer: {:?}",
                 expr.node
             ))),
         }
