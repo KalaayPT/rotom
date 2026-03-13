@@ -108,6 +108,7 @@ struct RenderState {
     seen_script_entry_end: bool,
     seen_first_label_after_entry_end: bool,
     seen_labels: HashSet<String>,
+    active_switch_subject: Option<String>,
 }
 
 /// Transpile a decomp script to Rotoscript format
@@ -158,6 +159,7 @@ fn render_transpile_body(
         if state.seen_script_entry_end
             && let Some(switch_block) = parse_switch_block(&lines, line_idx)
         {
+            state.active_switch_subject = Some(switch_block.subject.clone());
             render_switch_block(&switch_block, inline_comment.as_deref(), &mut output);
             line_idx += switch_block.cases.len() + 1;
             continue;
@@ -250,6 +252,17 @@ fn process_content_line(
         output.push_str("    End\n");
         state.seen_first_label_after_entry_end = true;
         return Ok(());
+    }
+
+    if let Some(case_line) = parse_case_line(statement) {
+        if let Some(subject) = state.active_switch_subject.as_deref() {
+            render_freestanding_case_line(subject, &case_line, output);
+            return Ok(());
+        }
+    }
+
+    if statement == "end" {
+        state.active_switch_subject = None;
     }
 
     render_command_line(statement, inline_comment, prepass, db, output);
@@ -350,6 +363,29 @@ fn should_emit_synthetic_unused_end(statement: &str, state: &RenderState) -> boo
     !state.seen_first_label_after_entry_end && statement == "End"
 }
 
+fn parse_case_line(statement: &str) -> Option<SwitchCaseLine> {
+    let rest = statement.strip_prefix("case ")?;
+    let rest = rest.trim();
+    let (value, target) = rest.split_once(',')?;
+    let value = value.trim();
+    let target = target.trim();
+
+    if value.is_empty() || target.is_empty() {
+        return None;
+    }
+
+    Some(SwitchCaseLine {
+        value: value.to_string(),
+        target: target.to_string(),
+    })
+}
+
+fn render_freestanding_case_line(subject: &str, case_line: &SwitchCaseLine, output: &mut String) {
+    let _ = writeln!(output, "    copyvar 0x8008, {subject}");
+    let _ = writeln!(output, "    CompareVarValue 0x8008, {}", case_line.value);
+    let _ = writeln!(output, "    JumpIf EQUAL, {}", case_line.target);
+}
+
 fn append_inline_comment(output: &mut String, inline_comment: Option<&str>) {
     if let Some(comment) = inline_comment {
         output.push(' ');
@@ -413,22 +449,11 @@ fn parse_switch_block(lines: &[&str], start_idx: usize) -> Option<SwitchBlock> {
             } => statement,
         };
 
-        let Some(rest) = statement.strip_prefix("case ") else {
+        let Some(case_line) = parse_case_line(statement) else {
             break;
         };
-        let rest = rest.trim();
-        let (value, target) = rest.split_once(',')?;
-        let value = value.trim();
-        let target = target.trim();
 
-        if value.is_empty() || target.is_empty() {
-            return None;
-        }
-
-        cases.push(SwitchCaseLine {
-            value: value.to_string(),
-            target: target.to_string(),
-        });
+        cases.push(case_line);
         idx += 1;
     }
 
@@ -1217,6 +1242,44 @@ _01E4:
                 .contains("        case 1:\n            Jump _01E4")
         );
         assert!(output.source.contains("    endmatch"));
+    }
+
+    #[test]
+    fn test_parse_case_line() {
+        let case_line = parse_case_line("case 5, _03AC").expect("case line should parse");
+        assert_eq!(
+            case_line,
+            SwitchCaseLine {
+                value: "5".to_string(),
+                target: "_03AC".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_transpile_freestanding_case_line_uses_active_switch_subject() {
+        let input = r"
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    switch VAR_SPECIAL_RESULT
+    case 5, _0071
+    npc_msg msg_0139_D49R0102_00004
+    case 0, _0166
+    goto _024E
+    end
+";
+        let output = transpile(input, None).expect("transpile should succeed");
+        assert!(
+            output
+                .source
+                .contains("    copyvar 0x8008, VAR_SPECIAL_RESULT")
+        );
+        assert!(output.source.contains("    CompareVarValue 0x8008, 0"));
+        assert!(output.source.contains("    JumpIf EQUAL, _0166"));
+        assert!(output.source.contains("    goto _024E"));
+        assert!(output.source.contains("    end"));
     }
 
     #[test]
