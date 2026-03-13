@@ -240,12 +240,36 @@ impl<'a> Lowerer<'a> {
     fn can_optimize_case_to_gotoif(case: &crate::compiler::ast::MatchCase) -> Option<String> {
         if let [_value] = case.values.as_slice()
             && let [stmt] = case.body.as_slice()
-            && let StatementKind::ScriptCommand { command, args } = &stmt.node
-            && command == "Call"
-            && let Some(first_arg) = args.first()
-            && let ExpressionKind::Identifier(name) | ExpressionKind::Label(name) = &first_arg.node
         {
-            Some(name.clone())
+            match &stmt.node {
+                StatementKind::ScriptCommand { command, args } => {
+                    if command == "Call" {
+                        if let Some(first_arg) = args.first() {
+                            if let ExpressionKind::Identifier(name) | ExpressionKind::Label(name) =
+                                &first_arg.node
+                            {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                StatementKind::Jump(target) => {
+                    if let ExpressionKind::Identifier(name) | ExpressionKind::Label(name) =
+                        &target.node
+                    {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
         } else {
             None
         }
@@ -2035,6 +2059,86 @@ func_c:
                 assert_eq!(
                     label_count, 0,
                     "Optimized match should have no generated labels. Got {}",
+                    label_count
+                );
+            }
+            TopLevelItem::Action(_) => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_optimized_match_single_jumps() {
+        let source = r"
+function TestFunc #1:
+    match 0x8000 with
+        case 0:
+            Jump label_a
+        case 1:
+            Jump label_b
+        case 2:
+            Jump label_c
+    endmatch
+    End
+
+label_a:
+    Return
+
+label_b:
+    Return
+
+label_c:
+    Return
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let compare_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| {
+                        matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue")
+                    })
+                    .count();
+                assert_eq!(
+                    compare_count, 3,
+                    "Should have exactly 3 CompareVarValue for optimized jump match. Got {}",
+                    compare_count
+                );
+
+                let gotoif_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "JumpIf"))
+                    .count();
+                assert_eq!(
+                    gotoif_count, 3,
+                    "Should have exactly 3 JumpIf for optimized jump match. Got {}",
+                    gotoif_count
+                );
+
+                let goto_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "Jump"))
+                    .count();
+                assert_eq!(
+                    goto_count, 0,
+                    "Optimized jump match should have no Jump commands. Got {}",
+                    goto_count
+                );
+
+                let label_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Label(name) if name.starts_with(".")))
+                    .count();
+                assert_eq!(
+                    label_count, 0,
+                    "Optimized jump match should have no generated labels. Got {}",
                     label_count
                 );
             }
