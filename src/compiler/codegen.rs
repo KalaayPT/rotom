@@ -170,12 +170,20 @@ impl<'a> Emitter<'a> {
                 self.emit_u16(opcode);
                 let param = if let Some(arg) = args.first() {
                     match arg {
-                        Arg::Value(v) => u16::try_from(*v).map_err(|_| {
-                            codegen_error(format!(
-                                "Movement '{}' parameter value {} does not fit in u16",
-                                name, v
-                            ))
-                        })?,
+                        Arg::Value(v) => {
+                            let fits_u16 = u16::try_from(*v).is_ok();
+                            let fits_i16 = i16::try_from(*v).is_ok();
+                            if !(fits_u16 || fits_i16) {
+                                return Err(codegen_error(format!(
+                                    "Movement '{}' parameter value {} does not fit in 16 bits",
+                                    name, v
+                                )));
+                            }
+                            u16::from_le_bytes(
+                                i16::try_from(*v)
+                                    .map_or_else(|_| (*v as u16).to_le_bytes(), i16::to_le_bytes),
+                            )
+                        }
                         Arg::Pointer(p) => {
                             return Err(codegen_error(format!(
                                 "Movement '{}' expected a value argument, got pointer '{}'",
@@ -256,12 +264,18 @@ impl<'a> Emitter<'a> {
                     self.emit_u8(v);
                 }
                 2 => {
-                    let v = u16::try_from(value).map_err(|_| {
-                        codegen_error(format!(
-                            "Command '{}' parameter '{}' value {} does not fit in u16",
+                    let fits_u16 = u16::try_from(value).is_ok();
+                    let fits_i16 = i16::try_from(value).is_ok();
+                    if !(fits_u16 || fits_i16) {
+                        return Err(codegen_error(format!(
+                            "Command '{}' parameter '{}' value {} does not fit in 16 bits",
                             name, param.name, value
-                        ))
-                    })?;
+                        )));
+                    }
+                    let v = u16::from_le_bytes(
+                        i16::try_from(value)
+                            .map_or_else(|_| (value as u16).to_le_bytes(), i16::to_le_bytes),
+                    );
                     self.emit_u16(v);
                 }
                 4 => {
