@@ -86,11 +86,11 @@ impl fmt::Display for TokenType {
             TokenType::True => write!(f, "boolean 'true'"),
             TokenType::False => write!(f, "boolean 'false'"),
 
-            // --- Opcode Keywords ---
-            TokenType::End => write!(f, "terminator 'End'"),
-            TokenType::EndMovement => write!(f, "terminator 'EndMovement'"),
-            TokenType::Return => write!(f, "terminator 'Return'"),
-            TokenType::Jump => write!(f, "command 'Jump'"),
+            // --- Control Statements ---
+            TokenType::End => write!(f, "terminator 'end'"),
+            TokenType::EndMovement => write!(f, "terminator 'endmovement'"),
+            TokenType::Return => write!(f, "terminator 'return'"),
+            TokenType::Jump => write!(f, "control statement 'jump'"),
 
             // --- Literals ---
             TokenType::Identifier(s) => write!(f, "identifier '{}'", s),

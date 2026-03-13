@@ -177,7 +177,7 @@ impl<'a> Lexer<'a> {
             name.push(*c);
             self.read_char();
         }
-        match name.as_str() {
+        match name.to_ascii_lowercase().as_str() {
             "function" => TokenType::Function,
             "public" => TokenType::Public,
             "action" => TokenType::Action,
@@ -197,10 +197,10 @@ impl<'a> Lexer<'a> {
             "case" => TokenType::Case,
             "endmatch" => TokenType::EndMatch,
             "break" => TokenType::Break,
-            "End" => TokenType::End,
-            "EndMovement" => TokenType::EndMovement,
-            "Return" => TokenType::Return,
-            "Jump" => TokenType::Jump,
+            "end" => TokenType::End,
+            "endmovement" => TokenType::EndMovement,
+            "return" => TokenType::Return,
+            "jump" | "goto" => TokenType::Jump,
             "and" => TokenType::And,
             "or" => TokenType::Or,
             "not" => TokenType::Not,
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_lexer_tokenize() {
-        let source = "if x then Return endif";
+        let source = "if x then return endif";
         let tokens = Lexer::new(source).tokenize();
         assert_eq!(tokens.len(), 5);
         assert_eq!(tokens[0].kind, TokenType::If);
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_lexer_keywords() {
-        let source = "if then else endif while do endwhile End EndMovement Return Jump true false";
+        let source = "if then else endif while do endwhile end endmovement return jump true false";
         let mut lexer = Lexer::new(source);
         let expected_tokens = vec![
             TokenType::If,
@@ -404,6 +404,37 @@ mod tests {
         }
         let eof_token = lexer.next_token();
         assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_accepts_legacy_control_spellings_and_aliases() {
+        let source = "End EndMovement Return Jump GoTo";
+        let mut lexer = Lexer::new(source);
+        let expected_tokens = vec![
+            TokenType::End,
+            TokenType::EndMovement,
+            TokenType::Return,
+            TokenType::Jump,
+            TokenType::Jump,
+        ];
+        for expected in expected_tokens {
+            let token = lexer.next_token();
+            assert_eq!(token.kind, expected);
+        }
+        let eof_token = lexer.next_token();
+        assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_accepts_case_insensitive_booleans() {
+        let source = "TRUE FALSE True False";
+        let mut lexer = Lexer::new(source);
+
+        assert_eq!(lexer.next_token().kind, TokenType::True);
+        assert_eq!(lexer.next_token().kind, TokenType::False);
+        assert_eq!(lexer.next_token().kind, TokenType::True);
+        assert_eq!(lexer.next_token().kind, TokenType::False);
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 
     #[test]

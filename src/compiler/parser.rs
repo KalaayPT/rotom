@@ -495,7 +495,10 @@ impl<'a> Parser<'a> {
             _ => unreachable!(),
         };
         let mut args = Vec::new();
-        if !self.current_token_is(TokenType::Newline) && !self.current_token_is_keyword() {
+        if !self.current_token_is(TokenType::Newline)
+            && (!self.current_token_is_keyword()
+                || matches!(self.current_token.kind, TokenType::True | TokenType::False))
+        {
             loop {
                 args.push(self.parse_expression(Precedence::Lowest)?);
                 if self.current_token_is(TokenType::Comma) {
@@ -577,6 +580,14 @@ impl<'a> Parser<'a> {
                 let kind = ExpressionKind::Number(*val);
                 self.advance();
                 kind
+            }
+            TokenType::True => {
+                self.advance();
+                ExpressionKind::Number(1)
+            }
+            TokenType::False => {
+                self.advance();
+                ExpressionKind::Number(0)
             }
             TokenType::Identifier(name) => {
                 let kind = ExpressionKind::Identifier(name.clone());

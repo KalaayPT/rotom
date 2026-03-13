@@ -447,12 +447,12 @@ fn render_switch_block(
     inline_comment: Option<&str>,
     output: &mut String,
 ) {
-    output.push_str("    copyvar VAR_SPECIAL_x8008, ");
+    output.push_str("    copyvar 0x8008, ");
     output.push_str(&switch_block.subject);
     append_inline_comment(output, inline_comment);
     output.push('\n');
 
-    output.push_str("    match VAR_SPECIAL_x8008 with\n");
+    output.push_str("    match 0x8008 with\n");
     for case in &switch_block.cases {
         output.push_str("        case ");
         output.push_str(&case.value);
@@ -1176,13 +1176,15 @@ Test:
 
         assert_eq!(
             output,
-            "    copyvar VAR_SPECIAL_x8008, VAR_UNK_412D\n\
-    match VAR_SPECIAL_x8008 with\n\
-        case 0:\n\
-            Jump _01C8\n\
-        case 1:\n\
-            Jump _01E4\n\
-    endmatch\n"
+            concat!(
+                "    copyvar 0x8008, VAR_UNK_412D\n",
+                "    match 0x8008 with\n",
+                "        case 0:\n",
+                "            Jump _01C8\n",
+                "        case 1:\n",
+                "            Jump _01E4\n",
+                "    endmatch\n",
+            )
         );
     }
 
@@ -1202,12 +1204,8 @@ _01E4:
     Return
 ";
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(
-            output
-                .source
-                .contains("    copyvar VAR_SPECIAL_x8008, VAR_UNK_412D")
-        );
-        assert!(output.source.contains("    match VAR_SPECIAL_x8008 with"));
+        assert!(output.source.contains("    copyvar 0x8008, VAR_UNK_412D"));
+        assert!(output.source.contains("    match 0x8008 with"));
         assert!(
             output
                 .source
