@@ -675,8 +675,41 @@ impl<'a> Lowerer<'a> {
                 let val = self.resolve_arg_to_int(id)?;
                 match operator {
                     TokenType::Minus => Ok(-val),
+                    TokenType::Plus => Ok(val),
                     _ => Err(lowering_error(format!(
                         "Unsupported prefix operator {:?} in macro condition",
+                        operator
+                    ))),
+                }
+            }
+            ExpressionKind::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                let left = self.resolve_arg_to_int(left)?;
+                let right = self.resolve_arg_to_int(right)?;
+                match operator {
+                    TokenType::Plus => left.checked_add(right).ok_or_else(|| {
+                        lowering_error(format!(
+                            "Integer overflow while evaluating macro expression: {} + {}",
+                            left, right
+                        ))
+                    }),
+                    TokenType::Minus => left.checked_sub(right).ok_or_else(|| {
+                        lowering_error(format!(
+                            "Integer overflow while evaluating macro expression: {} - {}",
+                            left, right
+                        ))
+                    }),
+                    TokenType::Mul => left.checked_mul(right).ok_or_else(|| {
+                        lowering_error(format!(
+                            "Integer overflow while evaluating macro expression: {} * {}",
+                            left, right
+                        ))
+                    }),
+                    _ => Err(lowering_error(format!(
+                        "Unsupported infix operator {:?} in macro condition",
                         operator
                     ))),
                 }
@@ -2246,6 +2279,88 @@ TestLabel:
             }
             TopLevelItem::Action(_) => panic!("Expected function"),
         }
+    }
+
+    #[test]
+    fn test_nested_macro_expansion_gotoifinrange_with_incrementing_expression() {
+        let db = create_test_db();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(&db);
+
+        let source = r"
+function Test #1:
+    GoToIfInRange 0x8000, 80, 85, TestLabel
+TestLabel:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+
+        let result = lowerer.lower_script_file(&script_file);
+        assert!(
+            result.is_ok(),
+            "GoToIfInRange with recursive $lower + 1 expansion should compile successfully. Error: {:?}",
+            result.err()
+        );
+
+        let items = result.unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let compare_values: Vec<i32> = ir_func
+                    .instructions
+                    .iter()
+                    .filter_map(|op| match op {
+                        IrOpcode::Command { name, args }
+                            if name == "CompareVarToValue" && args.len() >= 2 =>
+                        {
+                            match &args[1] {
+                                Arg::Value(v) => Some(*v),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                    .collect();
+
+                assert_eq!(
+                    compare_values,
+                    vec![80, 81, 82, 83, 84, 85],
+                    "GoToIfInRange should evaluate incremented macro arguments at compile time"
+                );
+            }
+            TopLevelItem::Action(_) => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_arg_to_int_supports_infix_macro_expressions() {
+        let db = create_test_db();
+        let constants = crate::database::ConstantDb::new();
+        let (_, symbols) = parse_and_analyze(
+            r"
+function Test #1:
+    End
+",
+        );
+        let lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+
+        let expr = Expression {
+            span: 0..0,
+            node: ExpressionKind::Infix {
+                left: Box::new(Expression {
+                    span: 0..0,
+                    node: ExpressionKind::Number(80),
+                }),
+                operator: TokenType::Plus,
+                right: Box::new(Expression {
+                    span: 0..0,
+                    node: ExpressionKind::Number(1),
+                }),
+            },
+        };
+
+        let resolved = lowerer.resolve_arg_to_int(&expr).unwrap();
+        assert_eq!(resolved, 81);
     }
 
     #[test]
