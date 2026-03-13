@@ -559,8 +559,6 @@ fn reorder_decomp_args_to_binary(
     let mut required_indices: Vec<usize> = Vec::new();
     let mut optional_indices: Vec<usize> = Vec::new();
     for (i, p) in params.iter().enumerate() {
-        // Autovar params (destVar with VAR_RESULT default) are always provided
-        // explicitly in decomp sources, so treat them as required for reordering
         if p.default.is_none() || is_autovar_param(p) {
             required_indices.push(i);
         } else {
@@ -1036,6 +1034,50 @@ AcuityLakefront_SetWarpsLakeAcuityNormal:
                 .source
                 .contains("AcuityLakefront_SetWarpsLakeAcuityNormal:"),
             "helper label should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_custom_message_word_preserves_explicit_result_var_order() {
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
+            .expect("test database should load");
+
+        let input = r"
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    ChooseCustomMessageWord 0, VAR_RESULT, VAR_0x8004
+    End
+";
+        let output = transpile(input, Some(&db)).expect("transpile should succeed");
+        assert!(
+            output
+                .source
+                .contains("    ChooseCustomMessageWord 0, VAR_RESULT, VAR_0x8004"),
+            "custom message word argument order should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_two_custom_message_words_preserve_explicit_result_var_order() {
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
+            .expect("test database should load");
+
+        let input = r"
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    ChooseTwoCustomMessageWords 0, VAR_RESULT, VAR_0x8000, VAR_0x8001
+    End
+";
+        let output = transpile(input, Some(&db)).expect("transpile should succeed");
+        assert!(
+            output
+                .source
+                .contains("    ChooseTwoCustomMessageWords 0, VAR_RESULT, VAR_0x8000, VAR_0x8001"),
+            "two custom message words argument order should be preserved"
         );
     }
 }

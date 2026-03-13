@@ -2,32 +2,17 @@ use crate::database::{Command, ParamDef};
 
 pub const VAR_RESULT: i32 = 0x800C;
 
-const AUTOVAR_PARAM_NAMES: &[&str] = &[
-    "destvar",
-    "destvarid",
-    "successvar",
-    "var_dest",
-    "retvar",
-    "variable",
-];
-
 const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
 
 pub fn is_autovar_param(param: &ParamDef) -> bool {
-    let has_autovar_default = param.default.as_ref().is_some_and(|default| {
+    // This intentionally treats only VAR_RESULT-style defaults as autovar.
+    // It relies on the database invariant that no non-autovar result default
+    // appears outside the final/defaultable result slot.
+    param.default.as_ref().is_some_and(|default| {
         AUTOVAR_DEFAULT_VALUES
             .iter()
             .any(|v| default.eq_ignore_ascii_case(v))
-    });
-
-    if !has_autovar_default {
-        return false;
-    }
-
-    let name_lower = param.name.to_lowercase();
-    AUTOVAR_PARAM_NAMES
-        .iter()
-        .any(|name| name_lower.contains(name))
+    })
 }
 
 pub fn autovar_param_index(cmd: &Command) -> Option<usize> {
@@ -70,9 +55,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_autovar_param_false_without_expected_name() {
+    fn test_is_autovar_param_true_without_name_heuristics() {
         let p = make_param("someOtherParam", Some("VAR_RESULT"));
-        assert!(!is_autovar_param(&p));
+        assert!(is_autovar_param(&p));
     }
 
     #[test]
