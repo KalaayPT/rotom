@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crate::autovar::is_autovar_param;
 use crate::compiler::ast::FunctionHeader;
 use crate::compiler::ir::{Arg, IrAction, IrFunction, IrOpcode, TopLevelItem};
 use crate::database::{Command, DatabaseV2, normalize_command_name};
@@ -1002,7 +1003,9 @@ impl<'a> Disassembler<'a> {
             let param = &params[i];
             let arg = &binary_args[i];
 
-            let matches_default = if let Some(default_str) = &param.default {
+            let matches_default = if is_autovar_param(param) {
+                false
+            } else if let Some(default_str) = &param.default {
                 if let Arg::Value(v) = arg {
                     if let Some(default_val) = self.parse_default_value(default_str) {
                         *v == default_val
