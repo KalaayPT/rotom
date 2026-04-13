@@ -36,6 +36,7 @@
 //! EndMovement
 //! ```
 
+use crate::database::GameFamily;
 use regex::Regex;
 use std::borrow::Cow;
 use std::fmt::Write;
@@ -241,6 +242,10 @@ fn convert_space_to_comma_args(
                 }
             }
         }
+
+        if !in_action {
+            command = canonicalize_dspre_command_name(command, db);
+        }
     }
 
     if args.is_empty() {
@@ -252,6 +257,25 @@ fn convert_space_to_comma_args(
         format!("{}{} {}", leading_ws, command, args_str),
         is_end_movement,
     )
+}
+
+fn canonicalize_dspre_command_name<'a>(
+    command: Cow<'a, str>,
+    db: &crate::database::DatabaseV2,
+) -> Cow<'a, str> {
+    match (db.game_family(), command.as_ref()) {
+        (_, "PlayFanfare") => Cow::Borrowed("PlaySE"),
+        (_, "StopFanfare") => Cow::Borrowed("StopSE"),
+        (_, "WaitFanfare") => Cow::Borrowed("WaitSE"),
+        (_, "PlaySound") => Cow::Borrowed("PlayFanfare"),
+        (_, "WaitSound") => Cow::Borrowed("WaitFanfare"),
+        (Some(GameFamily::DP) | Some(GameFamily::Platinum), "WildBattle") => {
+            Cow::Borrowed("StartWildBattle")
+        }
+        (Some(GameFamily::HGSS), "WildBattle") => Cow::Borrowed("RocketTrapBattle"),
+        (Some(GameFamily::HGSS), "WildBattleSp") => Cow::Borrowed("WildBattle"),
+        _ => command,
+    }
 }
 
 /// Strip block comments /* ... */ from the input, handling nested and multi-line comments
@@ -285,6 +309,7 @@ fn strip_block_comments(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_script_header() {
@@ -480,5 +505,47 @@ End
         let input = "    SomeCmd 1 2 3 4 5";
         let output = transpile(input, None);
         assert!(output.contains("SomeCmd 1, 2, 3, 4, 5"));
+    }
+
+    #[test]
+    fn test_dspre_transpile_applies_explicit_legacy_sound_overrides() {
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
+            .expect("test database should load");
+        let input = r"Script 1:
+    PlayFanfare 1500
+    StopFanfare 1500
+    WaitFanfare 1500
+    PlaySound 1501
+    WaitSound 1501
+End";
+        let output = transpile(input, Some(&db));
+
+        assert!(output.contains("PlaySE 1500"));
+        assert!(output.contains("StopSE 1500"));
+        assert!(output.contains("WaitSE 1500"));
+        assert!(output.contains("PlayFanfare 1501"));
+        assert!(output.contains("WaitFanfare 1501"));
+    }
+
+    #[test]
+    fn test_dspre_transpile_applies_family_specific_wild_battle_overrides() {
+        let platinum = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
+            .expect("test database should load");
+        let hgss = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
+            .expect("test database should load");
+
+        let input = "Script 1:\n    WildBattle 1 2 3\nEnd";
+
+        assert!(transpile(input, Some(&platinum)).contains("StartWildBattle 1, 2, 3"));
+        assert!(transpile(input, Some(&hgss)).contains("RocketTrapBattle 1, 2, 3"));
+    }
+
+    #[test]
+    fn test_dspre_transpile_maps_hgss_wild_battle_sp_to_canonical_name() {
+        let hgss = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
+            .expect("test database should load");
+        let input = "Script 1:\n    WildBattleSp 1 2 3 4\nEnd";
+
+        assert!(transpile(input, Some(&hgss)).contains("WildBattle 1, 2, 3, 4"));
     }
 }

@@ -314,9 +314,9 @@ fn render_command_line(
     let cmd_name = resolve_script_command_name(raw_cmd_name, db);
 
     output.push_str("    ");
-    output.push_str(cmd_name);
+    output.push_str(cmd_name.as_ref());
     if let Some(args) = args {
-        let normalized_args = normalize_command_args(cmd_name, args, prepass, db);
+        let normalized_args = normalize_command_args(cmd_name.as_ref(), args, prepass, db);
         if !normalized_args.is_empty() {
             output.push(' ');
             output.push_str(&normalized_args);
@@ -654,23 +654,19 @@ fn classify_structural_line(trimmed: &str) -> StructuralLine<'_> {
 fn resolve_script_command_name<'a>(
     cmd_name: &'a str,
     db: Option<&'a crate::database::DatabaseV2>,
-) -> &'a str {
-    let Some(id_str) = cmd_name.strip_prefix("ScrCmd_") else {
-        return cmd_name;
-    };
-
+) -> std::borrow::Cow<'a, str> {
     let Some(db) = db else {
-        return cmd_name;
+        return std::borrow::Cow::Borrowed(cmd_name);
     };
 
-    let Ok(id) = u16::from_str_radix(id_str, 16) else {
-        return cmd_name;
-    };
+    resolve_opcode_alias(db, cmd_name)
+        .map(std::borrow::Cow::Owned)
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed(cmd_name))
+}
 
-    db.commands
-        .iter()
-        .find(|(_, c)| c.id == Some(id) && c.cmd_type == CommandType::ScriptCmd)
-        .map_or(cmd_name, |(name, _)| name.as_str())
+fn resolve_opcode_alias(db: &crate::database::DatabaseV2, cmd_name: &str) -> Option<String> {
+    db.get_script_cmd_by_alias(cmd_name)
+        .map(|(name, _)| name.clone())
 }
 
 fn reorder_decomp_args_to_binary(
@@ -988,10 +984,43 @@ Helper:
             .expect("End command should have opcode");
         let opcode_name = format!("ScrCmd_{:04X}", end_id);
 
-        assert_eq!(resolve_script_command_name(&opcode_name, Some(&db)), "End");
         assert_eq!(
-            resolve_script_command_name("NotAnOpcodeAlias", Some(&db)),
+            resolve_script_command_name(&opcode_name, Some(&db)).as_ref(),
+            "End"
+        );
+        assert_eq!(
+            resolve_script_command_name("NotAnOpcodeAlias", Some(&db)).as_ref(),
             "NotAnOpcodeAlias"
+        );
+    }
+
+    #[test]
+    fn test_resolve_script_command_name_maps_hgss_decimal_scrcmd_opcode() {
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
+            .expect("test database should load");
+        let command = db
+            .get_script_cmd_by_id(28)
+            .expect("database should contain GoToIf at opcode 28");
+        let opcode_name = format!("ScrCmd_{}", command.1.id.expect("opcode should exist"));
+
+        assert_eq!(
+            resolve_script_command_name(&opcode_name, Some(&db)).as_ref(),
+            command.0.as_str()
+        );
+    }
+
+    #[test]
+    fn test_resolve_script_command_name_ignores_noncanonical_hgss_scrcmd_spelling() {
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
+            .expect("test database should load");
+
+        assert_eq!(
+            resolve_script_command_name("scrcmd_28", Some(&db)).as_ref(),
+            "scrcmd_28"
+        );
+        assert_eq!(
+            resolve_script_command_name("ScrCmd_001C", Some(&db)).as_ref(),
+            "ScrCmd_001C"
         );
     }
 

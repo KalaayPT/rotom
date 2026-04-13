@@ -1,5 +1,7 @@
 use std::{iter::Peekable, str::Chars};
 
+use crate::naming::normalize_control_keyword;
+
 use super::token::{Token, TokenType};
 
 pub struct Lexer<'a> {
@@ -177,36 +179,7 @@ impl<'a> Lexer<'a> {
             name.push(*c);
             self.read_char();
         }
-        match name.to_ascii_lowercase().as_str() {
-            "function" => TokenType::Function,
-            "public" => TokenType::Public,
-            "action" => TokenType::Action,
-            "alias" => TokenType::Alias,
-            "global" => TokenType::Global,
-            "true" => TokenType::True,
-            "false" => TokenType::False,
-            "if" => TokenType::If,
-            "then" => TokenType::Then,
-            "else" => TokenType::Else,
-            "endif" => TokenType::EndIf,
-            "while" => TokenType::While,
-            "do" => TokenType::Do,
-            "endwhile" => TokenType::EndWhile,
-            "match" => TokenType::Match,
-            "with" => TokenType::With,
-            "case" => TokenType::Case,
-            "endmatch" => TokenType::EndMatch,
-            "break" => TokenType::Break,
-            "end" => TokenType::End,
-            "endmovement" => TokenType::EndMovement,
-            "return" => TokenType::Return,
-            "jump" | "goto" => TokenType::Jump,
-            "and" => TokenType::And,
-            "or" => TokenType::Or,
-            "not" => TokenType::Not,
-            "as" => TokenType::As,
-            _ => TokenType::Identifier(name),
-        }
+        normalize_control_keyword(&name).unwrap_or(TokenType::Identifier(name))
     }
     pub fn read_integer(&mut self, first: char) -> TokenType {
         if first == '0' && matches!(self.chars.peek(), Some('x')) {
@@ -408,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_lexer_accepts_legacy_control_spellings_and_aliases() {
-        let source = "End EndMovement Return Jump GoTo";
+        let source = "End EndMovement Return Jump GoTo eNdMoVeMeNt";
         let mut lexer = Lexer::new(source);
         let expected_tokens = vec![
             TokenType::End,
@@ -416,6 +389,7 @@ mod tests {
             TokenType::Return,
             TokenType::Jump,
             TokenType::Jump,
+            TokenType::EndMovement,
         ];
         for expected in expected_tokens {
             let token = lexer.next_token();
@@ -455,6 +429,22 @@ mod tests {
         }
         let eof_token = lexer.next_token();
         assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_lexer_does_not_promote_partial_keyword_matches() {
+        let source = "goto_if endish";
+        let mut lexer = Lexer::new(source);
+
+        assert_eq!(
+            lexer.next_token().kind,
+            TokenType::Identifier("goto_if".to_string())
+        );
+        assert_eq!(
+            lexer.next_token().kind,
+            TokenType::Identifier("endish".to_string())
+        );
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 
     #[test]

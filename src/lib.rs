@@ -7,6 +7,7 @@ mod autovar;
 pub mod compiler;
 pub mod database;
 pub mod decompiler;
+pub mod naming;
 pub mod transpiler;
 
 pub use compiler::codegen::Emitter;

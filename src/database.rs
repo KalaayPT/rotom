@@ -269,6 +269,11 @@ impl DatabaseV2 {
         Ok(db)
     }
 
+    pub fn game_family(&self) -> Option<GameFamily> {
+        GameFamily::from_db_version(&self.meta.version)
+    }
+
+    /// Resolves a command by name, first checking the command map directly, then legacy names, and finally script command aliases, such as placeholder names or dummy commands.
     pub fn get_command(&self, name: &str) -> ParseResult<&Command> {
         if let Some(cmd) = self.commands.get(name) {
             return Ok(cmd);
@@ -282,21 +287,7 @@ impl DatabaseV2 {
             return Ok(cmd);
         }
 
-        if let Some(id_str) = name.strip_prefix("ScrCmd_")
-            && let Ok(id) = i32::from_str_radix(id_str, 16)
-            && let Some((_, cmd)) = self.commands.iter().find(|(_, cmd)| {
-                cmd.id == Some(id as u16) && cmd.cmd_type == CommandType::ScriptCmd
-            })
-        {
-            return Ok(cmd);
-        }
-
-        if let Some(id_str) = name.strip_prefix("Dummy")
-            && let Ok(id) = i32::from_str_radix(id_str, 16)
-            && let Some((_, cmd)) = self.commands.iter().find(|(_, cmd)| {
-                cmd.id == Some(id as u16) && cmd.cmd_type == CommandType::ScriptCmd
-            })
-        {
+        if let Some((_, cmd)) = self.get_script_cmd_by_alias(name) {
             return Ok(cmd);
         }
 
@@ -320,6 +311,8 @@ impl DatabaseV2 {
                     .find(|(_, cmd)| cmd.legacy_name.as_deref() == Some(name))
                     .filter(|(_, cmd)| cmd.cmd_type == CommandType::ScriptCmd)
                 {
+                    Ok(cmd)
+                } else if let Some((_, cmd)) = self.get_script_cmd_by_alias(name) {
                     Ok(cmd)
                 } else {
                     Err(database_error(format!(
@@ -372,6 +365,40 @@ impl DatabaseV2 {
         self.commands
             .iter()
             .find(|(_, cmd)| cmd.cmd_type == CommandType::ScriptCmd && cmd.id == Some(id))
+    }
+
+    pub fn get_script_cmd_by_alias(&self, name: &str) -> Option<(&String, &Command)> {
+        if let Some(suffix) = name.strip_prefix("ScrCmd_")
+            && !suffix.is_empty()
+        {
+            let id = match self.game_family() {
+                Some(GameFamily::HGSS) if suffix.chars().all(|c| c.is_ascii_digit()) => {
+                    suffix.parse::<u16>().ok()
+                }
+                Some(GameFamily::HGSS) => None,
+                _ => {
+                    let hex_suffix = suffix.rsplit('_').next().unwrap_or(suffix);
+                    if hex_suffix.is_empty() {
+                        None
+                    } else {
+                        u16::from_str_radix(hex_suffix, 16).ok()
+                    }
+                }
+            };
+
+            if let Some(id) = id {
+                return self.get_script_cmd_by_id(id);
+            }
+        }
+
+        if let Some(suffix) = name.strip_prefix("Dummy")
+            && !suffix.is_empty()
+            && let Ok(id) = u16::from_str_radix(suffix, 16)
+        {
+            return self.get_script_cmd_by_id(id);
+        }
+
+        None
     }
 
     pub fn get_movement_by_id(&self, id: u16) -> Option<(&String, &Command)> {
@@ -660,7 +687,7 @@ mod tests {
         }
     }
 
-    fn test_db_for_legacy_lookup() -> DatabaseV2 {
+    fn test_db_for_legacy_lookup_with_version(version: &str) -> DatabaseV2 {
         let mut commands = HashMap::new();
         commands.insert(
             "Message".to_string(),
@@ -670,10 +697,14 @@ mod tests {
             "WalkUp".to_string(),
             test_command(CommandType::Movement, 2, Some("WalkUpLegacy")),
         );
+        commands.insert(
+            "RadixTest".to_string(),
+            test_command(CommandType::ScriptCmd, 16, Some("RadixTestLegacy")),
+        );
 
         DatabaseV2 {
             meta: DatabaseMeta {
-                version: "test".to_string(),
+                version: version.to_string(),
                 generated_at: None,
                 generated_from: None,
             },
@@ -683,6 +714,10 @@ mod tests {
             overworld_directions: HashMap::new(),
             special_overworlds: HashMap::new(),
         }
+    }
+
+    fn test_db_for_legacy_lookup() -> DatabaseV2 {
+        test_db_for_legacy_lookup_with_version("test")
     }
 
     #[test]
@@ -736,11 +771,80 @@ mod tests {
     }
 
     #[test]
+    fn test_get_command_resolves_platinum_scrcmd_hex_alias() {
+        let db = test_db_for_legacy_lookup_with_version("platinum");
+        let cmd = db
+            .get_command("ScrCmd_0010")
+            .expect("hex scrcmd lookup failed");
+        assert_eq!(cmd.id, Some(16));
+        assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn test_get_command_resolves_hgss_scrcmd_decimal_alias() {
+        let db = test_db_for_legacy_lookup_with_version("hgss");
+        let cmd = db
+            .get_command("ScrCmd_16")
+            .expect("decimal scrcmd lookup failed");
+        assert_eq!(cmd.id, Some(16));
+        assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn test_get_command_rejects_wrong_scrcmd_radix_for_family() {
+        let platinum = test_db_for_legacy_lookup_with_version("platinum");
+        let hgss = test_db_for_legacy_lookup_with_version("hgss");
+
+        assert!(
+            platinum.get_command("ScrCmd_10").is_ok(),
+            "platinum accepts hex-compatible ScrCmd aliases"
+        );
+        assert!(
+            hgss.get_command("ScrCmd_000A").is_err(),
+            "hgss ScrCmd aliases must be decimal"
+        );
+        assert!(
+            hgss.get_command("ScrCmd_0001").is_ok(),
+            "hgss decimal aliases may contain leading zeroes"
+        );
+    }
+
+    #[test]
+    fn test_get_command_resolves_scrcmd_key_style_with_suffix_text() {
+        let db = test_db_for_legacy_lookup_with_version("platinum");
+        let cmd = db
+            .get_command("ScrCmd_Unused_001")
+            .expect("ScrCmd_*_<hex> alias lookup failed");
+        assert_eq!(cmd.id, Some(1));
+        assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn test_get_command_resolves_dummy_alias() {
+        let db = test_db_for_legacy_lookup();
+        let cmd = db
+            .get_command("Dummy0001")
+            .expect("Dummy alias lookup failed");
+        assert_eq!(cmd.id, Some(1));
+        assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
     fn test_get_script_cmd_resolves_legacy_name() {
         let db = test_db_for_legacy_lookup();
         let cmd = db
             .get_script_cmd("MessageLegacy")
             .expect("legacy script command lookup failed");
+        assert_eq!(cmd.id, Some(1));
+        assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn test_get_script_cmd_resolves_aliases() {
+        let db = test_db_for_legacy_lookup_with_version("hgss");
+        let cmd = db
+            .get_script_cmd("ScrCmd_1")
+            .expect("script command alias lookup failed");
         assert_eq!(cmd.id, Some(1));
         assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
     }
