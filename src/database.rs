@@ -368,6 +368,14 @@ impl DatabaseV2 {
     }
 
     pub fn get_script_cmd_by_alias(&self, name: &str) -> Option<(&String, &Command)> {
+        if self
+            .commands
+            .get(name)
+            .is_some_and(|cmd| cmd.cmd_type == CommandType::ScriptCmd)
+        {
+            return None;
+        }
+
         if let Some(suffix) = name.strip_prefix("ScrCmd_")
             && !suffix.is_empty()
         {
@@ -865,6 +873,24 @@ mod tests {
             .expect("script command alias lookup failed");
         assert_eq!(cmd.id, Some(1));
         assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn test_get_script_cmd_by_alias_does_not_override_exact_script_cmd_name() {
+        let mut db = test_db_for_legacy_lookup_with_version("hgss");
+        db.commands.insert(
+            "ScrCmd_055".to_string(),
+            test_command(CommandType::ScriptCmd, 56, None),
+        );
+        db.commands.insert(
+            "DirectionSignpost".to_string(),
+            test_command(CommandType::ScriptCmd, 55, None),
+        );
+
+        assert!(
+            db.get_script_cmd_by_alias("ScrCmd_055").is_none(),
+            "exact script command keys must not be reinterpreted as aliases"
+        );
     }
 
     #[test]

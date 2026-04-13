@@ -102,6 +102,8 @@ struct RenderState {
     seen_script_entry_end: bool,
     seen_first_label_after_entry_end: bool,
     seen_labels: HashSet<String>,
+    last_emitted_endmovement: bool,
+    synthetic_unused_end_counter: usize,
 }
 
 /// Transpile a decomp script to Rotoscript format
@@ -204,6 +206,7 @@ fn render_label_line(
     let _ = write!(output, "{}:", label_name);
     append_inline_comment(output, inline_comment);
     output.push('\n');
+    state.last_emitted_endmovement = false;
     Ok(())
 }
 
@@ -235,20 +238,35 @@ fn process_content_line(
         output.push_str("_unused_end:\n");
         output.push_str("    End\n");
         state.seen_first_label_after_entry_end = true;
+        state.last_emitted_endmovement = false;
+        return Ok(());
+    }
+
+    if should_emit_synthetic_post_movement_end(statement, state) {
+        render_synthetic_unused_end_label(state, output);
+        output.push_str("    End");
+        append_inline_comment(output, inline_comment);
+        output.push('\n');
+        state.last_emitted_endmovement = false;
         return Ok(());
     }
 
     if let Some(subject) = parse_switch_line(statement) {
         render_switch_line(subject, inline_comment, output);
+        state.last_emitted_endmovement = false;
         return Ok(());
     }
 
     if let Some(case_line) = parse_case_line(statement) {
         render_case_line(&case_line, inline_comment, output);
+        state.last_emitted_endmovement = false;
         return Ok(());
     }
 
     render_command_line(statement, inline_comment, prepass, db, output);
+    state.last_emitted_endmovement = split_command_and_args(statement)
+        .0
+        .eq_ignore_ascii_case("EndMovement");
     Ok(())
 }
 
@@ -410,6 +428,22 @@ fn append_inline_comment(output: &mut String, inline_comment: Option<&str>) {
     }
 }
 
+fn should_emit_synthetic_post_movement_end(statement: &str, state: &RenderState) -> bool {
+    state.last_emitted_endmovement && statement.eq_ignore_ascii_case("End")
+}
+
+fn render_synthetic_unused_end_label(state: &mut RenderState, output: &mut String) {
+    loop {
+        let label_name = format!("_unused_end_{}", state.synthetic_unused_end_counter);
+        state.synthetic_unused_end_counter += 1;
+        if state.seen_labels.insert(label_name.clone()) {
+            output.push_str(&label_name);
+            output.push_str(":\n");
+            return;
+        }
+    }
+}
+
 fn normalize_command_args(
     cmd_name: &str,
     args: &str,
@@ -471,15 +505,10 @@ fn collect_jump_table_and_movement_labels(
     let mut current_label: Option<String> = None;
 
     for (line_idx, line) in lines.iter().enumerate() {
-        let statement = line.trim();
-
-        if statement.is_empty()
-            || statement.starts_with("//")
-            || statement.starts_with('@')
-            || statement.starts_with(';')
-        {
-            continue;
-        }
+        let statement = match preprocess_body_line(line.trim()) {
+            BodyLine::Empty | BodyLine::SkipPreprocessor | BodyLine::FullComment(_) => continue,
+            BodyLine::Content { statement, .. } => statement,
+        };
 
         match classify_structural_line(statement) {
             StructuralLine::ScriptEntry(name) => {
@@ -974,6 +1003,60 @@ Helper:
         assert_eq!(
             resolve_script_command_name("ScrCmd_001C", Some(&db)).as_ref(),
             "ScrCmd_001C"
+        );
+    }
+
+    #[test]
+    fn test_resolve_script_command_name_keeps_exact_scrcmd_key() {
+        let db = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
+            .expect("test database should load");
+
+        assert_eq!(
+            resolve_script_command_name("ScrCmd_055", Some(&db)).as_ref(),
+            "ScrCmd_055"
+        );
+    }
+
+    #[test]
+    fn test_collect_jump_table_and_movement_labels_handles_label_semicolon_comments() {
+        let lines = vec![
+            "ScriptEntry Main",
+            "ScriptEntryEnd",
+            "",
+            ".balign 4, 0",
+            "MoveLabel: ; unreferenced",
+            "WalkNorth",
+            "EndMovement",
+        ];
+        let movement_commands = HashSet::from(["WalkNorth"]);
+
+        let (_, movement_labels) =
+            collect_jump_table_and_movement_labels(&lines, &movement_commands);
+        assert!(movement_labels.contains("MoveLabel"));
+    }
+
+    #[test]
+    fn test_transpile_inserts_synthetic_label_before_end_after_endmovement() {
+        let input = r"
+    ScriptEntry Main
+    ScriptEntryEnd
+
+Main:
+    End
+
+    .balign 4, 0
+MoveLabel:
+    WalkNorth
+    EndMovement
+    End
+";
+
+        let output = transpile(input, None).expect("transpile should succeed");
+        assert!(output.source.contains("action MoveLabel"));
+        assert!(
+            output
+                .source
+                .contains("    EndMovement\n_unused_end_0:\n    End\n")
         );
     }
 
