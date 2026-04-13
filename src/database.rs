@@ -391,11 +391,19 @@ impl DatabaseV2 {
             }
         }
 
-        if let Some(suffix) = name.strip_prefix("Dummy")
-            && !suffix.is_empty()
-            && let Ok(id) = u16::from_str_radix(suffix, 16)
-        {
-            return self.get_script_cmd_by_id(id);
+        if let Some(suffix) = name.strip_prefix("Dummy") {
+            let id = match self.game_family() {
+                Some(GameFamily::HGSS) if suffix.chars().all(|c| c.is_ascii_digit()) => {
+                    suffix.parse::<u16>().ok()
+                }
+                Some(GameFamily::HGSS) => None,
+                _ if !suffix.is_empty() => u16::from_str_radix(suffix, 16).ok(),
+                _ => None,
+            };
+
+            if let Some(id) = id {
+                return self.get_script_cmd_by_id(id);
+            }
         }
 
         None
@@ -826,6 +834,16 @@ mod tests {
             .get_command("Dummy0001")
             .expect("Dummy alias lookup failed");
         assert_eq!(cmd.id, Some(1));
+        assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn test_get_command_resolves_hgss_decimal_dummy_alias() {
+        let db = test_db_for_legacy_lookup_with_version("hgss");
+        let cmd = db
+            .get_command("Dummy16")
+            .expect("hgss decimal dummy alias lookup failed");
+        assert_eq!(cmd.id, Some(16));
         assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
     }
 

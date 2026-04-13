@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use crate::database::ConstantDb;
 use crate::decompiler::levelscript::{
     LevelScript, LevelScriptHeaderEntry, LevelScriptVarConditionEntry,
 };
+use dashmap::DashMap;
+use uxie::c_parser::defines::eval_expr_with_parent;
 
 #[derive(Debug, Clone)]
 pub struct LevelscriptTranspileResult {
@@ -199,6 +203,20 @@ where
 
     if let Some(value) = constants.and_then(|c| c.get(arg)) {
         return T::try_from(value).map_err(|_| "constant value out of range".to_string());
+    }
+
+    if let Some(constants) = constants {
+        let exprs: HashMap<String, String> = HashMap::new();
+        let resolved: HashMap<String, i64> = HashMap::new();
+        let cache: DashMap<String, i64> = DashMap::new();
+        let parent_resolver = |name: &str| constants.get(name).map(i64::from);
+
+        if let Some(value) = eval_expr_with_parent(arg, &exprs, &resolved, &cache, &parent_resolver)
+        {
+            return i32::try_from(value)
+                .map_err(|_| "constant value out of range".to_string())
+                .and_then(|v| T::try_from(v).map_err(|_| "value out of range".to_string()));
+        }
     }
 
     Err(format!("unknown constant or invalid number: '{}'", arg))
@@ -560,5 +578,23 @@ FrameTable:
             "unrecognized levelscript line: 'UnknownFrameCommand 1, 2, 3'"
         );
         assert_eq!(error.line, 6);
+    }
+
+    #[test]
+    fn test_parse_script_id_supports_additive_constant_expression() {
+        let db =
+            crate::database::DatabaseV2::load(std::path::Path::new("src/db/hgss/hgss_v2.json"))
+                .expect("failed to load hgss database");
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+        constants
+            .load_directory("src/db")
+            .expect("failed to load constants directory");
+
+        let base = constants.get("TRUE").expect("TRUE should exist");
+        let parsed =
+            parse_script_id("TRUE + 1", Some(&constants)).expect("expression should parse");
+
+        assert_eq!(parsed, (base + 1) as u32);
     }
 }

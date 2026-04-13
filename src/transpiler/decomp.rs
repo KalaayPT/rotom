@@ -96,19 +96,12 @@ struct SwitchCaseLine {
     target: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SwitchBlock {
-    subject: String,
-    cases: Vec<SwitchCaseLine>,
-}
-
 #[derive(Default)]
 struct RenderState {
     has_script_entry_end: bool,
     seen_script_entry_end: bool,
     seen_first_label_after_entry_end: bool,
     seen_labels: HashSet<String>,
-    active_switch_subject: Option<String>,
 }
 
 /// Transpile a decomp script to Rotoscript format
@@ -155,15 +148,6 @@ fn render_transpile_body(
                 inline_comment,
             } => (statement, inline_comment),
         };
-
-        if state.seen_script_entry_end
-            && let Some(switch_block) = parse_switch_block(&lines, line_idx)
-        {
-            state.active_switch_subject = Some(switch_block.subject.clone());
-            render_switch_block(&switch_block, inline_comment.as_deref(), &mut output);
-            line_idx += switch_block.cases.len() + 1;
-            continue;
-        }
 
         process_content_line(
             statement,
@@ -254,15 +238,14 @@ fn process_content_line(
         return Ok(());
     }
 
-    if let Some(case_line) = parse_case_line(statement) {
-        if let Some(subject) = state.active_switch_subject.as_deref() {
-            render_freestanding_case_line(subject, &case_line, output);
-            return Ok(());
-        }
+    if let Some(subject) = parse_switch_line(statement) {
+        render_switch_line(subject, inline_comment, output);
+        return Ok(());
     }
 
-    if statement == "end" {
-        state.active_switch_subject = None;
+    if let Some(case_line) = parse_case_line(statement) {
+        render_case_line(&case_line, inline_comment, output);
+        return Ok(());
     }
 
     render_command_line(statement, inline_comment, prepass, db, output);
@@ -278,20 +261,27 @@ fn preprocess_body_line(raw_trimmed: &str) -> BodyLine<'_> {
         return BodyLine::SkipPreprocessor;
     }
 
-    if raw_trimmed.starts_with('@') || raw_trimmed.starts_with("//") {
-        // Keep regular comments, and convert @ comments to //
-        let comment = if raw_trimmed.starts_with('@') {
-            raw_trimmed.replacen('@', "//", 1)
+    if raw_trimmed.starts_with('@') || raw_trimmed.starts_with("//") || raw_trimmed.starts_with(';')
+    {
+        // Keep regular comments, converting decomp comment markers to //.
+        let comment = if raw_trimmed.starts_with('@') || raw_trimmed.starts_with(';') {
+            raw_trimmed.replacen(raw_trimmed.chars().next().unwrap(), "//", 1)
         } else {
             raw_trimmed.to_string()
         };
         return BodyLine::FullComment(comment);
     }
 
-    let (trimmed, inline_comment) = if let Some(idx) = raw_trimmed.find('@') {
+    let comment_start = [raw_trimmed.find('@'), raw_trimmed.find(';')]
+        .into_iter()
+        .flatten()
+        .min();
+
+    let (trimmed, inline_comment) = if let Some(idx) = comment_start {
+        let comment_marker = raw_trimmed[idx..].chars().next().unwrap();
         (
             raw_trimmed[..idx].trim(),
-            Some(raw_trimmed[idx..].replace('@', "//")),
+            Some(raw_trimmed[idx..].replacen(comment_marker, "//", 1)),
         )
     } else {
         (raw_trimmed, None)
@@ -301,6 +291,27 @@ fn preprocess_body_line(raw_trimmed: &str) -> BodyLine<'_> {
         statement: trimmed,
         inline_comment,
     }
+}
+
+fn parse_switch_line(statement: &str) -> Option<&str> {
+    let (cmd_name, args) = split_command_and_args(statement);
+    if !cmd_name.eq_ignore_ascii_case("switch") {
+        return None;
+    }
+
+    let subject = args?.trim();
+    if subject.is_empty() {
+        None
+    } else {
+        Some(subject)
+    }
+}
+
+fn render_switch_line(subject: &str, inline_comment: Option<&str>, output: &mut String) {
+    output.push_str("    CopyVar 0x8008, ");
+    output.push_str(subject);
+    append_inline_comment(output, inline_comment);
+    output.push('\n');
 }
 
 fn render_command_line(
@@ -364,8 +375,12 @@ fn should_emit_synthetic_unused_end(statement: &str, state: &RenderState) -> boo
 }
 
 fn parse_case_line(statement: &str) -> Option<SwitchCaseLine> {
-    let rest = statement.strip_prefix("case ")?;
-    let rest = rest.trim();
+    let (cmd_name, rest) = split_command_and_args(statement);
+    if !cmd_name.eq_ignore_ascii_case("case") {
+        return None;
+    }
+
+    let rest = rest?.trim();
     let (value, target) = rest.split_once(',')?;
     let value = value.trim();
     let target = target.trim();
@@ -380,9 +395,11 @@ fn parse_case_line(statement: &str) -> Option<SwitchCaseLine> {
     })
 }
 
-fn render_freestanding_case_line(subject: &str, case_line: &SwitchCaseLine, output: &mut String) {
-    let _ = writeln!(output, "    copyvar 0x8008, {subject}");
-    let _ = writeln!(output, "    CompareVarValue 0x8008, {}", case_line.value);
+fn render_case_line(case_line: &SwitchCaseLine, inline_comment: Option<&str>, output: &mut String) {
+    output.push_str("    CompareVarValue 0x8008, ");
+    output.push_str(&case_line.value);
+    append_inline_comment(output, inline_comment);
+    output.push('\n');
     let _ = writeln!(output, "    JumpIf EQUAL, {}", case_line.target);
 }
 
@@ -421,74 +438,6 @@ fn split_command_and_args(trimmed: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn parse_switch_block(lines: &[&str], start_idx: usize) -> Option<SwitchBlock> {
-    let start_line = lines.get(start_idx)?.trim();
-    let (cmd_name, args) = split_command_and_args(start_line);
-    if cmd_name != "switch" {
-        return None;
-    }
-
-    let subject = args?.trim();
-    if subject.is_empty() {
-        return None;
-    }
-
-    let mut cases = Vec::new();
-    let mut idx = start_idx + 1;
-
-    while idx < lines.len() {
-        let raw_trimmed = lines[idx].trim();
-        let statement = match preprocess_body_line(raw_trimmed) {
-            BodyLine::Empty | BodyLine::SkipPreprocessor | BodyLine::FullComment(_) => {
-                idx += 1;
-                continue;
-            }
-            BodyLine::Content {
-                statement,
-                inline_comment: _,
-            } => statement,
-        };
-
-        let Some(case_line) = parse_case_line(statement) else {
-            break;
-        };
-
-        cases.push(case_line);
-        idx += 1;
-    }
-
-    if cases.is_empty() {
-        None
-    } else {
-        Some(SwitchBlock {
-            subject: subject.to_string(),
-            cases,
-        })
-    }
-}
-
-fn render_switch_block(
-    switch_block: &SwitchBlock,
-    inline_comment: Option<&str>,
-    output: &mut String,
-) {
-    output.push_str("    copyvar 0x8008, ");
-    output.push_str(&switch_block.subject);
-    append_inline_comment(output, inline_comment);
-    output.push('\n');
-
-    output.push_str("    match 0x8008 with\n");
-    for case in &switch_block.cases {
-        output.push_str("        case ");
-        output.push_str(&case.value);
-        output.push_str(":\n");
-        output.push_str("            Jump ");
-        output.push_str(&case.target);
-        output.push('\n');
-    }
-    output.push_str("    endmatch\n");
-}
-
 fn collect_prepass_data(input: &str, db: Option<&crate::database::DatabaseV2>) -> PrepassData {
     let lines: Vec<&str> = input.lines().collect();
     let movement_commands = movement_commands_from_db(db);
@@ -524,7 +473,11 @@ fn collect_jump_table_and_movement_labels(
     for (line_idx, line) in lines.iter().enumerate() {
         let statement = line.trim();
 
-        if statement.is_empty() || statement.starts_with("//") || statement.starts_with('@') {
+        if statement.is_empty()
+            || statement.starts_with("//")
+            || statement.starts_with('@')
+            || statement.starts_with(';')
+        {
             continue;
         }
 
@@ -1139,138 +1092,39 @@ Test:
     }
 
     #[test]
-    fn test_parse_switch_block() {
-        let lines = vec![
-            "    switch VAR_UNK_412D",
-            "    case 0, _01C8",
-            "    case 1, _01E4",
-            "    goto _0238",
-        ];
-
-        let block = parse_switch_block(&lines, 0).expect("switch block should parse");
-        assert_eq!(block.subject, "VAR_UNK_412D");
-        assert_eq!(block.cases.len(), 2);
+    fn test_parse_switch_line_is_case_insensitive() {
         assert_eq!(
-            block.cases[0],
-            SwitchCaseLine {
-                value: "0".to_string(),
-                target: "_01C8".to_string(),
-            }
+            parse_switch_line("switch VAR_UNK_412D"),
+            Some("VAR_UNK_412D")
         );
         assert_eq!(
-            block.cases[1],
-            SwitchCaseLine {
-                value: "1".to_string(),
-                target: "_01E4".to_string(),
-            }
+            parse_switch_line("Switch VAR_UNK_412D"),
+            Some("VAR_UNK_412D")
         );
+        assert!(parse_switch_line("switchfoo VAR_UNK_412D").is_none());
     }
 
     #[test]
-    fn test_parse_switch_block_ignores_blank_lines_and_comments() {
-        let lines = vec![
-            "    switch VAR_UNK_412D",
-            "",
-            "    @ comment between switch cases",
-            "    case 0, _01C8",
-            "    // another comment",
-            "    case 1, _01E4",
-            "",
-            "    goto _0238",
-        ];
-
-        let block = parse_switch_block(&lines, 0).expect("switch block should parse");
-        assert_eq!(block.subject, "VAR_UNK_412D");
-        assert_eq!(block.cases.len(), 2);
-        assert_eq!(
-            block.cases[0],
-            SwitchCaseLine {
-                value: "0".to_string(),
-                target: "_01C8".to_string(),
-            }
-        );
-        assert_eq!(
-            block.cases[1],
-            SwitchCaseLine {
-                value: "1".to_string(),
-                target: "_01E4".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_switch_block_requires_standalone_case_keyword() {
-        let lines = vec![
-            "    switch VAR_UNK_412D",
-            "    casefoo 0, _01C8",
-            "    goto _0238",
-        ];
-
-        assert!(parse_switch_block(&lines, 0).is_none());
-    }
-
-    #[test]
-    fn test_render_switch_block() {
-        let block = SwitchBlock {
-            subject: "VAR_UNK_412D".to_string(),
-            cases: vec![
-                SwitchCaseLine {
-                    value: "0".to_string(),
-                    target: "_01C8".to_string(),
-                },
-                SwitchCaseLine {
-                    value: "1".to_string(),
-                    target: "_01E4".to_string(),
-                },
-            ],
-        };
-
-        let mut output = String::new();
-        render_switch_block(&block, None, &mut output);
-
-        assert_eq!(
-            output,
-            concat!(
-                "    copyvar 0x8008, VAR_UNK_412D\n",
-                "    match 0x8008 with\n",
-                "        case 0:\n",
-                "            Jump _01C8\n",
-                "        case 1:\n",
-                "            Jump _01E4\n",
-                "    endmatch\n",
-            )
-        );
-    }
-
-    #[test]
-    fn test_transpile_switch_block_to_match() {
+    fn test_transpile_switch_case_macros_to_commands() {
         let input = r"
     ScriptEntry Test
     ScriptEntryEnd
 
 Test:
-    switch VAR_UNK_412D
-    case 0, _01C8
-    case 1, _01E4
+    Switch VAR_UNK_412D
+    Case 0, _01C8
+    Case 1, _01E4
 _01C8:
     Return
 _01E4:
     Return
 ";
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(output.source.contains("    copyvar 0x8008, VAR_UNK_412D"));
-        assert!(output.source.contains("    match 0x8008 with"));
-        assert!(
-            output
-                .source
-                .contains("        case 0:\n            Jump _01C8")
-        );
-        assert!(
-            output
-                .source
-                .contains("        case 1:\n            Jump _01E4")
-        );
-        assert!(output.source.contains("    endmatch"));
+        assert!(output.source.contains("    CopyVar 0x8008, VAR_UNK_412D"));
+        assert!(output.source.contains("    CompareVarValue 0x8008, 0"));
+        assert!(output.source.contains("    JumpIf EQUAL, _01C8"));
+        assert!(output.source.contains("    CompareVarValue 0x8008, 1"));
+        assert!(output.source.contains("    JumpIf EQUAL, _01E4"));
     }
 
     #[test]
@@ -1283,19 +1137,27 @@ _01E4:
                 target: "_03AC".to_string(),
             }
         );
+        let pascal_case_line = parse_case_line("Case 7, _0400").expect("case line should parse");
+        assert_eq!(
+            pascal_case_line,
+            SwitchCaseLine {
+                value: "7".to_string(),
+                target: "_0400".to_string(),
+            }
+        );
     }
 
     #[test]
-    fn test_transpile_freestanding_case_line_uses_active_switch_subject() {
+    fn test_transpile_switch_case_with_intervening_commands() {
         let input = r"
     ScriptEntry Test
     ScriptEntryEnd
 
 Test:
-    switch VAR_SPECIAL_RESULT
-    case 5, _0071
+    Switch VAR_SPECIAL_RESULT
+    Case 5, _0071
     npc_msg msg_0139_D49R0102_00004
-    case 0, _0166
+    Case 0, _0166
     goto _024E
     end
 ";
@@ -1303,12 +1165,37 @@ Test:
         assert!(
             output
                 .source
-                .contains("    copyvar 0x8008, VAR_SPECIAL_RESULT")
+                .contains("    CopyVar 0x8008, VAR_SPECIAL_RESULT")
         );
+        assert!(output.source.contains("    CompareVarValue 0x8008, 5"));
+        assert!(output.source.contains("    JumpIf EQUAL, _0071"));
         assert!(output.source.contains("    CompareVarValue 0x8008, 0"));
         assert!(output.source.contains("    JumpIf EQUAL, _0166"));
         assert!(output.source.contains("    goto _024E"));
         assert!(output.source.contains("    end"));
+    }
+
+    #[test]
+    fn test_transpile_semicolon_comments() {
+        let input = r"
+; file comment
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    SetVar VAR_RESULT, 1 ; inline comment
+    ; block comment
+    End
+";
+
+        let output = transpile(input, None).expect("transpile should succeed");
+        assert!(output.source.contains("// file comment"));
+        assert!(
+            output
+                .source
+                .contains("    SetVar VAR_RESULT, 1 // inline comment")
+        );
+        assert!(output.source.contains("// block comment"));
     }
 
     #[test]
