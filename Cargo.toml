@@ -23,7 +23,7 @@ regex = "1.12.2"
 serde = {version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10"
-uxie = "0.5.2"
+uxie = "0.5.6"
 
 [dev-dependencies]
 sha2 = "0.10"
