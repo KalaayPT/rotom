@@ -6,11 +6,13 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::compiler::ParseResult;
 use crate::compiler::parse_error::{CompileError, database_error};
 use uxie::SymbolTable;
+use uxie::c_parser::defines::eval_expr_with_parent;
 
 pub fn normalize_command_name(name: &str) -> String {
     name.replace('_', "").to_ascii_lowercase()
@@ -539,18 +541,47 @@ impl Variant {
 // ============================================================================
 
 /// Central repository for all named constants (built-in, DSPRE, and Decomp)
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct ConstantDb {
     /// Manual and built-in constants: name -> value
     constants: HashMap<String, i32>,
-    /// Uxie-powered symbol table for decomp projects
+    /// Decomp project root for include resolution
+    uxie_project_root: Option<PathBuf>,
+    /// Base Uxie symbol table loaded for the whole decomp project
+    uxie_base_symbols: Option<SymbolTable>,
+    /// Active Uxie symbol table, optionally extended with file-local constants
     uxie_symbols: Option<SymbolTable>,
+}
+
+impl std::fmt::Debug for ConstantDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConstantDb")
+            .field("constants_len", &self.constants.len())
+            .field("uxie_project_root", &self.uxie_project_root)
+            .field(
+                "uxie_base_symbol_count",
+                &self
+                    .uxie_base_symbols
+                    .as_ref()
+                    .map(|s| s.get_all_defines().len()),
+            )
+            .field(
+                "uxie_symbol_count",
+                &self
+                    .uxie_symbols
+                    .as_ref()
+                    .map(|s| s.get_all_defines().len()),
+            )
+            .finish()
+    }
 }
 
 impl ConstantDb {
     pub fn new() -> Self {
         ConstantDb {
             constants: HashMap::new(),
+            uxie_project_root: None,
+            uxie_base_symbols: None,
             uxie_symbols: None,
         }
     }
@@ -689,14 +720,75 @@ impl ConstantDb {
     }
 
     pub fn load_decomp_project<P: AsRef<Path>>(&mut self, root: P) -> Result<usize, CompileError> {
+        let root = root.as_ref();
         let ws = uxie::Workspace::open_decomp(root).map_err(|e| CompileError::Database {
             message: format!("Failed to open decomp project via Uxie: {}", e),
         })?;
 
         let symbols = (*ws.symbols).clone();
         let count = symbols.get_all_defines().len();
+        self.uxie_project_root = Some(root.to_path_buf());
+        self.uxie_base_symbols = Some(symbols.clone());
         self.uxie_symbols = Some(symbols);
         Ok(count)
+    }
+
+    /// Load file-local constants for a specific source file using Uxie's include handling.
+    ///
+    /// When a decomp workspace is loaded, this follows the file's `#include`s and lets Uxie handle
+    /// special cases like per-map event headers. The resulting symbol table replaces the current
+    /// Uxie symbols for this `ConstantDb` instance.
+    pub fn load_script_constants<Q: AsRef<Path>>(
+        &mut self,
+        script_path: Q,
+    ) -> Result<usize, CompileError> {
+        let script_path = script_path.as_ref();
+        if !script_path.exists() || !script_path.is_file() {
+            return Ok(0);
+        }
+
+        let Some(project_root) = &self.uxie_project_root else {
+            return Ok(0);
+        };
+        let Some(base_symbols) = &self.uxie_base_symbols else {
+            return Ok(0);
+        };
+
+        let include_dirs = Self::decomp_include_dirs(project_root);
+        let mut collected = SymbolTable::with_parent(Arc::new(base_symbols.clone()));
+        let mut unresolved_include_handler = |table: &mut SymbolTable,
+                                              parent_dir: &Path,
+                                              include_dirs: &[PathBuf],
+                                              include_path: &str|
+         -> std::io::Result<bool> {
+            Self::try_load_decomp_events_include_json(table, parent_dir, include_dirs, include_path)
+        };
+
+        collected
+            .load_recursive_with_handler(
+                script_path,
+                &include_dirs,
+                Some(&mut unresolved_include_handler),
+            )
+            .map_err(|e| CompileError::Database {
+                message: format!(
+                    "Failed to collect file-local constants via Uxie for '{}': {}",
+                    script_path.display(),
+                    e
+                ),
+            })?;
+
+        let base_count = base_symbols.get_all_defines().len();
+        let collected_count = collected.get_all_defines().len();
+        self.uxie_symbols = Some(collected);
+        Ok(collected_count.saturating_sub(base_count))
+    }
+
+    /// Clone the constant database and apply file-local constants for one source file.
+    pub fn clone_for_script<Q: AsRef<Path>>(&self, script_path: Q) -> Result<Self, CompileError> {
+        let mut cloned = self.clone();
+        cloned.load_script_constants(script_path)?;
+        Ok(cloned)
     }
 
     pub fn load_map_events<P: AsRef<Path>, Q: AsRef<Path>>(
@@ -704,6 +796,10 @@ impl ConstantDb {
         decomp_root: P,
         script_path: Q,
     ) -> Result<usize, CompileError> {
+        if self.uxie_project_root.is_some() {
+            return self.load_script_constants(script_path);
+        }
+
         let script_name = match script_path.as_ref().file_stem().and_then(|s| s.to_str()) {
             Some(name) => name,
             None => return Ok(0),
@@ -739,6 +835,42 @@ impl ConstantDb {
         }
     }
 
+    fn decomp_include_dirs(project_root: &Path) -> Vec<PathBuf> {
+        vec![
+            project_root.to_path_buf(),
+            project_root.join("include"),
+            project_root.join("res/field/scripts"),
+        ]
+    }
+
+    fn try_load_decomp_events_include_json(
+        table: &mut SymbolTable,
+        parent_dir: &Path,
+        include_dirs: &[PathBuf],
+        include_path: &str,
+    ) -> std::io::Result<bool> {
+        if !include_path.contains("res/field/events/") || !include_path.ends_with(".h") {
+            return Ok(false);
+        }
+
+        let json_path_str = include_path.replace(".h", ".json");
+        let json_rel = parent_dir.join(&json_path_str);
+        if json_rel.exists() {
+            table.load_events_json(&json_rel)?;
+            return Ok(true);
+        }
+
+        for dir in include_dirs {
+            let json_path = dir.join(&json_path_str);
+            if json_path.exists() {
+                table.load_events_json(&json_path)?;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     pub fn get(&self, name: &str) -> Option<i32> {
         if let Some(val) = self.constants.get(name) {
             return Some(*val);
@@ -751,6 +883,28 @@ impl ConstantDb {
         }
 
         None
+    }
+
+    pub fn evaluate_expression(&self, expr: &str) -> Option<i32> {
+        let expr = expr.trim();
+        if expr.is_empty() {
+            return None;
+        }
+
+        if let Some(symbols) = &self.uxie_symbols
+            && let Some(val) = symbols.evaluate_expression(expr)
+            && let Ok(val) = i32::try_from(val)
+        {
+            return Some(val);
+        }
+
+        let exprs: HashMap<String, String> = HashMap::new();
+        let resolved: HashMap<String, i64> = HashMap::new();
+        let cache: dashmap::DashMap<String, i64> = dashmap::DashMap::new();
+        let parent_resolver = |name: &str| self.get(name).map(i64::from);
+
+        eval_expr_with_parent(expr, &exprs, &resolved, &cache, &parent_resolver)
+            .and_then(|val| i32::try_from(val).ok())
     }
 
     pub fn len(&self) -> usize {

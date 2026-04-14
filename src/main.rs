@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser as ClapParser, Subcommand};
 
@@ -57,6 +57,12 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+
+    Init {
+        /// Path to the project root (defaults to current directory)
+        #[arg(short, long)]
+        root: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -93,47 +99,13 @@ fn main() {
                 std::process::exit(1);
             }
         }
-    }
-}
-
-fn load_map_event_constants_for_input(
-    constants: &mut ConstantDb,
-    decomp_root: &Path,
-    input: &Path,
-) -> Result<usize, CompileError> {
-    if input.is_file() {
-        return constants.load_map_events(decomp_root, input);
-    }
-
-    if !input.is_dir() {
-        return Ok(0);
-    }
-
-    let mut total = 0;
-    for entry in std::fs::read_dir(input)? {
-        let path = entry?.path();
-        if !path.is_file() {
-            continue;
+        Commands::Init { root } => {
+            if let Err(e) = init(root) {
+                eprintln!("Init failed: {}", e);
+                std::process::exit(1);
+            }
         }
-
-        let is_supported_script =
-            path.extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| {
-                    ext.eq_ignore_ascii_case("rotom")
-                        || ext.eq_ignore_ascii_case("script")
-                        || ext.eq_ignore_ascii_case("s")
-                        || ext.eq_ignore_ascii_case("json")
-                });
-
-        if !is_supported_script {
-            continue;
-        }
-
-        total += constants.load_map_events(decomp_root, &path)?;
     }
-
-    Ok(total)
 }
 
 fn compile(
@@ -190,11 +162,6 @@ fn compile(
         let decomp_count = constants.load_decomp_project(decomp)?;
         if !json {
             println!("Loaded {} constants from decomp project", decomp_count);
-        }
-
-        let map_count = load_map_event_constants_for_input(&mut constants, decomp, input)?;
-        if !json && map_count > 0 {
-            println!("Loaded {} map-specific event constants", map_count);
         }
     }
 
@@ -354,4 +321,13 @@ fn decompile(
             message: format!("{} file(s) failed to decompile", result.failures.len()),
         })
     }
+}
+
+fn init(root: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let root =
+        root.unwrap_or_else(|| std::env::current_dir().expect("failed to get current directory"));
+    let root = root.canonicalize()?;
+    std::fs::File::create(&root.join("rotom.toml"))?;
+
+    Ok(())
 }

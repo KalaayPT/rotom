@@ -388,6 +388,14 @@ impl<'a> Analyzer<'a> {
         self.database?.commands.get(name)
     }
 
+    fn is_command_call(&self, expr: &Expression) -> bool {
+        matches!(
+            &expr.node,
+            ExpressionKind::Call { function, .. }
+                if matches!(&function.node, ExpressionKind::Identifier(name) if self.get_command(name).is_some())
+        )
+    }
+
     /// Pick which param list this call should be checked against.
     ///
     /// This keeps analysis and lowering in sync.
@@ -684,6 +692,33 @@ impl<'a> Analyzer<'a> {
                     )
                 })
             }
+            ExpressionKind::Call { function, .. } => {
+                let ExpressionKind::Identifier(name) = &function.node else {
+                    return Err(analysis_error(
+                        expr.span.clone(),
+                        "Function-like constant expressions must use a simple name".to_string(),
+                    ));
+                };
+
+                if self.get_command(name).is_some() {
+                    return Err(analysis_error(
+                        expr.span.clone(),
+                        format!("Command '{}' cannot be used as a constant expression", name),
+                    ));
+                }
+
+                let expr_text = self.format_expression_for_constant_eval(expr)?;
+                if let Some(constants) = self.constants
+                    && let Some(value) = constants.evaluate_expression(&expr_text)
+                {
+                    return Ok(value);
+                }
+
+                Err(analysis_error(
+                    expr.span.clone(),
+                    format!("Could not resolve '{}' as a constant expression", expr_text),
+                ))
+            }
             _ => Err(analysis_error(
                 expr.span.clone(),
                 format!(
@@ -691,6 +726,75 @@ impl<'a> Analyzer<'a> {
                     expr.node
                 ),
             )),
+        }
+    }
+
+    fn format_expression_for_constant_eval(&self, expr: &Expression) -> ParseResult<String> {
+        match &expr.node {
+            ExpressionKind::Number(n) => Ok(n.to_string()),
+            ExpressionKind::Identifier(name) => Ok(name.clone()),
+            ExpressionKind::Label(name) => Ok(name.clone()),
+            ExpressionKind::Prefix { operator, id } => {
+                let inner = self.format_expression_for_constant_eval(id)?;
+                let op = match operator {
+                    super::token::TokenType::Minus => "-",
+                    super::token::TokenType::Plus => "+",
+                    super::token::TokenType::Not => "!",
+                    _ => {
+                        return Err(analysis_error(
+                            expr.span.clone(),
+                            format!(
+                                "Unsupported prefix operator {:?} in constant expression",
+                                operator
+                            ),
+                        ));
+                    }
+                };
+                Ok(format!("{}{}", op, inner))
+            }
+            ExpressionKind::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                let left_str = self.format_expression_for_constant_eval(left)?;
+                let right_str = self.format_expression_for_constant_eval(right)?;
+                let op = match operator {
+                    super::token::TokenType::Plus => "+",
+                    super::token::TokenType::Minus => "-",
+                    super::token::TokenType::Mul => "*",
+                    super::token::TokenType::LesserThan => "<",
+                    super::token::TokenType::GreaterThan => ">",
+                    super::token::TokenType::LesserEqual => "<=",
+                    super::token::TokenType::GreaterEqual => ">=",
+                    super::token::TokenType::Equal => "==",
+                    super::token::TokenType::NotEqual => "!=",
+                    super::token::TokenType::And => "&&",
+                    super::token::TokenType::Or => "||",
+                    _ => {
+                        return Err(analysis_error(
+                            expr.span.clone(),
+                            format!("Unsupported operator {:?} in constant expression", operator),
+                        ));
+                    }
+                };
+                Ok(format!("({} {} {})", left_str, op, right_str))
+            }
+            ExpressionKind::Call { function, args } => {
+                let ExpressionKind::Identifier(name) = &function.node else {
+                    return Err(analysis_error(
+                        expr.span.clone(),
+                        "Function-like constant expressions must use a simple name".to_string(),
+                    ));
+                };
+
+                let mut formatted_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    formatted_args.push(self.format_expression_for_constant_eval(arg)?);
+                }
+
+                Ok(format!("{}({})", name, formatted_args.join(", ")))
+            }
         }
     }
 
@@ -801,7 +905,11 @@ impl<'a> Analyzer<'a> {
                 self.validate_expression(id)?;
             }
             ExpressionKind::Call { function, args } => {
-                self.validate_autovar_call(function, args, &expr.span)?;
+                if self.is_command_call(expr) {
+                    self.validate_autovar_call(function, args, &expr.span)?;
+                } else {
+                    self.resolve_expression_to_int(expr).map(|_| ())?;
+                }
             }
         }
         Ok(())

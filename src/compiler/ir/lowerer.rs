@@ -226,7 +226,7 @@ impl<'a> Lowerer<'a> {
         &mut self,
         subject: &Expression,
     ) -> ParseResult<Expression> {
-        if let ExpressionKind::Call { function, args } = &subject.node {
+        if let Some((function, args)) = self.command_call_parts(subject) {
             self.lower_autovar_call(function, args)?;
             return Ok(Expression {
                 node: ExpressionKind::Number(VAR_RESULT),
@@ -786,6 +786,8 @@ impl<'a> Lowerer<'a> {
                 let inner = self.format_arg_for_substitution(id)?;
                 let op_str = match operator {
                     TokenType::Minus => "-",
+                    TokenType::Plus => "+",
+                    TokenType::Not => "!",
                     _ => {
                         return Err(lowering_error(format!(
                             "Unsupported prefix operator {:?} in macro argument",
@@ -806,6 +808,14 @@ impl<'a> Lowerer<'a> {
                     TokenType::Plus => "+",
                     TokenType::Minus => "-",
                     TokenType::Mul => "*",
+                    TokenType::LesserThan => "<",
+                    TokenType::GreaterThan => ">",
+                    TokenType::LesserEqual => "<=",
+                    TokenType::GreaterEqual => ">=",
+                    TokenType::Equal => "==",
+                    TokenType::NotEqual => "!=",
+                    TokenType::And => "&&",
+                    TokenType::Or => "||",
                     _ => {
                         return Err(lowering_error(format!(
                             "Unsupported operator {:?} in macro argument",
@@ -815,10 +825,97 @@ impl<'a> Lowerer<'a> {
                 };
                 Ok(format!("{} {} {}", left_str, op_str, right_str))
             }
-            ExpressionKind::Call { .. } => Err(lowering_error(format!(
-                "Unsupported expression type in macro argument: {:?}",
-                expr.node
-            ))),
+            ExpressionKind::Call { function, args } => {
+                let ExpressionKind::Identifier(name) = &function.node else {
+                    return Err(lowering_error(
+                        "Function-like constant expressions must use a simple name".to_string(),
+                    ));
+                };
+
+                let mut formatted_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    formatted_args.push(self.format_arg_for_substitution(arg)?);
+                }
+
+                Ok(format!("{}({})", name, formatted_args.join(", ")))
+            }
+        }
+    }
+
+    fn command_call_parts<'b>(
+        &self,
+        expr: &'b Expression,
+    ) -> Option<(&'b Expression, &'b [Expression])> {
+        match &expr.node {
+            ExpressionKind::Call { function, args } if matches!(&function.node, ExpressionKind::Identifier(name) if self.db.commands.contains_key(name)) => {
+                Some((function.as_ref(), args.as_slice()))
+            }
+            _ => None,
+        }
+    }
+
+    fn format_expression_for_constant_eval(&self, expr: &Expression) -> ParseResult<String> {
+        match &expr.node {
+            ExpressionKind::Number(n) => Ok(n.to_string()),
+            ExpressionKind::Identifier(name) => Ok(name.clone()),
+            ExpressionKind::Label(name) => Ok(name.clone()),
+            ExpressionKind::Prefix { operator, id } => {
+                let inner = self.format_expression_for_constant_eval(id)?;
+                let op = match operator {
+                    TokenType::Minus => "-",
+                    TokenType::Plus => "+",
+                    TokenType::Not => "!",
+                    _ => {
+                        return Err(lowering_error(format!(
+                            "Unsupported prefix operator {:?} in constant expression",
+                            operator
+                        )));
+                    }
+                };
+                Ok(format!("{}{}", op, inner))
+            }
+            ExpressionKind::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                let left_str = self.format_expression_for_constant_eval(left)?;
+                let right_str = self.format_expression_for_constant_eval(right)?;
+                let op = match operator {
+                    TokenType::Plus => "+",
+                    TokenType::Minus => "-",
+                    TokenType::Mul => "*",
+                    TokenType::LesserThan => "<",
+                    TokenType::GreaterThan => ">",
+                    TokenType::LesserEqual => "<=",
+                    TokenType::GreaterEqual => ">=",
+                    TokenType::Equal => "==",
+                    TokenType::NotEqual => "!=",
+                    TokenType::And => "&&",
+                    TokenType::Or => "||",
+                    _ => {
+                        return Err(lowering_error(format!(
+                            "Unsupported operator {:?} in constant expression",
+                            operator
+                        )));
+                    }
+                };
+                Ok(format!("({} {} {})", left_str, op, right_str))
+            }
+            ExpressionKind::Call { function, args } => {
+                let ExpressionKind::Identifier(name) = &function.node else {
+                    return Err(lowering_error(
+                        "Function-like constant expressions must use a simple name".to_string(),
+                    ));
+                };
+
+                let mut formatted_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    formatted_args.push(self.format_expression_for_constant_eval(arg)?);
+                }
+
+                Ok(format!("{}({})", name, formatted_args.join(", ")))
+            }
         }
     }
 
@@ -907,7 +1004,7 @@ impl<'a> Lowerer<'a> {
         target_label: &str,
         invert: bool,
     ) -> ParseResult<()> {
-        if let ExpressionKind::Call { function, args } = &expr.node {
+        if let Some((function, args)) = self.command_call_parts(expr) {
             self.lower_autovar_call(function, args)?;
             self.output.push(IrOpcode::Command {
                 name: "CompareVarValue".to_string(),
@@ -977,7 +1074,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_operand_if_call(&mut self, expr: &Expression) -> ParseResult<Option<i32>> {
-        if let ExpressionKind::Call { function, args } = &expr.node {
+        if let Some((function, args)) = self.command_call_parts(expr) {
             self.lower_autovar_call(function, args)?;
             Ok(Some(VAR_RESULT))
         } else {
@@ -1139,10 +1236,29 @@ impl<'a> Lowerer<'a> {
                 };
                 Ok(Arg::Value(result))
             }
-            ExpressionKind::Call { .. } => Err(lowering_error(format!(
-                "Unsupported expression type: {:?}",
-                expr.node
-            ))),
+            ExpressionKind::Call { function, .. } => {
+                if self.command_call_parts(expr).is_some() {
+                    let ExpressionKind::Identifier(name) = &function.node else {
+                        unreachable!();
+                    };
+                    return Err(lowering_error(format!(
+                        "Command '{}' cannot be used as a plain value here",
+                        name
+                    )));
+                }
+
+                let expr_text = self.format_expression_for_constant_eval(expr)?;
+                if let Some(constants) = self.constants
+                    && let Some(value) = constants.evaluate_expression(&expr_text)
+                {
+                    return Ok(Arg::Value(value));
+                }
+
+                Err(lowering_error(format!(
+                    "Could not resolve '{}' as a constant expression",
+                    expr_text
+                )))
+            }
         }
     }
 

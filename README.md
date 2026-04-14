@@ -31,12 +31,6 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - **Inline labels**: `.local_label:` for local jumps within functions
 - **Autovar**: Commands that return results can be used directly in conditions (e.g., `if CheckPlayerOnBike() then`), inspired by the feature of the same name from PoryScript
 
-### Compiler Pipeline
-1. **Lexer** → Tokens
-2. **Parser** → AST with semantic analysis (symbol resolution, type checking)
-3. **Lowerer** → IR (flatten control flow, normalize comparisons)
-4. **Emitter** → Binary bytecode (jump tables, offset calculation, command mapping)
-
 ---
 
 ## Project Status

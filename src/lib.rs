@@ -179,6 +179,17 @@ fn compile_file_internal(
         .unwrap_or("")
         .to_lowercase();
 
+    let file_constants = if extension == "s" {
+        Some(
+            constants
+                .clone_for_script(input)
+                .map_err(CompileFileError::IoError)?,
+        )
+    } else {
+        None
+    };
+    let constants = file_constants.as_ref().unwrap_or(constants);
+
     let is_levelscript = is_levelscript_file(input)
         || (extension == "s" && transpiler::is_levelscript_source(&source));
 
