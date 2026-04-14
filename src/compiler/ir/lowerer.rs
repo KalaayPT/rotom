@@ -18,7 +18,7 @@ use crate::compiler::ast::{Expression, ExpressionKind, ScriptFile, Statement, St
 use crate::compiler::parse_error::{ParseResult, lowering_error};
 use crate::compiler::token::TokenType;
 use crate::compiler::{Lexer, Parser};
-use crate::database::{Command, ComparisonOperator, DatabaseV2, ParamDef};
+use crate::database::{Command, ComparisonOperator, DatabaseV2, ParamDef, ResolvedCommandShape};
 use uxie::c_parser::defines::eval_expr_with_parent;
 
 use super::{Arg, Condition, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
@@ -375,8 +375,8 @@ impl<'a> Lowerer<'a> {
                 return self.expand_macro(command, args, macro_depth);
             }
 
-            let args_with_defaults = self.apply_defaults(command, cmd, args)?;
-            let resolved_args = self.resolve_args(&args_with_defaults)?;
+            let materialized_args = self.materialize_command_args(command, cmd, args)?;
+            let resolved_args = self.resolve_args(&materialized_args)?;
             self.output.push(IrOpcode::Command {
                 name: command.to_string(),
                 args: resolved_args,
@@ -392,53 +392,57 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Pick which param list this call should use before defaults or `emit_args` run.
+    fn select_command_shape<'b>(
+        &self,
+        cmd: &'b Command,
+        args: &[Expression],
+    ) -> ResolvedCommandShape<'b> {
+        let first_arg_u8 = args
+            .first()
+            .and_then(|arg| self.resolve_arg_to_int(arg).ok())
+            .and_then(|value| u8::try_from(value).ok());
+
+        cmd.resolve_source_call_shape(first_arg_u8, |condition, params| {
+            self.evaluate_condition_with_arg_count(condition, args, params)
+                .unwrap_or(false)
+        })
+    }
+
+    /// Build the final arg list lowering will emit for a command.
+    ///
+    /// Order:
+    /// 1. pick a call shape
+    /// 2. apply defaults to that shape
+    /// 3. if the shape defines `emit_args`, rewrite those args
+    fn materialize_command_args(
+        &self,
+        command: &str,
+        cmd: &Command,
+        args: &[Expression],
+    ) -> ParseResult<Vec<Expression>> {
+        let shape = self.select_command_shape(cmd, args);
+        let source_args = self.apply_defaults_to_params(command, shape.params, args)?;
+        self.apply_emit_args(shape, &source_args)
+    }
+
+    /// Apply defaults to a command or macro after its param list has already been chosen.
     fn apply_defaults(
         &self,
         command: &str,
         cmd: &Command,
         args: &[Expression],
     ) -> ParseResult<Vec<Expression>> {
-        let params: &[ParamDef] = if let Some(variants) = &cmd.variants {
-            let mut matched: &[ParamDef] = &cmd.params;
+        let params = self.select_command_shape(cmd, args).params;
+        self.apply_defaults_to_params(command, params, args)
+    }
 
-            if let Some(first_arg) = args.first()
-                && let Ok(mode) = self.resolve_arg_to_int(first_arg)
-            {
-                let variant_params = cmd.get_variant_params(mode as u8);
-                if !variant_params.is_empty() {
-                    matched = variant_params;
-                }
-            }
-
-            if std::ptr::eq(matched, &cmd.params as &[ParamDef]) {
-                for variant in variants {
-                    if let Some(condition) = &variant.condition {
-                        if condition == "else" {
-                            matched = if variant.params.is_empty() {
-                                &cmd.params
-                            } else {
-                                &variant.params
-                            };
-                            break;
-                        } else if matches!(
-                            self.evaluate_condition_with_arg_count(condition, args, &cmd.params),
-                            Ok(true)
-                        ) {
-                            matched = if variant.params.is_empty() {
-                                &cmd.params
-                            } else {
-                                &variant.params
-                            };
-                            break;
-                        }
-                    }
-                }
-            }
-            matched
-        } else {
-            &cmd.params
-        };
-
+    fn apply_defaults_to_params(
+        &self,
+        command: &str,
+        params: &[ParamDef],
+        args: &[Expression],
+    ) -> ParseResult<Vec<Expression>> {
         let param_count = params.len();
 
         if args.len() > param_count {
@@ -532,6 +536,33 @@ impl<'a> Lowerer<'a> {
         Ok(result.into_iter().flatten().collect())
     }
 
+    /// Rewrite the chosen args with `emit_args`.
+    ///
+    /// The expressions run after `$param` substitution on the already-defaulted args. If there is
+    /// no rewrite, the args are used as-is.
+    fn apply_emit_args(
+        &self,
+        shape: ResolvedCommandShape<'_>,
+        source_args: &[Expression],
+    ) -> ParseResult<Vec<Expression>> {
+        let Some(emit_args) = shape.emit_args else {
+            return Ok(source_args.to_vec());
+        };
+
+        let mut param_map: HashMap<String, String> = HashMap::new();
+        for (param, arg) in shape.params.iter().zip(source_args.iter()) {
+            param_map.insert(param.name.clone(), self.format_arg_for_substitution(arg)?);
+        }
+
+        let mut rewritten = Vec::with_capacity(emit_args.len());
+        for expr in emit_args {
+            let substituted = self.substitute_params(expr, &param_map);
+            rewritten.push(self.parse_expression_text(&substituted)?);
+        }
+
+        Ok(rewritten)
+    }
+
     fn expand_macro(
         &mut self,
         macro_name: &str,
@@ -546,9 +577,10 @@ impl<'a> Lowerer<'a> {
         }
 
         let cmd = self.db.get_command(macro_name)?;
-        let params = &cmd.params;
+        let shape = self.select_command_shape(cmd, args);
+        let params = shape.params;
 
-        let args_with_defaults = self.apply_defaults(macro_name, cmd, args)?;
+        let args_with_defaults = self.apply_defaults_to_params(macro_name, params, args)?;
 
         if args_with_defaults.len() > params.len() {
             return Err(lowering_error(format!(
@@ -624,7 +656,7 @@ impl<'a> Lowerer<'a> {
             match name {
                 "VARS_START" => Some(0x4000),
                 "VARS_END" => Some(0x800D),
-                "SCRIPT_LOCAL_VARS_START" => Some(0x4500),
+                "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
                 "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
                 _ => {
                     if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
@@ -672,7 +704,7 @@ impl<'a> Lowerer<'a> {
             ExpressionKind::Identifier(name) => match name.as_str() {
                 "VARS_START" => Ok(0x4000),
                 "VARS_END" => Ok(0x800D),
-                "SCRIPT_LOCAL_VARS_START" => Ok(0x4500),
+                "SCRIPT_LOCAL_VARS_START" => Ok(0x8000),
                 "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
                 _ => {
                     if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
@@ -828,6 +860,16 @@ impl<'a> Lowerer<'a> {
         }
 
         Ok(result)
+    }
+
+    /// Parse one expression with the normal Rotom parser.
+    ///
+    /// Defaults and `emit_args` use this so they follow the same expression rules as source code.
+    fn parse_expression_text(&self, expr: &str) -> ParseResult<Expression> {
+        let expr_with_newline = format!("{}\n", expr.trim());
+        let lexer = Lexer::new(&expr_with_newline);
+        let mut parser = Parser::new(lexer);
+        parser.parse_expression(crate::compiler::ast::Precedence::Lowest)
     }
 
     fn parse_expansion_line(&self, line: &str) -> ParseResult<Statement> {
@@ -1179,12 +1221,88 @@ mod tests {
     use crate::compiler::ast::{Expression, ExpressionKind};
     use crate::compiler::lexer::Lexer;
     use crate::compiler::parser::Parser;
-    use crate::database::{ConstantDb, DatabaseV2};
+    use crate::database::{CommandType, ConstantDb, DatabaseMeta, DatabaseV2, ParamType, Variant};
+    use std::collections::HashMap;
 
     fn create_test_db() -> DatabaseV2 {
         DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).expect(
             "Test database not found at src/db/platinum_v2.json - tests require the database file",
         )
+    }
+
+    fn create_view_rankings_shape_db() -> DatabaseV2 {
+        let mut commands = HashMap::new();
+        commands.insert(
+            "ViewRankings".to_string(),
+            Command {
+                cmd_type: CommandType::ScriptCmd,
+                id: Some(378),
+                legacy_name: None,
+                description: None,
+                params: vec![
+                    ParamDef {
+                        name: "packed_page".to_string(),
+                        param_type: ParamType::U16,
+                        const_value: None,
+                        default: None,
+                        optional: false,
+                    },
+                    ParamDef {
+                        name: "record".to_string(),
+                        param_type: ParamType::Var,
+                        const_value: None,
+                        default: None,
+                        optional: false,
+                    },
+                ],
+                variants: Some(vec![Variant {
+                    params: vec![
+                        ParamDef {
+                            name: "scope".to_string(),
+                            param_type: ParamType::U16,
+                            const_value: None,
+                            default: None,
+                            optional: false,
+                        },
+                        ParamDef {
+                            name: "page".to_string(),
+                            param_type: ParamType::U16,
+                            const_value: None,
+                            default: None,
+                            optional: false,
+                        },
+                        ParamDef {
+                            name: "record".to_string(),
+                            param_type: ParamType::Var,
+                            const_value: None,
+                            default: None,
+                            optional: false,
+                        },
+                    ],
+                    desc: Some("decomp source form".to_string()),
+                    condition: Some("3 args".to_string()),
+                    expansion: None,
+                    emit_args: Some(vec![
+                        "$scope * 3 + $page".to_string(),
+                        "$record".to_string(),
+                    ]),
+                }]),
+                expansion: None,
+            },
+        );
+
+        DatabaseV2 {
+            meta: DatabaseMeta {
+                version: "test".to_string(),
+                generated_at: None,
+                generated_from: None,
+            },
+            commands,
+            sounds: HashMap::new(),
+            comparison_operators: HashMap::new(),
+            overworld_directions: HashMap::new(),
+            special_overworlds: HashMap::new(),
+        }
     }
 
     fn parse_and_analyze(source: &str) -> (ScriptFile, SymbolTable) {
@@ -1197,6 +1315,18 @@ mod tests {
         constants.load_from_db(&db);
 
         let mut analyzer = Analyzer::with_database(&constants, &db);
+        analyzer.analyze(&script_file).unwrap();
+
+        (script_file, analyzer.symbols)
+    }
+
+    fn parse_and_analyze_with_db(source: &str, db: &DatabaseV2) -> (ScriptFile, SymbolTable) {
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, db);
         analyzer.analyze(&script_file).unwrap();
 
         (script_file, analyzer.symbols)
@@ -1255,6 +1385,58 @@ function TestFunc #1:
                     IrOpcode::Label(_) => panic!("Expected command"),
                 }
             }
+            TopLevelItem::Action(_) => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_command_variant_emit_args_rewrites_to_canonical_args() {
+        let source = r"
+function TestFunc #1:
+    ViewRankings 1, 2, 0x800C
+    End
+";
+        let db = create_view_rankings_shape_db();
+        let (script_file, symbols) = parse_and_analyze_with_db(source, &db);
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => match &ir_func.instructions[0] {
+                IrOpcode::Command { name, args } => {
+                    assert_eq!(name, "ViewRankings");
+                    assert_eq!(args.len(), 2);
+                    assert_eq!(args[0].unwrap_value(), 5);
+                    assert_eq!(args[1].unwrap_value(), 0x800C);
+                }
+                IrOpcode::Label(_) => panic!("Expected command"),
+            },
+            TopLevelItem::Action(_) => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_command_variant_emit_args_preserves_canonical_shape() {
+        let source = r"
+function TestFunc #1:
+    ViewRankings 5, 0x800C
+    End
+";
+        let db = create_view_rankings_shape_db();
+        let (script_file, symbols) = parse_and_analyze_with_db(source, &db);
+        let mut lowerer = Lowerer::new(&symbols, &db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => match &ir_func.instructions[0] {
+                IrOpcode::Command { name, args } => {
+                    assert_eq!(name, "ViewRankings");
+                    assert_eq!(args.len(), 2);
+                    assert_eq!(args[0].unwrap_value(), 5);
+                    assert_eq!(args[1].unwrap_value(), 0x800C);
+                }
+                IrOpcode::Label(_) => panic!("Expected command"),
+            },
             TopLevelItem::Action(_) => panic!("Expected function"),
         }
     }

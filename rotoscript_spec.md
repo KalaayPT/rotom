@@ -310,6 +310,45 @@ Native hardware commands defined in the game database.
     * If Arg is a Variable Alias, it resolves to the ID (e.g., 0x4000).
     * If Arg is a Label/Function name, it passes a reference to that location's offset.
 
+### 5.1.1 Database-Defined Call Shapes
+
+The JSON command database can accept more than one source-level call shape for the same opcode.
+
+* `params`: The command's normal binary arg list.
+* `default`: A value filled in when the caller leaves that arg out.
+* `variants`: Extra call shapes the compiler should accept.
+* `condition`: How to pick a variant. Conditions are checked in order. `else` is the fallback.
+* `emit_args`: Optional rewrite expressions that turn the chosen source args back into the normal
+  binary arg list.
+
+For script commands, the compiler does this:
+1. Pick a call shape. First-arg `const` variants are checked first, then conditional variants in
+   DB order, then the base `params`.
+2. Apply defaults on the chosen shape.
+3. If that shape has `emit_args`, rewrite the args.
+4. Lower and encode the final args normally.
+
+This lets the DB describe decomp-style sugar without changing the real binary layout. For example,
+`ViewRankings scope, page, record` can be accepted and rewritten to the engine's normal two-arg
+form.
+
+### 5.1.2 Database Macros
+
+Database entries with `type: "macro"` are compile-time sugar, not hardware opcodes.
+
+* `params` and `default` define the accepted macro args.
+* `variants` and `condition` can pick alternate macro call shapes or expansions.
+* `expansion` is a list of Rotom statements emitted after `$param` substitution.
+
+For macros, the compiler does this:
+1. Pick the macro call shape using the same variant rules as script commands.
+2. Apply defaults on that selected source shape.
+3. Select the macro expansion variant, if any.
+4. Substitute `$param` placeholders and parse the expanded statements as normal Rotom code.
+
+This makes DB macros useful for overloads, constant-based rewrites, and reusable helpers without
+changing the underlying command set.
+
 ### 5.2 Actions
 
 Special blocks containing only movement commands.

@@ -181,6 +181,16 @@ pub struct Command {
     pub expansion: Option<Vec<String>>,
 }
 
+/// The param list the compiler picked for this call.
+///
+/// The compiler picks a shape, fills in that shape's defaults, then optionally rewrites the
+/// result with `emit_args`.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedCommandShape<'a> {
+    pub params: &'a [ParamDef],
+    pub emit_args: Option<&'a [String]>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandType {
@@ -245,6 +255,12 @@ pub struct Variant {
     pub condition: Option<String>,
     #[serde(default)]
     pub expansion: Option<Vec<String>>,
+    /// Optional arg rewrite for this shape.
+    ///
+    /// Each entry is parsed as a Rotom expression after `$param` substitution. This runs after the
+    /// shape is chosen and its defaults have been applied.
+    #[serde(default)]
+    pub emit_args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -425,6 +441,54 @@ impl DatabaseV2 {
 }
 
 impl Command {
+    /// Pick which param list this call should use.
+    ///
+    /// Order:
+    /// 1. first-arg `const` variants
+    /// 2. conditional variants in DB order, with `else` as the fallback
+    /// 3. the base `params`
+    ///
+    /// The returned params are the ones used to check the call. Defaults run on that shape later,
+    /// and `emit_args` may rewrite the result afterward.
+    pub fn resolve_source_call_shape(
+        &self,
+        first_arg_u8: Option<u8>,
+        mut eval_condition: impl FnMut(&str, &[ParamDef]) -> bool,
+    ) -> ResolvedCommandShape<'_> {
+        if let Some(variants) = &self.variants {
+            if let Some(mode) = first_arg_u8 {
+                for variant in variants {
+                    if variant.matches_first_param_const(mode) {
+                        return ResolvedCommandShape {
+                            params: variant.source_params_or(&self.params),
+                            emit_args: variant.emit_args.as_deref(),
+                        };
+                    }
+                }
+            }
+
+            for variant in variants {
+                let Some(condition) = variant.condition.as_deref() else {
+                    continue;
+                };
+
+                if condition == "else"
+                    || eval_condition(condition, variant.source_params_or(&self.params))
+                {
+                    return ResolvedCommandShape {
+                        params: variant.source_params_or(&self.params),
+                        emit_args: variant.emit_args.as_deref(),
+                    };
+                }
+            }
+        }
+
+        ResolvedCommandShape {
+            params: &self.params,
+            emit_args: None,
+        }
+    }
+
     pub fn is_macro(&self) -> bool {
         self.cmd_type == CommandType::Macro
     }
@@ -449,6 +513,24 @@ impl Command {
 
     pub fn params_size(&self) -> usize {
         self.params.iter().map(|p| p.param_type.size()).sum()
+    }
+}
+
+impl Variant {
+    fn source_params_or<'a>(&'a self, default: &'a [ParamDef]) -> &'a [ParamDef] {
+        if self.params.is_empty() {
+            default
+        } else {
+            &self.params
+        }
+    }
+
+    fn matches_first_param_const(&self, mode: u8) -> bool {
+        self.params
+            .first()
+            .and_then(|param| param.const_value.as_deref())
+            .and_then(|value| value.parse::<u8>().ok())
+            == Some(mode)
     }
 }
 

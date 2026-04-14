@@ -1,11 +1,21 @@
-use std::{collections::HashMap, ops::Range};
+use dashmap::DashMap;
+use regex::Regex;
+use std::{collections::HashMap, ops::Range, sync::LazyLock};
+use uxie::c_parser::defines::eval_expr_with_parent;
 
-use crate::database::{Command, ComparisonOperator, ConstantDb, DatabaseV2, ParamType};
+use crate::database::{
+    Command, ComparisonOperator, ConstantDb, DatabaseV2, ParamDef, ParamType, ResolvedCommandShape,
+};
 
 use super::{
     ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind},
     parse_error::{CompileError, ParseResult, analysis_error},
 };
+
+/// Macro/variant arg-count condition matcher: `1 arg`, `2 args`, `3 arg(s)`, etc.
+static RE_ARG_COUNT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(\d+)\s+args?\(?s?\)?$").expect("static regex pattern is valid")
+});
 
 #[derive(Debug, Clone)]
 pub enum SymbolType {
@@ -378,6 +388,25 @@ impl<'a> Analyzer<'a> {
         self.database?.commands.get(name)
     }
 
+    /// Pick which param list this call should be checked against.
+    ///
+    /// This keeps analysis and lowering in sync.
+    fn select_command_shape<'b>(
+        &self,
+        cmd: &'b Command,
+        args: &[Expression],
+    ) -> ResolvedCommandShape<'b> {
+        let first_arg_u8 = args
+            .first()
+            .and_then(|arg| self.resolve_expression_to_int(arg).ok())
+            .and_then(|value| u8::try_from(value).ok());
+
+        cmd.resolve_source_call_shape(first_arg_u8, |condition, params| {
+            self.evaluate_variant_condition_with_arg_count(condition, args, params)
+                .unwrap_or(false)
+        })
+    }
+
     /// Check if a command is autovar-compatible (has a result parameter with `VAR_RESULT` default)
     fn is_autovar_command(&self, name: &str) -> bool {
         self.get_autovar_param_index(name).is_some()
@@ -498,29 +527,12 @@ impl<'a> Analyzer<'a> {
             return Ok(());
         };
 
+        // Analysis checks the args against the chosen source shape. Defaults and `emit_args`
+        // happen later during lowering.
+        let shape = self.select_command_shape(cmd, args);
+        let params = shape.params;
         let actual_count = args.len();
         let is_macro = cmd.is_macro();
-
-        if let Some(variants) = &cmd.variants {
-            let valid_counts: Vec<usize> = variants.iter().map(|v| v.params.len()).collect();
-            if !valid_counts.contains(&actual_count) && !cmd.params.is_empty() {
-                let params = &cmd.params;
-                let required_count = params
-                    .iter()
-                    .filter(|p| !p.optional && p.default.is_none())
-                    .count();
-                let max_count = params.len();
-
-                if (actual_count < required_count || actual_count > max_count)
-                    && !valid_counts.iter().any(|&vc| actual_count <= vc)
-                {
-                    return Ok(());
-                }
-            }
-            return Ok(());
-        }
-
-        let params = &cmd.params;
         let required_count = params
             .iter()
             .filter(|p| !p.optional && p.default.is_none())
@@ -556,6 +568,130 @@ impl<'a> Analyzer<'a> {
         }
 
         Ok(())
+    }
+
+    fn evaluate_variant_condition_with_arg_count(
+        &self,
+        condition: &str,
+        args: &[Expression],
+        params: &[ParamDef],
+    ) -> ParseResult<bool> {
+        if let Some(caps) = RE_ARG_COUNT.captures(condition) {
+            let expected_count: usize = caps[1].parse().unwrap_or(0);
+            return Ok(args.len() == expected_count);
+        }
+        self.evaluate_variant_condition(condition, args, params)
+    }
+
+    fn evaluate_variant_condition(
+        &self,
+        condition: &str,
+        args: &[Expression],
+        params: &[ParamDef],
+    ) -> ParseResult<bool> {
+        let exprs: HashMap<String, String> = HashMap::new();
+        let mut resolved: HashMap<String, i64> = HashMap::new();
+        let cache: DashMap<String, i64> = DashMap::new();
+
+        for (pos, param) in params.iter().enumerate() {
+            if let Some(arg) = args.get(pos)
+                && let Ok(value) = self.resolve_expression_to_int(arg)
+            {
+                resolved.insert(param.name.clone(), i64::from(value));
+            }
+        }
+
+        let parent_resolver = |name: &str| -> Option<i64> {
+            match name {
+                "VARS_START" => Some(0x4000),
+                "VARS_END" => Some(0x800D),
+                "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
+                "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
+                _ => {
+                    if let Some(SymbolType::Constant(val) | SymbolType::Variable(val)) =
+                        self.resolve_symbol(name)
+                    {
+                        return Some(i64::from(val));
+                    }
+                    None
+                }
+            }
+        };
+
+        eval_expr_with_parent(condition, &exprs, &resolved, &cache, &parent_resolver)
+            .map(|value| value != 0)
+            .ok_or_else(|| {
+                analysis_error(
+                    0..0,
+                    format!("Failed to evaluate variant condition '{}'", condition),
+                )
+            })
+    }
+
+    fn resolve_expression_to_int(&self, expr: &Expression) -> ParseResult<i32> {
+        match &expr.node {
+            ExpressionKind::Number(n) => Ok(*n),
+            ExpressionKind::Identifier(name) => match name.as_str() {
+                "VARS_START" => Ok(0x4000),
+                "VARS_END" => Ok(0x800D),
+                "SCRIPT_LOCAL_VARS_START" => Ok(0x8000),
+                "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
+                _ => match self.resolve_symbol(name) {
+                    Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => Ok(val),
+                    _ => Err(analysis_error(
+                        expr.span.clone(),
+                        format!(
+                            "Could not resolve '{}' to an integer for variant selection",
+                            name
+                        ),
+                    )),
+                },
+            },
+            ExpressionKind::Prefix { operator, id } => {
+                let value = self.resolve_expression_to_int(id)?;
+                match operator {
+                    super::token::TokenType::Minus => Ok(-value),
+                    super::token::TokenType::Plus => Ok(value),
+                    _ => Err(analysis_error(
+                        expr.span.clone(),
+                        format!(
+                            "Unsupported prefix operator {:?} in variant selection",
+                            operator
+                        ),
+                    )),
+                }
+            }
+            ExpressionKind::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                let left = self.resolve_expression_to_int(left)?;
+                let right = self.resolve_expression_to_int(right)?;
+                match operator {
+                    super::token::TokenType::Plus => left.checked_add(right),
+                    super::token::TokenType::Minus => left.checked_sub(right),
+                    super::token::TokenType::Mul => left.checked_mul(right),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    analysis_error(
+                        expr.span.clone(),
+                        format!(
+                            "Unsupported or overflowing operator {:?} in variant selection",
+                            operator
+                        ),
+                    )
+                })
+            }
+            _ => Err(analysis_error(
+                expr.span.clone(),
+                format!(
+                    "Unsupported expression {:?} in variant selection",
+                    expr.node
+                ),
+            )),
+        }
     }
 
     /// Validate that an argument matches the expected parameter type
@@ -693,6 +829,83 @@ impl<'a> Analyzer<'a> {
 mod tests {
     use super::*;
     use crate::compiler::ast::{ExpressionKind, FunctionHeader, StatementKind};
+    use crate::database::{CommandType, DatabaseMeta, Variant};
+    use std::collections::HashMap;
+
+    fn view_rankings_shape_db() -> DatabaseV2 {
+        let mut commands = HashMap::new();
+        commands.insert(
+            "ViewRankings".to_string(),
+            Command {
+                cmd_type: CommandType::ScriptCmd,
+                id: Some(378),
+                legacy_name: None,
+                description: None,
+                params: vec![
+                    ParamDef {
+                        name: "packed_page".to_string(),
+                        param_type: ParamType::U16,
+                        const_value: None,
+                        default: None,
+                        optional: false,
+                    },
+                    ParamDef {
+                        name: "record".to_string(),
+                        param_type: ParamType::Var,
+                        const_value: None,
+                        default: None,
+                        optional: false,
+                    },
+                ],
+                variants: Some(vec![Variant {
+                    params: vec![
+                        ParamDef {
+                            name: "scope".to_string(),
+                            param_type: ParamType::U16,
+                            const_value: None,
+                            default: None,
+                            optional: false,
+                        },
+                        ParamDef {
+                            name: "page".to_string(),
+                            param_type: ParamType::U16,
+                            const_value: None,
+                            default: None,
+                            optional: false,
+                        },
+                        ParamDef {
+                            name: "record".to_string(),
+                            param_type: ParamType::Var,
+                            const_value: None,
+                            default: None,
+                            optional: false,
+                        },
+                    ],
+                    desc: Some("decomp source form".to_string()),
+                    condition: Some("3 args".to_string()),
+                    expansion: None,
+                    emit_args: Some(vec![
+                        "$scope * 3 + $page".to_string(),
+                        "$record".to_string(),
+                    ]),
+                }]),
+                expansion: None,
+            },
+        );
+
+        DatabaseV2 {
+            meta: DatabaseMeta {
+                version: "test".to_string(),
+                generated_at: None,
+                generated_from: None,
+            },
+            commands,
+            sounds: HashMap::new(),
+            comparison_operators: HashMap::new(),
+            overworld_directions: HashMap::new(),
+            special_overworlds: HashMap::new(),
+        }
+    }
 
     #[test]
     fn test_analyzer_registers_global_alias() {
@@ -1500,6 +1713,57 @@ function Test #1:
             result.is_ok(),
             "CallTVBroadcast with 2 args should pass (variant 0 accepts 2): {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_variant_emit_args_accepts_source_call_shape() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r"
+function Test #1:
+    ViewRankings 1, 2, 0x800C
+    End
+";
+        let db = view_rankings_shape_db();
+        let constants = ConstantDb::new();
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(
+            result.is_ok(),
+            "ViewRankings 3-arg source shape should be accepted: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_command_variant_emit_args_rejects_invalid_source_count() {
+        use crate::compiler::lexer::Lexer;
+        use crate::compiler::parser::Parser;
+
+        let source = r"
+function Test #1:
+    ViewRankings 1, 2, 3, 0x800C
+    End
+";
+        let db = view_rankings_shape_db();
+        let constants = ConstantDb::new();
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_err(), "4 args should still be rejected");
+        assert!(
+            format!("{:?}", result.unwrap_err()).contains("accepts at most 2 argument(s), got 4")
         );
     }
 
