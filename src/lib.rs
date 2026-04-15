@@ -8,6 +8,7 @@ pub mod compiler;
 pub mod database;
 pub mod decompiler;
 pub mod naming;
+pub mod project_init;
 pub mod transpiler;
 
 pub use compiler::codegen::Emitter;
@@ -15,7 +16,7 @@ pub use compiler::{
     Analyzer, Lexer, Lowerer, Parser,
     parse_error::{CompileError, print_error},
 };
-pub use database::{ConstantDb, DatabaseV2, GameFamily};
+pub use database::{ConstantDb, DatabaseV2, GameFamily, GameFamilyExt, game_family_from_hint};
 pub use decompiler::{
     DecompileError, DecompileResult, Disassembler, LevelScript, LevelScriptHeaderEntry,
     LevelScriptVarConditionEntry, ScriptOutput, ScriptType, disassemble_bytes, ir_to_source,

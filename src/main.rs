@@ -5,8 +5,9 @@ use clap::{Parser as ClapParser, Subcommand};
 // Use the library crate
 use rotom::compile_path;
 use rotom::compiler::parse_error::{CompileError, print_error};
-use rotom::database::{ConstantDb, DatabaseV2, GameFamily};
+use rotom::database::{ConstantDb, DatabaseV2, GameFamilyExt, game_family_from_hint};
 use rotom::decompile_path;
+use rotom::project_init::run_init;
 
 #[derive(Debug, ClapParser)]
 #[command(name = "rotom")]
@@ -59,8 +60,8 @@ enum Commands {
     },
 
     Init {
-        /// Path to the project root (defaults to current directory)
-        #[arg(short, long)]
+        /// Project root (defaults to current directory)
+        #[arg(value_name = "ROOT")]
         root: Option<PathBuf>,
     },
 }
@@ -128,8 +129,8 @@ fn compile(
         );
 
         // Auto-detect game family from database version
-        if let Some(family) = GameFamily::from_db_version(&db.meta.version) {
-            println!("Detected game family: {}", family.as_str());
+        if let Some(family) = game_family_from_hint(&db.meta.version) {
+            println!("Detected game family: {}", family.display_name());
         }
     }
 
@@ -324,10 +325,19 @@ fn decompile(
 }
 
 fn init(root: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    let root =
-        root.unwrap_or_else(|| std::env::current_dir().expect("failed to get current directory"));
-    let root = root.canonicalize()?;
-    std::fs::File::create(&root.join("rotom.toml"))?;
+    let report = run_init(root)?;
+
+    println!("Init successful.");
+
+    if report.used_embedded_database {
+        println!(
+            "Used baked-in database snapshot because the latest release download was unavailable."
+        );
+    }
+
+    if !report.reused_paths.is_empty() {
+        println!("Reused existing: {}.", report.reused_paths.join(", "));
+    }
 
     Ok(())
 }

@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::compiler::ParseResult;
 use crate::compiler::parse_error::{CompileError, database_error};
+pub use uxie::GameFamily;
 use uxie::SymbolTable;
 use uxie::c_parser::defines::eval_expr_with_parent;
 
@@ -18,45 +19,38 @@ pub fn normalize_command_name(name: &str) -> String {
     name.replace('_', "").to_ascii_lowercase()
 }
 
-// ============================================================================
-// Hardcoded Enums (fixed across all games)
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GameFamily {
-    DP,       // Diamond, Pearl
-    Platinum, // Platinum
-    HGSS,     // HeartGold, SoulSilver
+pub fn game_family_from_hint(hint: impl AsRef<str>) -> Option<GameFamily> {
+    let hint = hint.as_ref().to_ascii_uppercase();
+    if hint.contains("PLATINUM") {
+        Some(GameFamily::Platinum)
+    } else if hint.contains("HEARTGOLD") || hint.contains("SOULSILVER") || hint.contains("HGSS") {
+        Some(GameFamily::HGSS)
+    } else if hint.contains("DIAMOND") || hint.contains("PEARL") || hint.contains("DP") {
+        Some(GameFamily::DP)
+    } else {
+        None
+    }
 }
 
-impl GameFamily {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_uppercase().as_str() {
-            "DP" | "DIAMOND" | "PEARL" => Some(Self::DP),
-            "PLATINUM" | "PT" => Some(Self::Platinum),
-            "HGSS" | "HEARTGOLD" | "SOULSILVER" => Some(Self::HGSS),
-            _ => None,
-        }
-    }
+pub trait GameFamilyExt {
+    fn display_name(self) -> &'static str;
+    fn config_name(self) -> &'static str;
+}
 
-    pub fn as_str(&self) -> &'static str {
+impl GameFamilyExt for GameFamily {
+    fn display_name(self) -> &'static str {
         match self {
-            Self::DP => "Diamond/Pearl",
-            Self::Platinum => "Platinum",
-            Self::HGSS => "HeartGold/SoulSilver",
+            GameFamily::DP => "Diamond/Pearl",
+            GameFamily::Platinum => "Platinum",
+            GameFamily::HGSS => "HeartGold/SoulSilver",
         }
     }
 
-    pub fn from_db_version(version: &str) -> Option<Self> {
-        let v = version.to_uppercase();
-        if v.contains("PLATINUM") {
-            Some(Self::Platinum)
-        } else if v.contains("HEARTGOLD") || v.contains("SOULSILVER") || v.contains("HGSS") {
-            Some(Self::HGSS)
-        } else if v.contains("DIAMOND") || v.contains("PEARL") || v.contains("DP") {
-            Some(Self::DP)
-        } else {
-            None
+    fn config_name(self) -> &'static str {
+        match self {
+            GameFamily::DP => "dp",
+            GameFamily::Platinum => "platinum",
+            GameFamily::HGSS => "hgss",
         }
     }
 }
@@ -288,7 +282,7 @@ impl DatabaseV2 {
     }
 
     pub fn game_family(&self) -> Option<GameFamily> {
-        GameFamily::from_db_version(&self.meta.version)
+        game_family_from_hint(&self.meta.version)
     }
 
     /// Resolves a command by name, first checking the command map directly, then legacy names, and finally script command aliases, such as placeholder names or dummy commands.
