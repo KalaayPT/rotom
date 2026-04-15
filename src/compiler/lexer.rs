@@ -1,8 +1,6 @@
 use std::{iter::Peekable, str::Chars};
 
-use crate::naming::normalize_control_keyword;
-
-use super::token::{Token, TokenType};
+use super::token::{Token, TokenType, normalize_control_keyword};
 
 pub struct Lexer<'a> {
     pub source: &'a str,

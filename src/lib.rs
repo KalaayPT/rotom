@@ -7,7 +7,6 @@ mod autovar;
 pub mod compiler;
 pub mod database;
 pub mod decompiler;
-pub mod naming;
 pub mod project_init;
 pub mod transpiler;
 
