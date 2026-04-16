@@ -61,7 +61,6 @@ impl std::error::Error for TranspileError {}
 struct PrepassData {
     function_to_slots: HashMap<String, Vec<usize>>,
     movement_labels: HashSet<String>,
-    local_defines: HashMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -83,6 +82,12 @@ enum StructuralLine<'a> {
 enum BodyLine<'a> {
     Empty,
     SkipPreprocessor,
+    PreserveInclude(&'a str),
+    TranslateDefine {
+        name: &'a str,
+        value: &'a str,
+    },
+    ErrorFunctionMacro(&'a str),
     FullComment(String),
     Content {
         statement: &'a str,
@@ -138,6 +143,26 @@ fn render_transpile_body(
             BodyLine::SkipPreprocessor => {
                 line_idx += 1;
                 continue;
+            }
+            BodyLine::PreserveInclude(include_line) => {
+                output.push_str(include_line);
+                output.push('\n');
+                line_idx += 1;
+                continue;
+            }
+            BodyLine::TranslateDefine { name, value } => {
+                let _ = writeln!(output, "alias {} as {}", value, name);
+                line_idx += 1;
+                continue;
+            }
+            BodyLine::ErrorFunctionMacro(name) => {
+                return Err(TranspileError {
+                    message: format!(
+                        "Function-like macro '{}' cannot be converted to rotom alias syntax. Remove it manually or refactor to a simple #define.",
+                        name
+                    ),
+                    line: line_idx + 1,
+                });
             }
             BodyLine::FullComment(comment) => {
                 output.push_str(&comment);
@@ -263,7 +288,7 @@ fn process_content_line(
         return Ok(());
     }
 
-    render_command_line(statement, inline_comment, prepass, db, output);
+    render_command_line(statement, inline_comment, db, output);
     state.last_emitted_endmovement = split_command_and_args(statement)
         .0
         .eq_ignore_ascii_case("EndMovement");
@@ -275,7 +300,24 @@ fn preprocess_body_line(raw_trimmed: &str) -> BodyLine<'_> {
         return BodyLine::Empty;
     }
 
-    if raw_trimmed.starts_with("#include") || raw_trimmed.starts_with('#') {
+    if raw_trimmed.starts_with("#include") {
+        return BodyLine::PreserveInclude(raw_trimmed);
+    }
+
+    if raw_trimmed.starts_with("#define") {
+        if let Some((name, value)) = parse_local_define_line(raw_trimmed) {
+            if name.contains('(') {
+                return BodyLine::ErrorFunctionMacro(name);
+            }
+            if is_rotom_alias_value(value) {
+                return BodyLine::TranslateDefine { name, value };
+            }
+            return BodyLine::FullComment(format!("// {}", raw_trimmed));
+        }
+        return BodyLine::SkipPreprocessor;
+    }
+
+    if raw_trimmed.starts_with('#') {
         return BodyLine::SkipPreprocessor;
     }
 
@@ -335,7 +377,6 @@ fn render_switch_line(subject: &str, inline_comment: Option<&str>, output: &mut 
 fn render_command_line(
     statement: &str,
     inline_comment: Option<&str>,
-    prepass: &PrepassData,
     db: Option<&crate::database::DatabaseV2>,
     output: &mut String,
 ) {
@@ -345,7 +386,7 @@ fn render_command_line(
     output.push_str("    ");
     output.push_str(cmd_name.as_ref());
     if let Some(args) = args {
-        let normalized_args = normalize_command_args(cmd_name.as_ref(), args, prepass, db);
+        let normalized_args = normalize_command_args(cmd_name.as_ref(), args, db);
         if !normalized_args.is_empty() {
             output.push(' ');
             output.push_str(&normalized_args);
@@ -447,18 +488,16 @@ fn render_synthetic_unused_end_label(state: &mut RenderState, output: &mut Strin
 fn normalize_command_args(
     cmd_name: &str,
     args: &str,
-    prepass: &PrepassData,
     db: Option<&crate::database::DatabaseV2>,
 ) -> String {
     if args.is_empty() {
         return String::new();
     }
 
-    let substituted_args = substitute_defines(args, &prepass.local_defines);
     if let Some(db) = db {
-        reorder_decomp_args_to_binary(cmd_name, &substituted_args, db)
+        reorder_decomp_args_to_binary(cmd_name, args, db)
     } else {
-        substituted_args
+        args.to_owned()
     }
 }
 
@@ -481,7 +520,6 @@ fn collect_prepass_data(input: &str, db: Option<&crate::database::DatabaseV2>) -
     PrepassData {
         function_to_slots: build_function_slot_map(&jump_table),
         movement_labels,
-        local_defines: collect_local_defines(input),
     }
 }
 
@@ -506,7 +544,12 @@ fn collect_jump_table_and_movement_labels(
 
     for (line_idx, line) in lines.iter().enumerate() {
         let statement = match preprocess_body_line(line.trim()) {
-            BodyLine::Empty | BodyLine::SkipPreprocessor | BodyLine::FullComment(_) => continue,
+            BodyLine::Empty
+            | BodyLine::SkipPreprocessor
+            | BodyLine::PreserveInclude(_)
+            | BodyLine::TranslateDefine { .. }
+            | BodyLine::ErrorFunctionMacro(_)
+            | BodyLine::FullComment(_) => continue,
             BodyLine::Content { statement, .. } => statement,
         };
 
@@ -553,20 +596,6 @@ fn build_function_slot_map(jump_table: &[String]) -> HashMap<String, Vec<usize>>
     function_to_slots
 }
 
-fn collect_local_defines(input: &str) -> HashMap<String, String> {
-    let mut local_defines: HashMap<String, String> = HashMap::new();
-
-    for line in input.lines() {
-        let trimmed = line.trim();
-        if let Some((name, value)) = parse_local_define_line(trimmed) {
-            // Only store simple identifier-to-identifier mappings.
-            local_defines.insert(name.to_string(), value.to_string());
-        }
-    }
-
-    local_defines
-}
-
 fn parse_local_define_line(trimmed: &str) -> Option<(&str, &str)> {
     let rest = trimmed.strip_prefix("#define")?;
 
@@ -586,6 +615,14 @@ fn parse_local_define_line(trimmed: &str) -> Option<(&str, &str)> {
     }
 
     Some((name, value))
+}
+
+fn is_rotom_alias_value(value: &str) -> bool {
+    value.parse::<u32>().is_ok()
+        || value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+            .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
 
 fn parse_script_entry_directive(trimmed: &str) -> ScriptEntryDirective<'_> {
@@ -719,29 +756,6 @@ fn reorder_decomp_args_to_binary(
 
     let final_args: Vec<&str> = result.into_iter().flatten().collect();
     final_args.join(", ")
-}
-
-/// Substitute local #define macros in argument string
-fn substitute_defines(args: &str, defines: &std::collections::HashMap<String, String>) -> String {
-    if defines.is_empty() {
-        return args.to_owned();
-    }
-
-    let mut out = String::with_capacity(args.len());
-    let mut first = true;
-    for part in args.split(',') {
-        if !first {
-            out.push_str(", ");
-        }
-        first = false;
-        let trimmed = part.trim();
-        if let Some(replacement) = defines.get(trimmed) {
-            out.push_str(replacement);
-        } else {
-            out.push_str(trimmed);
-        }
-    }
-    out
 }
 
 fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
@@ -925,6 +939,14 @@ Main:
                 assert_eq!(inline_comment.as_deref(), Some("// note"));
             }
             _ => panic!("expected content line classification"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_body_line_recognizes_at_comments() {
+        match preprocess_body_line("@ note") {
+            BodyLine::FullComment(comment) => assert_eq!(comment, "// note"),
+            _ => panic!("expected full comment classification"),
         }
     }
 
@@ -1141,7 +1163,7 @@ TestMovement:
     }
 
     #[test]
-    fn test_skip_includes() {
+    fn test_preserves_includes() {
         let input = r#"#include "macros/scrcmd.inc"
 #include "constants/map.h"
 
@@ -1152,8 +1174,81 @@ Test:
     End
 "#;
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(!output.source.contains("#include"));
+        assert!(output.source.contains("#include \"macros/scrcmd.inc\""));
+        assert!(output.source.contains("#include \"constants/map.h\""));
         assert!(output.source.contains("function Test #0:"));
+    }
+
+    #[test]
+    fn test_translates_numeric_defines_to_aliases() {
+        let input = r"#define TEST_VALUE 7
+#define TEST_HEX 0x2A
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    End
+";
+
+        let output = transpile(input, None).expect("transpile should succeed");
+        assert!(output.source.contains("alias 7 as TEST_VALUE"));
+        assert!(output.source.contains("alias 0x2A as TEST_HEX"));
+    }
+
+    #[test]
+    fn test_symbolic_defines_are_left_as_comments() {
+        let input = r"#define TEST_VALUE ITEM_POKE_BALL
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    End
+";
+
+        let output = transpile(input, None).expect("transpile should succeed");
+        assert!(
+            output
+                .source
+                .contains("// #define TEST_VALUE ITEM_POKE_BALL")
+        );
+        assert!(!output.source.contains("alias ITEM_POKE_BALL as TEST_VALUE"));
+    }
+
+    #[test]
+    fn test_function_like_macros_error() {
+        let input = r"#define TEST_VALUE(x) x
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    End
+";
+
+        let err = transpile(input, None).expect_err("function-like macro should fail");
+        assert!(err.message.contains("Function-like macro 'TEST_VALUE(x)'"));
+        assert_eq!(err.line, 1);
+    }
+
+    #[test]
+    fn test_other_preprocessor_directives_are_skipped() {
+        let input = r"#pragma once
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    End
+";
+
+        let output = transpile(input, None).expect("transpile should succeed");
+        assert!(!output.source.contains("#pragma"));
+        assert!(output.source.contains("function Test #0:"));
+    }
+
+    #[test]
+    fn test_is_rotom_alias_value_rejects_malformed_hex() {
+        assert!(!is_rotom_alias_value("0x"));
+        assert!(!is_rotom_alias_value("0xGG"));
+        assert!(is_rotom_alias_value("0x2A"));
     }
 
     #[test]

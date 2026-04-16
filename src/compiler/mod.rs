@@ -7,6 +7,7 @@ pub mod ir;
 pub mod lexer;
 pub mod parse_error;
 pub mod parser;
+pub mod preprocessor;
 pub mod token;
 
 // Re-export commonly used types

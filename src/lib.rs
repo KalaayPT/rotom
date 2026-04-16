@@ -179,7 +179,7 @@ fn compile_file_internal(
         .unwrap_or("")
         .to_lowercase();
 
-    let file_constants = if extension == "s" {
+    let file_constants = if extension == "s" || extension == "rotom" {
         Some(
             constants
                 .clone_for_script(input)
@@ -207,7 +207,10 @@ fn compile_file_internal(
         })?
     } else {
         let (rotom_source, emit_end_marker) = match extension.as_str() {
-            "rotom" => (source, true),
+            "rotom" => (
+                compiler::preprocessor::preprocess(&source).cleaned_source,
+                true,
+            ),
             "script" => (transpiler::transpile_dspre(&source, Some(db)), true),
             "s" => {
                 let result = transpiler::transpile_decomp(&source, Some(db)).map_err(|e| {
@@ -648,6 +651,15 @@ mod tests {
         "function Main #1:\nEnd\n"
     }
 
+    fn write_test_decomp_project(root: &Path) {
+        fs::create_dir_all(root.join("include/constants"))
+            .expect("failed to create include/constants");
+        fs::create_dir_all(root.join("res/field/scripts"))
+            .expect("failed to create res/field/scripts");
+        fs::write(root.join("res/field/scripts/scripts.order"), "")
+            .expect("failed to write scripts.order");
+    }
+
     #[test]
     fn detect_compile_output_collisions_flags_same_stem() {
         let files = vec![
@@ -806,5 +818,86 @@ mod tests {
         assert!(result.is_success(), "decompile_path should succeed");
         assert_eq!(result.successes.len(), 1);
         assert_eq!(result.successes[0].output, output_dir.join("0000.rotom"));
+    }
+
+    #[test]
+    fn compile_path_rotom_supports_preprocessor_includes_and_defines() {
+        let temp_dir = unique_temp_dir("compile_path_rotom_supports_includes_and_defines");
+        write_test_decomp_project(&temp_dir);
+        fs::write(
+            temp_dir.join("include/constants/test.h"),
+            "#define TEST_MESSAGE 7\n",
+        )
+        .expect("failed to write test header");
+
+        let input_path = temp_dir.join("res/field/scripts/test.rotom");
+        fs::write(
+            &input_path,
+            r#"#include "constants/test.h"
+#define LOCAL_MESSAGE 7
+function Main #1:
+    Message LOCAL_MESSAGE
+    Message TEST_MESSAGE
+    End
+"#,
+        )
+        .expect("failed to write .rotom source");
+
+        let output_path = temp_dir.join("test.bin");
+        let db = load_test_db();
+        let mut constants = ConstantDb::new();
+        constants
+            .load_decomp_project(&temp_dir)
+            .expect("failed to load test decomp project");
+
+        let result = compile_path(&input_path, &output_path, &db, &constants)
+            .expect("compile_path should return a batch result");
+        assert!(result.is_success(), "compile_path should succeed");
+
+        let compiled = fs::read(&output_path).expect("failed to read compiled output");
+        let expected = compile_to_bytes(
+            "function Main #1:\n    Message 7\n    Message 7\n    End\n",
+            &db,
+            &ConstantDb::new(),
+        )
+        .expect("expected source should compile");
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(compiled, expected);
+    }
+
+    #[test]
+    fn compile_path_rotom_reports_unresolved_includes() {
+        let temp_dir = unique_temp_dir("compile_path_rotom_reports_unresolved_includes");
+        write_test_decomp_project(&temp_dir);
+
+        let input_path = temp_dir.join("res/field/scripts/test.rotom");
+        fs::write(
+            &input_path,
+            r#"#include "constants/missing.h"
+function Main #1:
+    End
+"#,
+        )
+        .expect("failed to write .rotom source");
+
+        let output_path = temp_dir.join("test.bin");
+        let db = load_test_db();
+        let mut constants = ConstantDb::new();
+        constants
+            .load_decomp_project(&temp_dir)
+            .expect("failed to load test decomp project");
+
+        let result = compile_path(&input_path, &output_path, &db, &constants)
+            .expect("compile_path should return a batch result");
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(result.failures.len(), 1);
+        match &result.failures[0].error {
+            crate::CompileError::Database { message } => {
+                assert!(message.contains("Unresolved include 'constants/missing.h'"));
+            }
+            other => panic!("expected database error, got {other:?}"),
+        }
     }
 }

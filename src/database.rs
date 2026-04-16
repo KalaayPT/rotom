@@ -729,7 +729,7 @@ impl ConstantDb {
 
     /// Load file-local constants for a specific source file using Uxie's include handling.
     ///
-    /// When a decomp workspace is loaded, this follows the file's `#include`s and lets Uxie handle
+    /// When a workspace is loaded, this follows the file's `#include`s and lets Uxie handle
     /// special cases like per-map event headers. The resulting symbol table replaces the current
     /// Uxie symbols for this `ConstantDb` instance.
     pub fn load_script_constants<Q: AsRef<Path>>(
@@ -755,7 +755,23 @@ impl ConstantDb {
                                               include_dirs: &[PathBuf],
                                               include_path: &str|
          -> std::io::Result<bool> {
-            Self::try_load_decomp_events_include_json(table, parent_dir, include_dirs, include_path)
+            if Self::try_load_decomp_events_include_json(
+                table,
+                parent_dir,
+                include_dirs,
+                include_path,
+            )? {
+                return Ok(true);
+            }
+
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "Unresolved include '{}' (searched from {})",
+                    include_path,
+                    parent_dir.display()
+                ),
+            ))
         };
 
         collected
