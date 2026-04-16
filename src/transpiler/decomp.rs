@@ -34,6 +34,7 @@
 use std::fmt::Write;
 
 use crate::autovar::is_autovar_param;
+use crate::compiler::{Lexer, Parser};
 use crate::database::CommandType;
 use std::collections::{HashMap, HashSet};
 
@@ -309,7 +310,7 @@ fn preprocess_body_line(raw_trimmed: &str) -> BodyLine<'_> {
             if name.contains('(') {
                 return BodyLine::ErrorFunctionMacro(name);
             }
-            if is_rotom_alias_value(value) {
+            if can_parse_rotom_alias_value(value) {
                 return BodyLine::TranslateDefine { name, value };
             }
             return BodyLine::FullComment(format!("// {}", raw_trimmed));
@@ -617,12 +618,12 @@ fn parse_local_define_line(trimmed: &str) -> Option<(&str, &str)> {
     Some((name, value))
 }
 
-fn is_rotom_alias_value(value: &str) -> bool {
-    value.parse::<u32>().is_ok()
-        || value
-            .strip_prefix("0x")
-            .or_else(|| value.strip_prefix("0X"))
-            .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
+fn can_parse_rotom_alias_value(value: &str) -> bool {
+    let source = format!("alias {} as TEST_ALIAS\n", value);
+    let lexer = Lexer::new(&source);
+    let mut parser = Parser::new(lexer);
+
+    parser.parse_alias().is_ok()
 }
 
 fn parse_script_entry_directive(trimmed: &str) -> ScriptEntryDirective<'_> {
@@ -1196,7 +1197,7 @@ Test:
     }
 
     #[test]
-    fn test_symbolic_defines_are_left_as_comments() {
+    fn test_symbolic_defines_are_translated_to_aliases() {
         let input = r"#define TEST_VALUE ITEM_POKE_BALL
     ScriptEntry Test
     ScriptEntryEnd
@@ -1206,12 +1207,22 @@ Test:
 ";
 
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(
-            output
-                .source
-                .contains("// #define TEST_VALUE ITEM_POKE_BALL")
-        );
-        assert!(!output.source.contains("alias ITEM_POKE_BALL as TEST_VALUE"));
+        assert!(output.source.contains("alias ITEM_POKE_BALL as TEST_VALUE"));
+    }
+
+    #[test]
+    fn test_unsupported_define_expressions_are_left_as_comments() {
+        let input = r"#define TEST_VALUE (1 << 2)
+    ScriptEntry Test
+    ScriptEntryEnd
+
+Test:
+    End
+";
+
+        let output = transpile(input, None).expect("transpile should succeed");
+        assert!(output.source.contains("// #define TEST_VALUE (1 << 2)"));
+        assert!(!output.source.contains("alias (1 << 2) as TEST_VALUE"));
     }
 
     #[test]
@@ -1245,10 +1256,12 @@ Test:
     }
 
     #[test]
-    fn test_is_rotom_alias_value_rejects_malformed_hex() {
-        assert!(!is_rotom_alias_value("0x"));
-        assert!(!is_rotom_alias_value("0xGG"));
-        assert!(is_rotom_alias_value("0x2A"));
+    fn test_can_parse_rotom_alias_value_rejects_invalid_syntax() {
+        assert!(!can_parse_rotom_alias_value("0x"));
+        assert!(!can_parse_rotom_alias_value("0xGG"));
+        assert!(can_parse_rotom_alias_value("0x2A"));
+        assert!(can_parse_rotom_alias_value("ITEM_POKE_BALL"));
+        assert!(!can_parse_rotom_alias_value("1 << 2"));
     }
 
     #[test]

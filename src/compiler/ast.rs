@@ -39,7 +39,7 @@ pub enum StatementKind {
     },
     AliasStatement {
         is_global: bool,
-        id: i32,
+        value: Expression,
         name: String,
     },
     IfStatement {

@@ -180,10 +180,11 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
     fn register_global_alias(&mut self, stmt: &Statement) -> ParseResult<()> {
-        if let StatementKind::AliasStatement { name, id, .. } = &stmt.node {
+        if let StatementKind::AliasStatement { name, value, .. } = &stmt.node {
+            let id = self.resolve_expression_to_int(value)?;
             self.symbols.define_global(
                 name.clone(),
-                SymbolType::Variable(*id),
+                SymbolType::Variable(id),
                 stmt.span.clone(),
             )?;
         }
@@ -226,7 +227,7 @@ impl<'a> Analyzer<'a> {
         }
         Ok(())
     }
-    fn validate_action_body(&mut self, action: &Statement) -> ParseResult<()> {
+    fn validate_action_body(&self, action: &Statement) -> ParseResult<()> {
         if let StatementKind::Action { body, .. } = &action.node {
             for stmt in body {
                 match &stmt.node {
@@ -612,9 +613,8 @@ impl<'a> Analyzer<'a> {
         let parent_resolver = |name: &str| -> Option<i64> {
             match name {
                 "VARS_START" => Some(0x4000),
-                "VARS_END" => Some(0x800D),
+                "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
                 "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
-                "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
                 _ => {
                     if let Some(SymbolType::Constant(val) | SymbolType::Variable(val)) =
                         self.resolve_symbol(name)
@@ -641,17 +641,13 @@ impl<'a> Analyzer<'a> {
             ExpressionKind::Number(n) => Ok(*n),
             ExpressionKind::Identifier(name) => match name.as_str() {
                 "VARS_START" => Ok(0x4000),
-                "VARS_END" => Ok(0x800D),
+                "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
                 "SCRIPT_LOCAL_VARS_START" => Ok(0x8000),
-                "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
                 _ => match self.resolve_symbol(name) {
                     Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => Ok(val),
                     _ => Err(analysis_error(
                         expr.span.clone(),
-                        format!(
-                            "Could not resolve '{}' to an integer for variant selection",
-                            name
-                        ),
+                        format!("Could not resolve '{}' to an integer expression", name),
                     )),
                 },
             },
@@ -663,7 +659,7 @@ impl<'a> Analyzer<'a> {
                     _ => Err(analysis_error(
                         expr.span.clone(),
                         format!(
-                            "Unsupported prefix operator {:?} in variant selection",
+                            "Unsupported prefix operator {:?} in integer expression",
                             operator
                         ),
                     )),
@@ -686,7 +682,7 @@ impl<'a> Analyzer<'a> {
                     analysis_error(
                         expr.span.clone(),
                         format!(
-                            "Unsupported or overflowing operator {:?} in variant selection",
+                            "Unsupported or overflowing operator {:?} in integer expression",
                             operator
                         ),
                     )
@@ -707,7 +703,7 @@ impl<'a> Analyzer<'a> {
                     ));
                 }
 
-                let expr_text = self.format_expression_for_constant_eval(expr)?;
+                let expr_text = Self::format_expression_for_constant_eval(expr)?;
                 if let Some(constants) = self.constants
                     && let Some(value) = constants.evaluate_expression(&expr_text)
                 {
@@ -719,23 +715,22 @@ impl<'a> Analyzer<'a> {
                     format!("Could not resolve '{}' as a constant expression", expr_text),
                 ))
             }
-            _ => Err(analysis_error(
+            ExpressionKind::Label(_) => Err(analysis_error(
                 expr.span.clone(),
                 format!(
-                    "Unsupported expression {:?} in variant selection",
+                    "Unsupported expression {:?} in integer expression",
                     expr.node
                 ),
             )),
         }
     }
 
-    fn format_expression_for_constant_eval(&self, expr: &Expression) -> ParseResult<String> {
+    fn format_expression_for_constant_eval(expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(name) => Ok(name.clone()),
-            ExpressionKind::Label(name) => Ok(name.clone()),
+            ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Ok(name.clone()),
             ExpressionKind::Prefix { operator, id } => {
-                let inner = self.format_expression_for_constant_eval(id)?;
+                let inner = Self::format_expression_for_constant_eval(id)?;
                 let op = match operator {
                     super::token::TokenType::Minus => "-",
                     super::token::TokenType::Plus => "+",
@@ -757,8 +752,8 @@ impl<'a> Analyzer<'a> {
                 operator,
                 right,
             } => {
-                let left_str = self.format_expression_for_constant_eval(left)?;
-                let right_str = self.format_expression_for_constant_eval(right)?;
+                let left_str = Self::format_expression_for_constant_eval(left)?;
+                let right_str = Self::format_expression_for_constant_eval(right)?;
                 let op = match operator {
                     super::token::TokenType::Plus => "+",
                     super::token::TokenType::Minus => "-",
@@ -790,7 +785,7 @@ impl<'a> Analyzer<'a> {
 
                 let mut formatted_args = Vec::with_capacity(args.len());
                 for arg in args {
-                    formatted_args.push(self.format_expression_for_constant_eval(arg)?);
+                    formatted_args.push(Self::format_expression_for_constant_eval(arg)?);
                 }
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
@@ -1021,7 +1016,10 @@ mod tests {
         let alias_stmt = Statement {
             node: StatementKind::AliasStatement {
                 is_global: true,
-                id: 1,
+                value: Expression {
+                    node: ExpressionKind::Number(1),
+                    span: 0..1,
+                },
                 name: "global_var".to_string(),
             },
             span: 0..10,
@@ -1033,6 +1031,48 @@ mod tests {
             Some(SymbolType::Variable(id)) => assert_eq!(*id, 1),
             _ => panic!("Global alias not found in symbol table"),
         }
+    }
+
+    #[test]
+    fn test_analyzer_registers_global_alias_from_prior_alias() {
+        let source = r"
+alias 1 as foo
+alias foo as bar
+
+function Test #1:
+    End
+";
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        analyzer
+            .analyze(&script_file)
+            .expect("Failed to analyze chained aliases");
+
+        match analyzer.symbols.resolve("bar") {
+            Some(SymbolType::Variable(id)) => assert_eq!(*id, 1),
+            _ => panic!("Chained alias not found in symbol table"),
+        }
+    }
+
+    #[test]
+    fn test_analyzer_rejects_forward_alias_reference() {
+        let source = r"
+alias foo as bar
+alias 1 as foo
+
+function Test #1:
+    End
+";
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_err(), "forward alias reference should fail");
     }
 
     #[test]

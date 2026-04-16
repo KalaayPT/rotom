@@ -213,8 +213,9 @@ impl<'a> Lowerer<'a> {
                 name: "EndMovement".to_string(),
                 args: vec![],
             }),
-            StatementKind::AliasStatement { name, id, .. } => {
-                self.local_aliases.insert(name.clone(), *id);
+            StatementKind::AliasStatement { name, value, .. } => {
+                let resolved = self.resolve_arg_to_int(value)?;
+                self.local_aliases.insert(name.clone(), resolved);
             }
 
             _ => {}

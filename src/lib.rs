@@ -867,6 +867,80 @@ function Main #1:
     }
 
     #[test]
+    fn compile_to_bytes_supports_symbolic_alias_chains() {
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+
+        let compiled = compile_to_bytes(
+            "alias 7 as FOO
+alias FOO as BAR
+
+function Main #1:
+    Message BAR
+    End
+",
+            &db,
+            &constants,
+        )
+        .expect("symbolic alias chain should compile");
+
+        let expected = compile_to_bytes(
+            "function Main #1:\n    Message 7\n    End\n",
+            &db,
+            &ConstantDb::new(),
+        )
+        .expect("expected source should compile");
+
+        assert_eq!(compiled, expected);
+    }
+
+    #[test]
+    fn compile_path_rotom_supports_symbolic_aliases_from_includes() {
+        let temp_dir =
+            unique_temp_dir("compile_path_rotom_supports_symbolic_aliases_from_includes");
+        write_test_decomp_project(&temp_dir);
+        fs::write(
+            temp_dir.join("include/constants/test.h"),
+            "#define TEST_MESSAGE 7\n",
+        )
+        .expect("failed to write test header");
+
+        let input_path = temp_dir.join("res/field/scripts/test.rotom");
+        fs::write(
+            &input_path,
+            r#"#include "constants/test.h"
+alias TEST_MESSAGE as LOCAL_MESSAGE
+function Main #1:
+    Message LOCAL_MESSAGE
+    End
+"#,
+        )
+        .expect("failed to write .rotom source");
+
+        let output_path = temp_dir.join("test.bin");
+        let db = load_test_db();
+        let mut constants = ConstantDb::new();
+        constants
+            .load_decomp_project(&temp_dir)
+            .expect("failed to load test decomp project");
+
+        let result = compile_path(&input_path, &output_path, &db, &constants)
+            .expect("compile_path should return a batch result");
+        assert!(result.is_success(), "compile_path should succeed");
+
+        let compiled = fs::read(&output_path).expect("failed to read compiled output");
+        let expected = compile_to_bytes(
+            "function Main #1:\n    Message 7\n    End\n",
+            &db,
+            &ConstantDb::new(),
+        )
+        .expect("expected source should compile");
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(compiled, expected);
+    }
+
+    #[test]
     fn compile_path_rotom_reports_unresolved_includes() {
         let temp_dir = unique_temp_dir("compile_path_rotom_reports_unresolved_includes");
         write_test_decomp_project(&temp_dir);

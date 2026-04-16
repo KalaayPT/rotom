@@ -350,11 +350,7 @@ impl<'a> Parser<'a> {
 
         // All aliases are global now, no prefix needed
         self.expect_advance(TokenType::Alias)?;
-        let id_token = self.expect_advance(TokenType::Num(0))?;
-        let id = match id_token.kind {
-            TokenType::Num(num) => num,
-            _ => unreachable!(),
-        };
+        let value = self.parse_expression(Precedence::Lowest)?;
         self.expect_advance(TokenType::As)?;
         let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
         let name = match name_token.kind {
@@ -365,7 +361,7 @@ impl<'a> Parser<'a> {
         Ok(Spanned {
             node: StatementKind::AliasStatement {
                 is_global: true, // Always global now
-                id,
+                value,
                 name,
             },
             span: start..end,
@@ -1091,6 +1087,7 @@ action TestMovement
         let source = r"
 alias 0x800C as VAR_RESULT
 alias 0x4000 as VAR_GLOBAL
+alias VAR_RESULT as VAR_CHAINED
 
 function TestFunc #1:
     SetVar VAR_RESULT, 5
@@ -1100,23 +1097,33 @@ function TestFunc #1:
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        // Should have 2 aliases
-        assert_eq!(script_file.aliases.len(), 2);
+        assert_eq!(script_file.aliases.len(), 3);
 
         // First alias
         match &script_file.aliases[0].node {
-            StatementKind::AliasStatement { name, id, .. } => {
+            StatementKind::AliasStatement { name, value, .. } => {
                 assert_eq!(name, "VAR_RESULT");
-                assert_eq!(*id, 0x800C);
+                assert!(matches!(value.node, ExpressionKind::Number(0x800C)));
             }
             _ => panic!("Expected alias statement"),
         }
 
         // Second alias
         match &script_file.aliases[1].node {
-            StatementKind::AliasStatement { name, id, .. } => {
+            StatementKind::AliasStatement { name, value, .. } => {
                 assert_eq!(name, "VAR_GLOBAL");
-                assert_eq!(*id, 0x4000);
+                assert!(matches!(value.node, ExpressionKind::Number(0x4000)));
+            }
+            _ => panic!("Expected alias statement"),
+        }
+
+        match &script_file.aliases[2].node {
+            StatementKind::AliasStatement { name, value, .. } => {
+                assert_eq!(name, "VAR_CHAINED");
+                assert!(matches!(
+                    value.node,
+                    ExpressionKind::Identifier(ref ident) if ident == "VAR_RESULT"
+                ));
             }
             _ => panic!("Expected alias statement"),
         }
