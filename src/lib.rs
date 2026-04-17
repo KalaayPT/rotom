@@ -7,8 +7,13 @@ mod autovar;
 pub mod compiler;
 pub mod database;
 pub mod decompiler;
-pub mod project_init;
+pub mod project;
 pub mod transpiler;
+
+pub use project::{
+    compile as project_compile, config as project_config, convert as project_convert,
+    error as project_error, init as project_init,
+};
 
 pub use compiler::codegen::Emitter;
 pub use compiler::{
@@ -146,10 +151,11 @@ pub fn compile_levelscript_json_to_bytes(source: &str) -> Result<Vec<u8>, Compil
     Ok(levelscript.to_bytes())
 }
 
-fn is_levelscript_file(path: &Path) -> bool {
-    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+/// Returns true when the path follows a known levelscript naming convention.
+pub fn is_levelscript_path(path: &Path) -> bool {
+    let stem = path.file_stem().and_then(|name| name.to_str()).unwrap_or("");
 
-    filename.contains("_init_") && !filename.contains("_init_new_game")
+    (stem.contains("_init_") && !stem.contains("_init_new_game")) || stem.ends_with("_hdr")
 }
 
 pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<ScriptOutput> {
@@ -190,7 +196,7 @@ fn compile_file_internal(
     };
     let constants = file_constants.as_ref().unwrap_or(constants);
 
-    let is_levelscript = is_levelscript_file(input)
+    let is_levelscript = is_levelscript_path(input)
         || (extension == "s" && transpiler::is_levelscript_source(&source));
 
     let bytes = if extension == "json" {
@@ -239,6 +245,18 @@ fn compile_file_internal(
     };
     let size = bytes.len();
 
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CompileFileError::IoError(CompileError::Io {
+                message: format!(
+                    "Failed to create output directory '{}': {}",
+                    parent.display(),
+                    e
+                ),
+            })
+        })?;
+    }
+
     std::fs::write(output, &bytes).map_err(|e| {
         CompileFileError::IoError(CompileError::Io {
             message: format!("Failed to write output file '{}': {}", output.display(), e),
@@ -249,6 +267,26 @@ fn compile_file_internal(
         input: input.to_path_buf(),
         output: output.to_path_buf(),
         size,
+    })
+}
+
+pub(crate) fn compile_file_for_batch(
+    input: &Path,
+    output: &Path,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> Result<CompileResult, CompileFailure> {
+    compile_file_internal(input, output, db, constants).map_err(|error| match error {
+        CompileFileError::IoError(error) => CompileFailure {
+            path: input.to_path_buf(),
+            error,
+            source: String::new(),
+        },
+        CompileFileError::CompileError { error, source } => CompileFailure {
+            path: input.to_path_buf(),
+            error,
+            source,
+        },
     })
 }
 
@@ -510,6 +548,19 @@ fn decompile_file_internal(
     let source_text = ir_to_source(&script_output, db);
     let size = source_text.len();
 
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| DecompileFailure {
+            path: input.to_path_buf(),
+            error: DecompileError::Io {
+                message: format!(
+                    "Failed to create output directory '{}': {}",
+                    parent.display(),
+                    e
+                ),
+            },
+        })?;
+    }
+
     std::fs::write(&output_path, &source_text).map_err(|e| DecompileFailure {
         path: input.to_path_buf(),
         error: DecompileError::Io {
@@ -526,6 +577,15 @@ fn decompile_file_internal(
         output: output_path,
         size,
     })
+}
+
+pub(crate) fn decompile_file_for_batch(
+    input: &Path,
+    output_file: Option<&Path>,
+    output_dir: Option<&Path>,
+    db: &DatabaseV2,
+) -> Result<DecompileFileResult, DecompileFailure> {
+    decompile_file_internal(input, output_file, output_dir, db)
 }
 
 pub fn decompile_file(
@@ -649,6 +709,14 @@ mod tests {
 
     fn minimal_script_source() -> &'static str {
         "function Main #1:\nEnd\n"
+    }
+
+    #[test]
+    fn is_levelscript_path_matches_known_naming_conventions() {
+        assert!(super::is_levelscript_path(Path::new("map_init_main.s")));
+        assert!(super::is_levelscript_path(Path::new("event_hdr.s")));
+        assert!(!super::is_levelscript_path(Path::new("map_init_new_game.s")));
+        assert!(!super::is_levelscript_path(Path::new("normal.s")));
     }
 
     fn write_test_decomp_project(root: &Path) {

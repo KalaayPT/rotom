@@ -24,6 +24,7 @@ serde = {version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10"
 minreq = { version = "2.14.1", features = ["https-rustls"] }
+thiserror = "2.0"
 toml = "0.8.19"
 uxie = "0.5.8"
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }

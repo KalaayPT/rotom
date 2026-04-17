@@ -4,8 +4,8 @@
 //! and compare the resulting binaries against the known-good pre-built binaries.
 //!
 //! ## Test Categories
-//! - **Normal Scripts**: Standard script files (no `_init_` in filename)
-//! - **Levelscripts**: Initialization scripts (contain `_init_` in filename)
+//! - **Normal Scripts**: Standard script files that do not match levelscript naming.
+//! - **Levelscripts**: Initialization scripts using `_init_` or `_hdr` naming.
 //!
 //! ## Environment Variables
 //! - `POKEPLATINUM_ROOT`: Path to pokeplatinum checkout (default: ~/dev/pokeplatinum)
@@ -36,6 +36,7 @@ use rotom::compile_to_bytes_with_options;
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::decompiler::disassembler::ScriptOutput;
 use rotom::decompiler::ir_to_source;
+use rotom::is_levelscript_path;
 use rotom::transpiler::decomp::transpile as transpile_decomp;
 use rotom::transpiler::is_levelscript_source;
 use rotom::transpiler::transpile_dspre;
@@ -108,15 +109,7 @@ fn find_normal_scripts() -> Vec<PathBuf> {
         .expect("Failed to read scripts directory")
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension().map(|e| e == "s").unwrap_or(false)
-                && !path
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .contains("_init_")
-        })
+        .filter(|path| path.extension().map(|e| e == "s").unwrap_or(false) && !is_levelscript_path(path))
         .collect();
     scripts.sort();
     scripts
@@ -128,15 +121,7 @@ fn find_levelscripts() -> Vec<PathBuf> {
         .expect("Failed to read scripts directory")
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension().map(|e| e == "s").unwrap_or(false)
-                && path
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .contains("_init_")
-        })
+        .filter(|path| path.extension().map(|e| e == "s").unwrap_or(false) && is_levelscript_path(path))
         .collect();
     scripts.sort();
     scripts
