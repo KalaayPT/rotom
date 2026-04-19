@@ -558,8 +558,8 @@ impl<'a> Lowerer<'a> {
 
         let mut rewritten = Vec::with_capacity(emit_args.len());
         for expr in emit_args {
-            let substituted = self.substitute_params(expr, &param_map);
-            rewritten.push(self.parse_expression_text(&substituted)?);
+            let substituted = Self::substitute_params(expr, &param_map);
+            rewritten.push(Self::parse_expression_text(&substituted)?);
         }
 
         Ok(rewritten)
@@ -628,8 +628,8 @@ impl<'a> Lowerer<'a> {
         }
 
         for line in expansion {
-            let substituted = self.substitute_params(line, &param_map);
-            let parsed_stmt = self.parse_expansion_line(&substituted)?;
+            let substituted = Self::substitute_params(line, &param_map);
+            let parsed_stmt = Self::parse_expansion_line(&substituted)?;
             self.lower_statement_with_depth(&parsed_stmt, depth + 1)?;
         }
 
@@ -923,7 +923,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn substitute_params(&self, line: &str, param_map: &HashMap<String, String>) -> String {
+    fn substitute_params(line: &str, param_map: &HashMap<String, String>) -> String {
         let mut result = line.to_string();
         for (name, value) in param_map {
             result = result.replace(&format!("${}", name), value);
@@ -963,17 +963,17 @@ impl<'a> Lowerer<'a> {
         Ok(result)
     }
 
-    /// Parse one expression with the normal Rotom parser.
-    ///
-    /// Defaults and `emit_args` use this so they follow the same expression rules as source code.
-    fn parse_expression_text(&self, expr: &str) -> ParseResult<Expression> {
+/// Parse one expression with the normal Rotom parser.
+///
+/// Defaults and `emit_args` use this so they follow the same expression rules as source code.
+fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
         let expr_with_newline = format!("{}\n", expr.trim());
         let lexer = Lexer::new(&expr_with_newline);
         let mut parser = Parser::new(lexer);
         parser.parse_expression(crate::compiler::ast::Precedence::Lowest)
     }
 
-    fn parse_expansion_line(&self, line: &str) -> ParseResult<Statement> {
+    fn parse_expansion_line(line: &str) -> ParseResult<Statement> {
         if line.trim().is_empty() {
             return Err(lowering_error(
                 "Macro expansion produced empty line".to_string(),
@@ -1055,9 +1055,9 @@ impl<'a> Lowerer<'a> {
                 args: vec![Arg::Value(final_left), Arg::Value(final_right)],
             });
             let cond = if invert {
-                self.get_inverted_condition(operator, swapped)
+                Self::get_inverted_condition(operator, swapped)
             } else {
-                self.get_condition(operator, swapped)
+                Self::get_condition(operator, swapped)
             };
             self.output.push(IrOpcode::Command {
                 name: "JumpIf".to_string(),
@@ -1153,8 +1153,8 @@ impl<'a> Lowerer<'a> {
             })?;
 
             for line in expansion {
-                let substituted = self.substitute_params(line, &param_map);
-                let parsed_stmt = self.parse_expansion_line(&substituted)?;
+                let substituted = Self::substitute_params(line, &param_map);
+                let parsed_stmt = Self::parse_expansion_line(&substituted)?;
                 self.lower_statement_with_depth(&parsed_stmt, 1)?;
             }
         } else {
@@ -1280,7 +1280,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn swap_operator(&self, token: &TokenType) -> TokenType {
+    fn swap_operator(token: &TokenType) -> TokenType {
         match token {
             TokenType::GreaterThan => TokenType::LesserThan,
             TokenType::LesserThan => TokenType::GreaterThan,
@@ -1290,11 +1290,11 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn get_condition(&self, token: &TokenType, swapped: bool) -> Condition {
+    fn get_condition(token: &TokenType, swapped: bool) -> Condition {
         use Condition::{Different, Equal, Greater, GreaterEqual, Less, LessEqual};
 
         let effective_op = if swapped {
-            self.swap_operator(token)
+            Self::swap_operator(token)
         } else {
             token.clone()
         };
@@ -1309,11 +1309,11 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn get_inverted_condition(&self, token: &TokenType, swapped: bool) -> Condition {
+    fn get_inverted_condition(token: &TokenType, swapped: bool) -> Condition {
         use Condition::{Different, Equal, Greater, GreaterEqual, Less, LessEqual};
 
         let effective_op = if swapped {
-            self.swap_operator(token)
+            Self::swap_operator(token)
         } else {
             token.clone()
         };

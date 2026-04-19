@@ -130,7 +130,7 @@ impl<'a> Disassembler<'a> {
         self.discover_boundaries()?;
         self.discover_gap_targets()?;
         let items = self.disassemble_chunks()?;
-        self.validate_pointer_labels(&items)?;
+        Self::validate_pointer_labels(&items)?;
         Ok(items)
     }
 
@@ -190,7 +190,7 @@ impl<'a> Disassembler<'a> {
         Ok(())
     }
 
-    fn validate_pointer_labels(&self, items: &[TopLevelItem]) -> DecompileResult<()> {
+    fn validate_pointer_labels(items: &[TopLevelItem]) -> DecompileResult<()> {
         let mut defined_labels: HashSet<String> = HashSet::new();
         let mut unresolved_labels: HashSet<String> = HashSet::new();
 
@@ -424,7 +424,7 @@ impl<'a> Disassembler<'a> {
 
                     if let Some(target) = self.extract_jump_target(pc, cmd)
                         && target < self.bytes.len() && !self.symbols.contains_key(&target) {
-                            if self.is_action_reference(name) && target % 4 == 0 {
+                            if Self::is_action_reference(name) && target % 4 == 0 {
                                 missed_actions.push(target);
                             } else if target >= code_start {
                                 missed_targets.push(target);
@@ -478,13 +478,13 @@ impl<'a> Disassembler<'a> {
             if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
                 let cmd_size = self.command_size_at(pc, cmd);
 
-                if self.is_jump_command(name)
+                if Self::is_jump_command(name)
                     && let Some(target) = self.extract_jump_target(pc, cmd)
                 {
                     targets.push(target);
                 }
 
-                if self.is_action_reference(name)
+                if Self::is_action_reference(name)
                     && let Some(action_offset) = self.extract_action_offset(pc, cmd)
                     && action_offset < self.bytes.len()
                     && action_offset % 4 == 0
@@ -1000,7 +1000,7 @@ impl<'a> Disassembler<'a> {
                 false
             } else if let Some(default_str) = &param.default {
                 if let Arg::Value(v) = arg {
-                    if let Some(default_val) = self.parse_default_value(default_str) {
+                    if let Some(default_val) = Self::parse_default_value(default_str) {
                         *v == default_val
                     } else {
                         false
@@ -1023,7 +1023,7 @@ impl<'a> Disassembler<'a> {
         binary_args[..keep_count].to_vec()
     }
 
-    fn parse_default_value(&self, default_str: &str) -> Option<i32> {
+    fn parse_default_value(default_str: &str) -> Option<i32> {
         let s = default_str.trim();
         if s == "TRUE" || s == "true" {
             Some(1)
@@ -1036,7 +1036,7 @@ impl<'a> Disassembler<'a> {
         }
     }
 
-    fn command_size(&self, cmd: &Command) -> usize {
+    fn command_size(cmd: &Command) -> usize {
         cmd.params.iter().map(|p| p.param_type.size()).sum()
     }
 
@@ -1048,15 +1048,15 @@ impl<'a> Disassembler<'a> {
                 return variant_params.iter().map(|p| p.param_type.size()).sum();
             }
         }
-        self.command_size(cmd)
+        Self::command_size(cmd)
     }
 
-    fn is_jump_command(&self, name: &str) -> bool {
+    fn is_jump_command(name: &str) -> bool {
         let key = normalize_command_name(name);
         key.contains("goto") || key.contains("jump") || key.starts_with("call")
     }
 
-    fn is_action_reference(&self, name: &str) -> bool {
+    fn is_action_reference(name: &str) -> bool {
         matches!(
             normalize_command_name(name).as_str(),
             "applymovement" | "applymovementex" | "lockformovement"
