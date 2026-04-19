@@ -766,6 +766,24 @@ impl ConstantDb {
                 return Ok(true);
             }
 
+            if SymbolTable::try_load_generated_header_fallback(
+                table,
+                parent_dir,
+                include_dirs,
+                include_path,
+            )? {
+                return Ok(true);
+            }
+
+            if SymbolTable::try_load_text_bank_include_json(
+                table,
+                parent_dir,
+                include_dirs,
+                include_path,
+            )? {
+                return Ok(true);
+            }
+
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!(
@@ -855,7 +873,10 @@ impl ConstantDb {
         vec![
             project_root.to_path_buf(),
             project_root.join("include"),
+            project_root.join("generated"),
             project_root.join("res/field/scripts"),
+            project_root.join("asm"),
+            project_root.join("files"),
         ]
     }
 

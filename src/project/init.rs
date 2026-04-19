@@ -229,6 +229,7 @@ fn detect_workspace(root: &Path) -> Result<WorkspaceInfo> {
                         "include".to_string(),
                         "generated".to_string(),
                         "files".to_string(),
+                        "asm".to_string(),
                     ],
                 ),
                 uxie::GameFamily::Platinum => (
@@ -237,6 +238,7 @@ fn detect_workspace(root: &Path) -> Result<WorkspaceInfo> {
                         "include".to_string(),
                         "generated".to_string(),
                         "res/field/scripts".to_string(),
+                        "asm".to_string(),
                     ],
                 ),
                 uxie::GameFamily::DP => unreachable!("decomp detection should not resolve to DP"),
