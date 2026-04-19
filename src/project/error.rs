@@ -49,6 +49,9 @@ pub enum ProjectError {
     #[error("rotom.toml does not define any binary_roots")]
     MissingBinaryRoots,
 
+    #[error("rotom.toml is missing [workspace].game_family for decomp project mode")]
+    MissingGameFamily,
+
     #[error("No supported project source files were found")]
     NoProjectSourceFiles,
 
@@ -57,6 +60,13 @@ pub enum ProjectError {
 
     #[error("Project compile output collision detected: {details}")]
     OutputCollision { details: String },
+
+    #[error(
+        "Tracked project path '{}' is outside project root '{}'",
+        path.display(),
+        root.display()
+    )]
+    PathOutsideProject { root: PathBuf, path: PathBuf },
 
     #[error("Failed to convert '{path}': line {line}: {message}")]
     ConvertDecomp {

@@ -719,12 +719,15 @@ impl ConstantDb {
             message: format!("Failed to open decomp project via Uxie: {}", e),
         })?;
 
-        let symbols = (*ws.symbols).clone();
+        Ok(self.load_decomp_symbols(root, (*ws.symbols).clone()))
+    }
+
+    pub fn load_decomp_symbols<P: AsRef<Path>>(&mut self, root: P, symbols: SymbolTable) -> usize {
         let count = symbols.get_all_defines().len();
-        self.uxie_project_root = Some(root.to_path_buf());
+        self.uxie_project_root = Some(root.as_ref().to_path_buf());
         self.uxie_base_symbols = Some(symbols.clone());
         self.uxie_symbols = Some(symbols);
-        Ok(count)
+        count
     }
 
     /// Load file-local constants for a specific source file using Uxie's include handling.
@@ -799,6 +802,13 @@ impl ConstantDb {
         let mut cloned = self.clone();
         cloned.load_script_constants(script_path)?;
         Ok(cloned)
+    }
+
+    pub fn loaded_script_file_paths(&self) -> Vec<PathBuf> {
+        self.uxie_symbols
+            .as_ref()
+            .map(SymbolTable::loaded_file_paths)
+            .unwrap_or_default()
     }
 
     pub fn load_map_events<P: AsRef<Path>, Q: AsRef<Path>>(
@@ -1204,5 +1214,83 @@ mod tests {
             result.is_err(),
             "mixed valid/invalid constants should surface an error"
         );
+    }
+
+    #[test]
+    fn test_load_script_constants_ignores_directory_inputs() {
+        let temp_dir = unique_temp_dir("script_constants_directory");
+        fs::create_dir_all(&temp_dir).expect("failed to create temp dir");
+
+        let mut constants = ConstantDb::new();
+        constants.load_decomp_symbols(&temp_dir, SymbolTable::new());
+
+        let loaded = constants
+            .load_script_constants(&temp_dir)
+            .expect("directory inputs should be ignored");
+
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(loaded, 0);
+    }
+
+    #[test]
+    fn test_try_load_decomp_events_include_json_loads_event_symbols() {
+        let temp_dir = unique_temp_dir("events_include_json");
+        let parent_dir = temp_dir.join("res/field/scripts");
+        let events_dir = temp_dir.join("res/field/events");
+        fs::create_dir_all(&parent_dir).expect("failed to create scripts dir");
+        fs::create_dir_all(&events_dir).expect("failed to create events dir");
+        fs::write(
+            events_dir.join("events_test_map.json"),
+            concat!(
+                "{\n",
+                "  \"object_events\": [\n",
+                "    { \"id\": \"LOCALID_HIKER\" },\n",
+                "    { \"id\": \"LOCALID_TWIN\" }\n",
+                "  ]\n",
+                "}\n"
+            ),
+        )
+        .expect("failed to write events json");
+
+        let mut table = SymbolTable::new();
+        let loaded = ConstantDb::try_load_decomp_events_include_json(
+            &mut table,
+            &parent_dir,
+            std::slice::from_ref(&temp_dir),
+            "res/field/events/events_test_map.h",
+        )
+        .expect("event include fallback should succeed");
+
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert!(loaded);
+        assert_eq!(table.resolve_constant("LOCALID_HIKER"), Some(0));
+        assert_eq!(table.resolve_constant("LOCALID_TWIN"), Some(1));
+    }
+
+    #[test]
+    fn test_try_load_decomp_events_include_json_ignores_non_event_headers() {
+        let temp_dir = unique_temp_dir("non_event_include_json");
+        fs::create_dir_all(&temp_dir).expect("failed to create temp dir");
+        fs::write(
+            temp_dir.join("not_events.json"),
+            "{ \"object_events\": [ { \"id\": \"LOCALID_HIKER\" } ] }",
+        )
+        .expect("failed to write json fixture");
+
+        let mut table = SymbolTable::new();
+        let loaded = ConstantDb::try_load_decomp_events_include_json(
+            &mut table,
+            &temp_dir,
+            &[],
+            "not_events.h",
+        )
+        .expect("non-event includes should be ignored");
+
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert!(!loaded);
+        assert_eq!(table.resolve_constant("LOCALID_HIKER"), None);
     }
 }

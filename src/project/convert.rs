@@ -32,11 +32,7 @@ pub fn find_convertible_files(root: &Path, config: &RotomConfig) -> Result<Vec<P
     Ok(files)
 }
 
-pub fn convert_project(
-    root: &Path,
-    config: &RotomConfig,
-    dry_run: bool,
-) -> Result<ConvertReport> {
+pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Result<ConvertReport> {
     let files = find_convertible_files(root, config)?;
     if files.is_empty() {
         return Ok(ConvertReport {
@@ -66,7 +62,7 @@ pub fn convert_project(
             path: input.clone(),
             source,
         })?;
-        let converted = match config.workspace.project_type {
+        let mut converted = match config.workspace.project_type {
             ProjectTypeConfig::Dspre => transpiler::transpile_dspre(&source, db.as_ref()),
             ProjectTypeConfig::Decomp => transpiler::transpile_decomp(&source, db.as_ref())
                 .map(|result| result.source)
@@ -77,6 +73,12 @@ pub fn convert_project(
                 })?,
             ProjectTypeConfig::Generic => continue,
         };
+        if let Some(include_path) = config.global_include_path() {
+            let include_line = format!("#include \"{include_path}\"");
+            if !converted.lines().any(|line| line.trim() == include_line) {
+                converted = format!("{include_line}\n\n{converted}");
+            }
+        }
 
         plans.push(ConversionPlan {
             input: input.clone(),
@@ -145,12 +147,13 @@ fn collect_convertible_files(
         path: dir.to_path_buf(),
         source,
     })? {
-        let path = entry.map_err(|source| ProjectError::Io {
-            action: "Failed to read source root entry",
-            path: dir.to_path_buf(),
-            source,
-        })?
-        .path();
+        let path = entry
+            .map_err(|source| ProjectError::Io {
+                action: "Failed to read source root entry",
+                path: dir.to_path_buf(),
+                source,
+            })?
+            .path();
         if path.is_dir() {
             collect_convertible_files(&path, project_type, out)?;
             continue;
@@ -193,7 +196,8 @@ fn is_convertible_file(path: &Path, project_type: ProjectTypeConfig) -> Result<b
 mod tests {
     use super::{convert_project, find_convertible_files};
     use crate::project::config::{
-        PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig, WorkspaceConfig,
+        GameFamilyConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
+        WorkspaceConfig,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -215,6 +219,28 @@ mod tests {
                 source_roots: vec!["scripts".to_string()],
                 include_roots: Vec::new(),
                 binary_roots: vec!["unpacked/scripts".to_string()],
+            },
+            database: None,
+        }
+    }
+
+    fn decomp_config() -> RotomConfig {
+        RotomConfig {
+            format_version: 1,
+            project: ProjectMetadata {
+                name: "example".to_string(),
+            },
+            workspace: WorkspaceConfig {
+                project_type: ProjectTypeConfig::Decomp,
+                game_family: Some(GameFamilyConfig::Platinum),
+            },
+            paths: PathsConfig {
+                database_dir: ".rotom/command_database".to_string(),
+                cache_dir: ".rotom/cache".to_string(),
+                status_dir: ".rotom/status".to_string(),
+                source_roots: vec!["res/field/scripts".to_string()],
+                include_roots: vec!["include".to_string()],
+                binary_roots: vec!["res/field/scripts".to_string()],
             },
             database: None,
         }
@@ -287,6 +313,25 @@ mod tests {
         let files = find_convertible_files(root, &dspre_config()).unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("convert.script"));
+    }
+
+    #[test]
+    fn convert_project_prepends_global_include_when_missing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let source_dir = root.join("res/field/scripts");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("test.s"),
+            "ScriptEntry Test\nScriptEntryEnd\n\nTest:\n\tEnd\n",
+        )
+        .unwrap();
+
+        let report = convert_project(root, &decomp_config(), false).unwrap();
+        let converted = fs::read_to_string(source_dir.join("test.rotom")).unwrap();
+
+        assert_eq!(report.converted, 1);
+        assert!(converted.starts_with("#include \"macros/scrcmd.inc\""));
     }
 
     #[test]

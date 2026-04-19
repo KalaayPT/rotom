@@ -130,6 +130,11 @@ impl RotomConfig {
             .game_family
             .map(GameFamilyConfig::into_game_family)
     }
+
+    pub fn global_include_path(&self) -> Option<&'static str> {
+        self.game_family()
+            .and_then(|family| global_include_path(family, self.workspace.project_type))
+    }
 }
 
 pub fn load_config(root: &Path) -> Result<RotomConfig> {
@@ -286,15 +291,22 @@ default_file = ".rotom/command_database/platinum_v2.json"
             config.database_file(root),
             Some(root.join(".rotom/command_database/hgss_v2.json"))
         );
-        assert_eq!(config.database_dir(root), root.join(".rotom/command_database"));
+        assert_eq!(
+            config.database_dir(root),
+            root.join(".rotom/command_database")
+        );
         assert_eq!(config.cache_dir(root), root.join(".rotom/cache"));
         assert_eq!(config.status_dir(root), root.join(".rotom/status"));
-        assert_eq!(config.source_roots(root), vec![root.join("res/field/scripts")]);
+        assert_eq!(
+            config.source_roots(root),
+            vec![root.join("res/field/scripts")]
+        );
         assert_eq!(
             config.include_roots(root),
             vec![root.join("include"), root.join("generated")]
         );
         assert_eq!(config.binary_roots(root), vec![root.join("build/scripts")]);
         assert_eq!(config.game_family(), Some(GameFamily::HGSS));
+        assert_eq!(config.global_include_path(), Some("macros/script.inc"));
     }
 }

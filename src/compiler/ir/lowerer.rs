@@ -36,7 +36,7 @@ pub struct Lowerer<'a> {
     label_counter: usize,
     output: Vec<IrOpcode>,
     global_symbols: &'a SymbolTable,
-    local_aliases: HashMap<String, i32>,
+    active_aliases: HashMap<String, i32>,
     db: &'a DatabaseV2,
     constants: Option<&'a crate::database::ConstantDb>,
     break_targets: Vec<String>,
@@ -48,7 +48,7 @@ impl<'a> Lowerer<'a> {
             label_counter: 0,
             output: Vec::new(),
             global_symbols: symbols,
-            local_aliases: HashMap::new(),
+            active_aliases: HashMap::new(),
             db,
             constants: None,
             break_targets: Vec::new(),
@@ -64,7 +64,7 @@ impl<'a> Lowerer<'a> {
             label_counter: 0,
             output: Vec::new(),
             global_symbols: symbols,
-            local_aliases: HashMap::new(),
+            active_aliases: HashMap::new(),
             db,
             constants: Some(constants),
             break_targets: Vec::new(),
@@ -80,8 +80,10 @@ impl<'a> Lowerer<'a> {
         let mut items = Vec::new();
         for item in &scr_file.items {
             match &item.node {
+                StatementKind::AliasStatement { .. } => {
+                    self.lower_statement(item)?;
+                }
                 StatementKind::Function { headers, body } => {
-                    self.local_aliases.clear();
                     let instructions = self.lower_function(body)?;
                     items.push(TopLevelItem::Function(IrFunction {
                         headers: headers.clone(),
@@ -89,7 +91,6 @@ impl<'a> Lowerer<'a> {
                     }));
                 }
                 StatementKind::Action { name, body } => {
-                    self.local_aliases.clear();
                     let instructions = self.lower_function(body)?;
                     items.push(TopLevelItem::Action(IrAction {
                         name: name.clone(),
@@ -215,7 +216,7 @@ impl<'a> Lowerer<'a> {
             }),
             StatementKind::AliasStatement { name, value, .. } => {
                 let resolved = self.resolve_arg_to_int(value)?;
-                self.local_aliases.insert(name.clone(), resolved);
+                self.active_aliases.insert(name.clone(), resolved);
             }
 
             _ => {}
@@ -660,6 +661,9 @@ impl<'a> Lowerer<'a> {
                 "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
                 "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
                 _ => {
+                    if let Some(&val) = self.active_aliases.get(name) {
+                        return Some(i64::from(val));
+                    }
                     if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
                         return Some(i64::from(*val));
                     }
@@ -708,6 +712,9 @@ impl<'a> Lowerer<'a> {
                 "SCRIPT_LOCAL_VARS_START" => Ok(0x8000),
                 "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
                 _ => {
+                    if let Some(&val) = self.active_aliases.get(name) {
+                        return Ok(val);
+                    }
                     if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
                         return Ok(*val);
                     } else if let Some(SymbolType::Variable(val)) =
@@ -1174,7 +1181,7 @@ impl<'a> Lowerer<'a> {
     fn resolve_arg(&self, expr: &Expression) -> ParseResult<Arg> {
         match &expr.node {
             ExpressionKind::Identifier(name) => {
-                if let Some(&val) = self.local_aliases.get(name) {
+                if let Some(&val) = self.active_aliases.get(name) {
                     return Ok(Arg::Value(val));
                 }
 

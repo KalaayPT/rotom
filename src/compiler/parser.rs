@@ -86,8 +86,8 @@ impl<'a> Parser<'a> {
     pub fn parse_script_file(&mut self) -> ParseResult<ScriptFile> {
         let mut aliases = Vec::new();
         let mut items: Vec<Statement> = Vec::new();
-        let mut function_headers_by_name: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut function_headers_by_name: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         while !self.current_token_is(TokenType::EOF) {
             if self.current_token_is(TokenType::Newline) {
@@ -99,7 +99,7 @@ impl<'a> Parser<'a> {
                 StatementKind::Function { headers, .. } => {
                     // Check if we already have a function with the same name
                     if let Some(first_header) = headers.first() {
-                        if function_headers_by_name.contains_key(&first_header.name) {
+                        if function_headers_by_name.contains(&first_header.name) {
                             // Already exists - this is a duplicate body definition
                             return Err(parse_error(
                                 stmt.span.clone(),
@@ -110,14 +110,17 @@ impl<'a> Parser<'a> {
                             ));
                         }
                         // New function - add it
-                        function_headers_by_name.insert(first_header.name.clone(), items.len());
+                        function_headers_by_name.insert(first_header.name.clone());
                         items.push(stmt);
                     } else {
                         items.push(stmt);
                     }
                 }
                 StatementKind::Action { .. } => items.push(stmt),
-                StatementKind::AliasStatement { .. } => aliases.push(stmt),
+                StatementKind::AliasStatement { .. } => {
+                    aliases.push(stmt.clone());
+                    items.push(stmt);
+                }
                 _ => unreachable!("top_level_stmt should prevent other statements or errors"),
             }
         }
@@ -158,9 +161,10 @@ impl<'a> Parser<'a> {
                     span,
                 }
             }
+            TokenType::Alias => self.parse_alias()?,
             TokenType::LocalLabel(name) => {
                 let start = self.current_token.span.start;
-                let label_name = name.clone();
+                let label_name = name;
                 self.advance();
                 self.expect_advance(TokenType::Colon)?;
                 let end = self.current_token.span.start;
@@ -348,7 +352,6 @@ impl<'a> Parser<'a> {
     pub fn parse_alias(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
 
-        // All aliases are global now, no prefix needed
         self.expect_advance(TokenType::Alias)?;
         let value = self.parse_expression(Precedence::Lowest)?;
         self.expect_advance(TokenType::As)?;
@@ -359,11 +362,7 @@ impl<'a> Parser<'a> {
         };
         let end = self.current_token.span.start;
         Ok(Spanned {
-            node: StatementKind::AliasStatement {
-                is_global: true, // Always global now
-                value,
-                name,
-            },
+            node: StatementKind::AliasStatement { value, name },
             span: start..end,
         })
     }
@@ -1098,6 +1097,15 @@ function TestFunc #1:
         let script_file = parser.parse_script_file().unwrap();
 
         assert_eq!(script_file.aliases.len(), 3);
+        assert_eq!(script_file.items.len(), 4);
+        assert!(matches!(
+            script_file.items[0].node,
+            StatementKind::AliasStatement { .. }
+        ));
+        assert!(matches!(
+            script_file.items[3].node,
+            StatementKind::Function { .. }
+        ));
 
         // First alias
         match &script_file.aliases[0].node {

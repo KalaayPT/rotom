@@ -75,6 +75,28 @@ impl SymbolTable {
         self.scopes[0].insert(name, (kind, span));
         Ok(())
     }
+    pub fn define_alias(
+        &mut self,
+        name: String,
+        value: i32,
+        span: Range<usize>,
+    ) -> ParseResult<()> {
+        if matches!(
+            self.resolve(&name),
+            Some(SymbolType::Function(_) | SymbolType::Action | SymbolType::Label)
+        ) {
+            return Err(analysis_error(
+                span,
+                format!(
+                    "Alias '{}' conflicts with an existing non-alias symbol",
+                    name
+                ),
+            ));
+        }
+
+        self.scopes[0].insert(name, (SymbolType::Variable(value), span));
+        Ok(())
+    }
     pub fn define_scoped(
         &mut self,
         name: String,
@@ -152,9 +174,6 @@ impl<'a> Analyzer<'a> {
     }
 
     pub fn analyze(&mut self, file: &ScriptFile) -> ParseResult<()> {
-        for alias in &file.aliases {
-            self.register_global_alias(alias)?;
-        }
         for item in &file.items {
             match &item.node {
                 StatementKind::Function { .. } => {
@@ -168,6 +187,9 @@ impl<'a> Analyzer<'a> {
         }
         for item in &file.items {
             match &item.node {
+                StatementKind::AliasStatement { .. } => {
+                    self.register_alias(item)?;
+                }
                 StatementKind::Function { .. } => {
                     self.validate_function_body(item)?;
                 }
@@ -179,14 +201,11 @@ impl<'a> Analyzer<'a> {
         }
         Ok(())
     }
-    fn register_global_alias(&mut self, stmt: &Statement) -> ParseResult<()> {
+    fn register_alias(&mut self, stmt: &Statement) -> ParseResult<()> {
         if let StatementKind::AliasStatement { name, value, .. } = &stmt.node {
             let id = self.resolve_expression_to_int(value)?;
-            self.symbols.define_global(
-                name.clone(),
-                SymbolType::Variable(id),
-                stmt.span.clone(),
-            )?;
+            self.symbols
+                .define_alias(name.clone(), id, stmt.span.clone())?;
         }
         Ok(())
     }
@@ -350,6 +369,9 @@ impl<'a> Analyzer<'a> {
                     self.validate_expression(arg)?;
                 }
             }
+            StatementKind::AliasStatement { .. } => {
+                self.register_alias(stmt)?;
+            }
             // labels already gathered, skip
             StatementKind::Label(_) | StatementKind::Return | StatementKind::End => {}
             _ => {
@@ -386,7 +408,7 @@ impl<'a> Analyzer<'a> {
 
     /// Look up a command in the database
     fn get_command(&self, name: &str) -> Option<&Command> {
-        self.database?.commands.get(name)
+        self.database?.get_command(name).ok()
     }
 
     fn is_command_call(&self, expr: &Expression) -> bool {
@@ -1011,11 +1033,10 @@ mod tests {
     }
 
     #[test]
-    fn test_analyzer_registers_global_alias() {
+    fn test_analyzer_registers_alias() {
         let mut analyzer = Analyzer::new();
         let alias_stmt = Statement {
             node: StatementKind::AliasStatement {
-                is_global: true,
                 value: Expression {
                     node: ExpressionKind::Number(1),
                     span: 0..1,
@@ -1025,16 +1046,16 @@ mod tests {
             span: 0..10,
         };
         analyzer
-            .register_global_alias(&alias_stmt)
-            .expect("Failed to register global alias");
+            .register_alias(&alias_stmt)
+            .expect("Failed to register alias");
         match analyzer.symbols.resolve("global_var") {
             Some(SymbolType::Variable(id)) => assert_eq!(*id, 1),
-            _ => panic!("Global alias not found in symbol table"),
+            _ => panic!("Alias not found in symbol table"),
         }
     }
 
     #[test]
-    fn test_analyzer_registers_global_alias_from_prior_alias() {
+    fn test_analyzer_registers_alias_from_prior_alias() {
         let source = r"
 alias 1 as foo
 alias foo as bar
@@ -1115,6 +1136,27 @@ function TestFunc #1:
         assert!(result.is_err(), "break outside while should be an error");
         let err = format!("{:?}", result.unwrap_err());
         assert!(err.contains("break statement can only be used inside a while loop"));
+    }
+
+    #[test]
+    fn test_break_after_while_is_error() {
+        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let source = r"
+function TestFunc #1:
+    while 0x8000 != 0 do
+        End
+    endwhile
+    break
+";
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let result = analyzer.analyze(&script_file);
+        assert!(result.is_err(), "break after while should be an error");
     }
 
     #[test]
@@ -1395,13 +1437,13 @@ action TestMovement
     }
 
     #[test]
-    fn test_duplicate_symbol_error() {
+    fn test_duplicate_alias_rebinds_latest_value() {
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
 
         let source = r"
 alias 0x8000 as VAR_X
-alias 0x8000 as VAR_X
+alias 0x8001 as VAR_X
 
 function Dummy #0:
     End
@@ -1411,8 +1453,13 @@ function Dummy #0:
         let script_file = parser.parse_script_file().unwrap();
 
         let mut analyzer = Analyzer::new();
-        let result = analyzer.analyze(&script_file);
-        assert!(result.is_err(), "Duplicate alias should cause error");
+        analyzer
+            .analyze(&script_file)
+            .expect("duplicate alias should rebind to the latest value");
+        match analyzer.symbols.resolve("VAR_X") {
+            Some(SymbolType::Variable(id)) => assert_eq!(*id, 0x8001),
+            _ => panic!("Expected rebound alias in symbol table"),
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! to binary format and decompile binary scripts back to Rotoscript.
 
 mod autovar;
+pub mod compile_state;
 pub mod compiler;
 pub mod database;
 pub mod decompiler;
@@ -110,7 +111,8 @@ pub fn compile_to_bytes_with_options(
     constants: &ConstantDb,
     emit_end_marker: bool,
 ) -> Result<Vec<u8>, CompileError> {
-    let lexer = Lexer::new(source);
+    let cleaned_source = compiler::preprocessor::preprocess(source).cleaned_source;
+    let lexer = Lexer::new(&cleaned_source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
 
@@ -153,7 +155,10 @@ pub fn compile_levelscript_json_to_bytes(source: &str) -> Result<Vec<u8>, Compil
 
 /// Returns true when the path follows a known levelscript naming convention.
 pub fn is_levelscript_path(path: &Path) -> bool {
-    let stem = path.file_stem().and_then(|name| name.to_str()).unwrap_or("");
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
 
     (stem.contains("_init_") && !stem.contains("_init_new_game")) || stem.ends_with("_hdr")
 }
@@ -172,6 +177,7 @@ fn compile_file_internal(
     output: &Path,
     db: &DatabaseV2,
     constants: &ConstantDb,
+    load_file_constants: bool,
 ) -> Result<CompileResult, CompileFileError> {
     let source = std::fs::read_to_string(input).map_err(|e| {
         CompileFileError::IoError(CompileError::Io {
@@ -185,7 +191,7 @@ fn compile_file_internal(
         .unwrap_or("")
         .to_lowercase();
 
-    let file_constants = if extension == "s" || extension == "rotom" {
+    let file_constants = if load_file_constants && (extension == "s" || extension == "rotom") {
         Some(
             constants
                 .clone_for_script(input)
@@ -213,10 +219,7 @@ fn compile_file_internal(
         })?
     } else {
         let (rotom_source, emit_end_marker) = match extension.as_str() {
-            "rotom" => (
-                compiler::preprocessor::preprocess(&source).cleaned_source,
-                true,
-            ),
+            "rotom" => (source, true),
             "script" => (transpiler::transpile_dspre(&source, Some(db)), true),
             "s" => {
                 let result = transpiler::transpile_decomp(&source, Some(db)).map_err(|e| {
@@ -276,7 +279,27 @@ pub(crate) fn compile_file_for_batch(
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> Result<CompileResult, CompileFailure> {
-    compile_file_internal(input, output, db, constants).map_err(|error| match error {
+    compile_file_internal(input, output, db, constants, true).map_err(|error| match error {
+        CompileFileError::IoError(error) => CompileFailure {
+            path: input.to_path_buf(),
+            error,
+            source: String::new(),
+        },
+        CompileFileError::CompileError { error, source } => CompileFailure {
+            path: input.to_path_buf(),
+            error,
+            source,
+        },
+    })
+}
+
+pub(crate) fn compile_file_for_batch_preloaded_constants(
+    input: &Path,
+    output: &Path,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> Result<CompileResult, CompileFailure> {
+    compile_file_internal(input, output, db, constants, false).map_err(|error| match error {
         CompileFileError::IoError(error) => CompileFailure {
             path: input.to_path_buf(),
             error,
@@ -308,7 +331,7 @@ pub fn compile_file(
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> Result<CompileResult, CompileError> {
-    compile_file_internal(input, output, db, constants).map_err(|e| match e {
+    compile_file_internal(input, output, db, constants, true).map_err(|e| match e {
         CompileFileError::IoError(err) => err,
         CompileFileError::CompileError { error, .. } => error,
     })
@@ -381,7 +404,7 @@ pub fn compile_path(
             output.to_path_buf()
         };
 
-        match compile_file_internal(input, &output_path, db, constants) {
+        match compile_file_internal(input, &output_path, db, constants, true) {
             Ok(result) => Ok(BatchCompileResult {
                 successes: vec![result],
                 failures: vec![],
@@ -485,8 +508,8 @@ pub fn compile_path(
             .par_iter()
             .map(|input_file| {
                 let output_path = generate_output_path_compile(input_file, output);
-                compile_file_internal(input_file, &output_path, db, constants).map_err(
-                    |e| match e {
+                compile_file_internal(input_file, &output_path, db, constants, true).map_err(|e| {
+                    match e {
                         CompileFileError::IoError(error) => CompileFailure {
                             path: input_file.clone(),
                             error,
@@ -497,8 +520,8 @@ pub fn compile_path(
                             error,
                             source,
                         },
-                    },
-                )
+                    }
+                })
             })
             .collect();
 
@@ -715,7 +738,9 @@ mod tests {
     fn is_levelscript_path_matches_known_naming_conventions() {
         assert!(super::is_levelscript_path(Path::new("map_init_main.s")));
         assert!(super::is_levelscript_path(Path::new("event_hdr.s")));
-        assert!(!super::is_levelscript_path(Path::new("map_init_new_game.s")));
+        assert!(!super::is_levelscript_path(Path::new(
+            "map_init_new_game.s"
+        )));
         assert!(!super::is_levelscript_path(Path::new("normal.s")));
     }
 
@@ -960,6 +985,85 @@ function Main #1:
         .expect("expected source should compile");
 
         assert_eq!(compiled, expected);
+    }
+
+    #[test]
+    fn compile_to_bytes_supports_aliases_from_earlier_function_bodies() {
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+
+        let compiled = compile_to_bytes(
+            "function DefineAlias #1:
+    alias 7 as SHARED
+    End
+
+function Main #2:
+    Message SHARED
+    End
+",
+            &db,
+            &constants,
+        )
+        .expect("alias from earlier function body should compile");
+
+        let expected = compile_to_bytes(
+            "function DefineAlias #1:\n    End\n\nfunction Main #2:\n    Message 7\n    End\n",
+            &db,
+            &ConstantDb::new(),
+        )
+        .expect("expected source should compile");
+
+        assert_eq!(compiled, expected);
+    }
+
+    #[test]
+    fn compile_to_bytes_supports_top_level_alias_redefinition_in_source_order() {
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+
+        let compiled = compile_to_bytes(
+            "alias 7 as VALUE
+function First #1:
+    Message VALUE
+    End
+
+alias 9 as VALUE
+function Second #2:
+    Message VALUE
+    End
+",
+            &db,
+            &constants,
+        )
+        .expect("top-level alias redefinition should compile");
+
+        let expected = compile_to_bytes(
+            "function First #1:\n    Message 7\n    End\n\nfunction Second #2:\n    Message 9\n    End\n",
+            &db,
+            &ConstantDb::new(),
+        )
+        .expect("expected source should compile");
+
+        assert_eq!(compiled, expected);
+    }
+
+    #[test]
+    fn compile_to_bytes_rejects_forward_alias_reference_in_source_order() {
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+
+        let result = compile_to_bytes(
+            "function Main #1:
+    Message SHARED
+    End
+
+alias 7 as SHARED
+",
+            &db,
+            &constants,
+        );
+
+        assert!(result.is_err(), "forward alias reference should fail");
     }
 
     #[test]

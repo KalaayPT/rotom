@@ -109,7 +109,9 @@ fn find_normal_scripts() -> Vec<PathBuf> {
         .expect("Failed to read scripts directory")
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| path.extension().map(|e| e == "s").unwrap_or(false) && !is_levelscript_path(path))
+        .filter(|path| {
+            path.extension().map(|e| e == "s").unwrap_or(false) && !is_levelscript_path(path)
+        })
         .collect();
     scripts.sort();
     scripts
@@ -121,7 +123,9 @@ fn find_levelscripts() -> Vec<PathBuf> {
         .expect("Failed to read scripts directory")
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| path.extension().map(|e| e == "s").unwrap_or(false) && is_levelscript_path(path))
+        .filter(|path| {
+            path.extension().map(|e| e == "s").unwrap_or(false) && is_levelscript_path(path)
+        })
         .collect();
     scripts.sort();
     scripts

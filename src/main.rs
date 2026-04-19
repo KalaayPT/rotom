@@ -145,8 +145,9 @@ fn handle_compile_command(
         let database = database.ok_or(ProjectError::MissingCompileArgs);
         let input = input.ok_or(ProjectError::MissingCompileArgs);
         match (database, input) {
-            (Ok(database), Ok(input)) => compile(database, input, output, decomp_root, json)
-                .map_err(ProjectError::from),
+            (Ok(database), Ok(input)) => {
+                compile(database, input, output, decomp_root, json).map_err(ProjectError::from)
+            }
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
     };

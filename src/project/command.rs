@@ -44,7 +44,9 @@ fn resolve_project_root(root: Option<&Path>) -> Result<PathBuf> {
             path: path.to_path_buf(),
             source,
         })?,
-        None => std::env::current_dir().map_err(|source| ProjectError::CurrentDirectory { source })?,
+        None => {
+            std::env::current_dir().map_err(|source| ProjectError::CurrentDirectory { source })?
+        }
     };
 
     find_project_root(&start)

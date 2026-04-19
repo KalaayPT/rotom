@@ -12,7 +12,8 @@ pub struct MatchCase {
 #[derive(Debug)]
 pub struct ScriptFile {
     pub aliases: Vec<Statement>,
-    /// Top-level items (functions and actions interleaved in source order)
+    /// Top-level statements in source order.
+    /// This includes functions, actions, and top-level aliases.
     pub items: Vec<Statement>,
     /// Whether to emit the jump table end marker (0xFD13) in the binary.
     /// Defaults to true. Set to false for scripts without `ScriptEntryEnd` directive.
@@ -38,7 +39,6 @@ pub enum StatementKind {
         body: Vec<Statement>,
     },
     AliasStatement {
-        is_global: bool,
         value: Expression,
         name: String,
     },

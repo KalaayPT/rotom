@@ -1,13 +1,77 @@
 use crate::{
-    BatchCompileResult, BatchDecompileResult, CompileFailure, ConstantDb, DatabaseV2,
-    DecompileFailure, compile_file_for_batch, decompile_file_for_batch,
+    BatchCompileResult, BatchDecompileResult, CompileError, CompileFailure, ConstantDb, DatabaseV2,
+    DecompileFailure, compile_file_for_batch, compile_file_for_batch_preloaded_constants,
+    decompile_file_for_batch,
 };
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
+use rayon::prelude::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
+use uxie::Workspace;
+use xxhash_rust::xxh3::xxh3_64;
 
 use super::config::{ProjectTypeConfig, RotomConfig};
 use super::error::{ProjectError, Result};
+use crate::compile_state::{COMPILER_VERSION, CompileState, FileState};
+
+struct CompileSession {
+    db: DatabaseV2,
+    constants: ConstantDb,
+    db_hash: u64,
+    force_compile: bool,
+    state: CompileState,
+    status_path: PathBuf,
+}
+
+struct PendingCompile {
+    relative_path: String,
+    input: PathBuf,
+    output: PathBuf,
+    source_hash: u64,
+    dependency_hashes: HashMap<String, u64>,
+    constants: Option<ConstantDb>,
+}
+
+struct PlannedCompileWork {
+    jobs: Vec<PendingCompile>,
+    current_paths: Vec<String>,
+    failures: Vec<CompileFailure>,
+}
+
+struct ScriptCompileInputs {
+    constants: ConstantDb,
+    dependency_hashes: HashMap<String, u64>,
+}
+
+enum PlannedCompileJob {
+    Skip,
+    Failure(CompileFailure),
+    Job(Box<PendingCompile>),
+}
+
+fn relative_project_path(root: &Path, path: &Path) -> Result<String> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Ok(relative.to_string_lossy().replace('\\', "/"));
+    }
+
+    let canonical_root = root.canonicalize().map_err(|source| ProjectError::Io {
+        action: "Failed to canonicalize project root",
+        path: root.to_path_buf(),
+        source,
+    })?;
+    let canonical_path = path.canonicalize().map_err(|source| ProjectError::Io {
+        action: "Failed to canonicalize tracked path",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let relative = canonical_path.strip_prefix(&canonical_root).map_err(|_| {
+        ProjectError::PathOutsideProject {
+            root: canonical_root.clone(),
+            path: canonical_path.clone(),
+        }
+    })?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
 
 pub fn project_output_path(
     source_path: &Path,
@@ -33,38 +97,46 @@ pub fn project_output_path(
 pub fn compile_project(
     root: &Path,
     config: &RotomConfig,
-    _force: bool,
+    force: bool,
 ) -> Result<BatchCompileResult> {
-    let (db, constants) = load_project_database_and_constants(root, config)?;
     let work = collect_project_compile_work(root, config)?;
-
-    let results: Vec<std::result::Result<crate::CompileResult, CompileFailure>> = work
-        .par_iter()
-        .map(|(input, output)| compile_file_for_batch(input, output, &db, &constants))
-        .collect();
-
-    let mut successes = Vec::new();
-    let mut failures = Vec::new();
-    for result in results {
-        match result {
-            Ok(success) => successes.push(success),
-            Err(failure) => failures.push(failure),
-        }
-    }
+    let mut session = load_compile_session(root, config, force)?;
+    let mut plan = plan_compile_work(
+        root,
+        &work,
+        &session.constants,
+        &mut session.state,
+        session.force_compile,
+    )?;
+    let (successes, mut failures) = execute_compile_jobs(
+        &session.db,
+        &session.constants,
+        plan.jobs,
+        &mut session.state,
+    )?;
+    plan.failures.append(&mut failures);
+    finish_compile_session(&mut session, plan.current_paths)?;
 
     Ok(BatchCompileResult {
         successes,
-        failures,
+        failures: plan.failures,
     })
 }
 
-pub fn decompile_project(
-    root: &Path,
-    config: &RotomConfig,
-) -> Result<BatchDecompileResult> {
+/// Decompile every project binary into its configured source tree and record the
+/// generated sources in compile state so a follow-up project compile can skip
+/// unchanged outputs.
+pub fn decompile_project(root: &Path, config: &RotomConfig) -> Result<BatchDecompileResult> {
     let db_path = config
         .database_file(root)
         .ok_or(ProjectError::MissingDefaultDatabase)?;
+    let db_hash = fs::read(&db_path)
+        .map(|bytes| xxh3_64(&bytes))
+        .map_err(|source| ProjectError::Io {
+            action: "Failed to hash database file",
+            path: db_path.clone(),
+            source,
+        })?;
     let db = DatabaseV2::load(&db_path).map_err(ProjectError::from)?;
 
     let work = collect_project_decompile_work(root, config)?;
@@ -83,23 +155,367 @@ pub fn decompile_project(
         }
     }
 
+    update_decompile_state(root, config, db_hash, &successes)?;
+
     Ok(BatchDecompileResult {
         successes,
         failures,
     })
 }
 
+/// Load the shared inputs for a project compile run: command database, constant
+/// sets, uxie cache state, and the persisted compile-state snapshot. This stage
+/// also decides whether the run must rebuild from scratch.
+fn load_compile_session(root: &Path, config: &RotomConfig, force: bool) -> Result<CompileSession> {
+    let status_path = config.status_dir(root).join("compile-state.json");
+    let (db, constants, db_hash, constant_cache_rebuilt) =
+        load_project_database_and_constants(root, config)?;
+    let mut state =
+        CompileState::load_or_default(&status_path).map_err(|source| ProjectError::Io {
+            action: "Failed to read compile state",
+            path: status_path.clone(),
+            source,
+        })?;
+    let force_compile =
+        force || state.needs_rebuild(db_hash, COMPILER_VERSION, constant_cache_rebuilt);
+    if force_compile {
+        state.entries.clear();
+    }
+
+    Ok(CompileSession {
+        db,
+        constants,
+        db_hash,
+        force_compile,
+        state,
+        status_path,
+    })
+}
+
+/// Walk the discovered project worklist and decide, for each file, whether it
+/// should be skipped, reported as an immediate planning failure, or queued for
+/// compilation with tracked dependency hashes.
+fn plan_compile_work(
+    root: &Path,
+    work: &[(PathBuf, PathBuf)],
+    constants: &ConstantDb,
+    state: &mut CompileState,
+    force_compile: bool,
+) -> Result<PlannedCompileWork> {
+    let mut jobs = Vec::new();
+    let mut current_paths = Vec::with_capacity(work.len());
+    let mut failures = Vec::new();
+
+    for (input, output) in work {
+        let relative_path = relative_project_path(root, input)?;
+        current_paths.push(relative_path.clone());
+
+        match plan_compile_job(
+            root,
+            input,
+            output,
+            relative_path,
+            constants,
+            state,
+            force_compile,
+        ) {
+            PlannedCompileJob::Skip => {}
+            PlannedCompileJob::Failure(failure) => failures.push(failure),
+            PlannedCompileJob::Job(job) => jobs.push(*job),
+        }
+    }
+
+    Ok(PlannedCompileWork {
+        jobs,
+        current_paths,
+        failures,
+    })
+}
+
+/// Compute the incremental state for one source file by hashing its inputs,
+/// collecting any script-local constant dependencies, and comparing the result
+/// against the saved compile state.
+fn plan_compile_job(
+    root: &Path,
+    input: &Path,
+    output: &Path,
+    relative_path: String,
+    constants: &ConstantDb,
+    state: &mut CompileState,
+    force_compile: bool,
+) -> PlannedCompileJob {
+    let source_hash = match fs::read(input).map(|bytes| xxh3_64(&bytes)) {
+        Ok(hash) => hash,
+        Err(source) => {
+            let failure = CompileFailure {
+                path: input.to_path_buf(),
+                error: CompileError::Io {
+                    message: format!(
+                        "Failed to hash input file '{}': {}",
+                        input.display(),
+                        source
+                    ),
+                },
+                source: String::new(),
+            };
+            state
+                .entries
+                .insert(relative_path, FileState::dirty(0, 0, HashMap::new()));
+            return PlannedCompileJob::Failure(failure);
+        }
+    };
+    let output_hash = fs::read(output).ok().map(|bytes| xxh3_64(&bytes));
+    let script_inputs = match collect_script_compile_inputs(root, input, constants) {
+        Ok(script_inputs) => script_inputs,
+        Err(failure) => {
+            state.entries.insert(
+                relative_path,
+                FileState::dirty(source_hash, output_hash.unwrap_or(0), HashMap::new()),
+            );
+            return PlannedCompileJob::Failure(failure);
+        }
+    };
+    let (dependency_hashes, file_constants) = match script_inputs {
+        Some(script_inputs) => (
+            script_inputs.dependency_hashes,
+            Some(script_inputs.constants),
+        ),
+        None => (HashMap::new(), None),
+    };
+
+    if !force_compile
+        && !state.file_is_stale(&relative_path, source_hash, output_hash, &dependency_hashes)
+    {
+        return PlannedCompileJob::Skip;
+    }
+
+    PlannedCompileJob::Job(Box::new(PendingCompile {
+        relative_path,
+        input: input.to_path_buf(),
+        output: output.to_path_buf(),
+        source_hash,
+        dependency_hashes,
+        constants: file_constants,
+    }))
+}
+
+fn collect_script_compile_inputs(
+    root: &Path,
+    input: &Path,
+    constants: &ConstantDb,
+) -> std::result::Result<Option<ScriptCompileInputs>, CompileFailure> {
+    let extension = input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if extension != "s" && extension != "rotom" {
+        return Ok(None);
+    }
+
+    let loaded_constants = constants
+        .clone_for_script(input)
+        .map_err(|error| CompileFailure {
+            path: input.to_path_buf(),
+            error,
+            source: String::new(),
+        })?;
+    let canonical_input = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
+    let mut dependency_hashes = HashMap::new();
+
+    for path in loaded_constants.loaded_script_file_paths() {
+        if path == canonical_input {
+            continue;
+        }
+
+        match fs::read(&path).map(|bytes| xxh3_64(&bytes)) {
+            Ok(hash) => {
+                let relative =
+                    relative_project_path(root, &path).map_err(|error| CompileFailure {
+                        path: input.to_path_buf(),
+                        error: CompileError::Io {
+                            message: error.to_string(),
+                        },
+                        source: String::new(),
+                    })?;
+                dependency_hashes.insert(relative, hash);
+            }
+            Err(source) => {
+                return Err(CompileFailure {
+                    path: input.to_path_buf(),
+                    error: CompileError::Io {
+                        message: format!(
+                            "Failed to hash dependency '{}' for '{}': {}",
+                            path.display(),
+                            input.display(),
+                            source
+                        ),
+                    },
+                    source: String::new(),
+                });
+            }
+        }
+    }
+
+    Ok(Some(ScriptCompileInputs {
+        constants: loaded_constants,
+        dependency_hashes,
+    }))
+}
+
+/// Run the planned compile jobs in parallel and fold the results back into the
+/// in-memory compile state, marking each file as compiled or dirty with fresh
+/// source, output, and dependency hashes.
+fn execute_compile_jobs(
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+    jobs: Vec<PendingCompile>,
+    state: &mut CompileState,
+) -> Result<(Vec<crate::CompileResult>, Vec<CompileFailure>)> {
+    let results: Vec<(
+        PendingCompile,
+        std::result::Result<crate::CompileResult, CompileFailure>,
+    )> = jobs
+        .into_par_iter()
+        .map(|job| {
+            let result = if let Some(file_constants) = &job.constants {
+                compile_file_for_batch_preloaded_constants(
+                    &job.input,
+                    &job.output,
+                    db,
+                    file_constants,
+                )
+            } else {
+                compile_file_for_batch(&job.input, &job.output, db, constants)
+            };
+            (job, result)
+        })
+        .collect();
+
+    let mut successes = Vec::new();
+    let mut failures = Vec::new();
+    for (job, result) in results {
+        match result {
+            Ok(success) => {
+                let output_hash =
+                    fs::read(&job.output)
+                        .map(|bytes| xxh3_64(&bytes))
+                        .map_err(|source| ProjectError::Io {
+                            action: "Failed to hash compiled output",
+                            path: job.output.clone(),
+                            source,
+                        })?;
+                state.entries.insert(
+                    job.relative_path,
+                    FileState::compiled(job.source_hash, output_hash, job.dependency_hashes),
+                );
+                successes.push(success);
+            }
+            Err(failure) => {
+                let output_hash = fs::read(&job.output).map_or(0, |bytes| xxh3_64(&bytes));
+                state.entries.insert(
+                    job.relative_path,
+                    FileState::dirty(job.source_hash, output_hash, job.dependency_hashes),
+                );
+                failures.push(failure);
+            }
+        }
+    }
+
+    Ok((successes, failures))
+}
+
+/// Finalize a compile session by dropping stale entries for files that no longer
+/// exist in the project, updating global metadata, and atomically writing the
+/// refreshed compile-state file to disk.
+fn finish_compile_session(session: &mut CompileSession, current_paths: Vec<String>) -> Result<()> {
+    session.state.retain_only(current_paths);
+    session
+        .state
+        .mark_metadata(session.db_hash, COMPILER_VERSION);
+    session
+        .state
+        .save(&session.status_path)
+        .map_err(|source| ProjectError::Io {
+            action: "Failed to write compile state",
+            path: session.status_path.clone(),
+            source,
+        })
+}
+
+/// Merge successful decompile results into compile state so regenerated source
+/// files are treated as current project inputs rather than immediately appearing
+/// stale on the next compile.
+fn update_decompile_state(
+    root: &Path,
+    config: &RotomConfig,
+    db_hash: u64,
+    successes: &[crate::DecompileFileResult],
+) -> Result<()> {
+    if successes.is_empty() {
+        return Ok(());
+    }
+
+    let status_path = config.status_dir(root).join("compile-state.json");
+    let mut state =
+        CompileState::load_or_default(&status_path).map_err(|source| ProjectError::Io {
+            action: "Failed to read compile state",
+            path: status_path.clone(),
+            source,
+        })?;
+
+    for success in successes {
+        let relative_path = relative_project_path(root, &success.output)?;
+        let source_hash = fs::read(&success.output)
+            .map(|bytes| xxh3_64(&bytes))
+            .map_err(|source| ProjectError::Io {
+                action: "Failed to hash decompiled source",
+                path: success.output.clone(),
+                source,
+            })?;
+        let output_hash = fs::read(&success.input)
+            .map(|bytes| xxh3_64(&bytes))
+            .map_err(|source| ProjectError::Io {
+                action: "Failed to hash decompiled input",
+                path: success.input.clone(),
+                source,
+            })?;
+        state.entries.insert(
+            relative_path,
+            FileState::decompiled(source_hash, output_hash),
+        );
+    }
+
+    state.mark_metadata(db_hash, COMPILER_VERSION);
+    state.save(&status_path).map_err(|source| ProjectError::Io {
+        action: "Failed to write compile state",
+        path: status_path,
+        source,
+    })
+}
+
+/// Load the project command database and all shared constants that apply to the
+/// whole run, including local database overrides and the uxie-managed cached
+/// decomp symbol set when the project type needs it.
 fn load_project_database_and_constants(
     root: &Path,
     config: &RotomConfig,
-) -> Result<(DatabaseV2, ConstantDb)> {
+) -> Result<(DatabaseV2, ConstantDb, u64, bool)> {
     let db_path = config
         .database_file(root)
         .ok_or(ProjectError::MissingDefaultDatabase)?;
+    let db_hash = fs::read(&db_path)
+        .map(|bytes| xxh3_64(&bytes))
+        .map_err(|source| ProjectError::Io {
+            action: "Failed to hash database file",
+            path: db_path.clone(),
+            source,
+        })?;
     let db = DatabaseV2::load(&db_path).map_err(ProjectError::from)?;
 
     let mut constants = ConstantDb::new();
     let _ = constants.load_from_db(&db);
+    let mut constant_cache_rebuilt = false;
 
     let database_dir = config.database_dir(root);
     if database_dir.exists() {
@@ -109,12 +525,30 @@ fn load_project_database_and_constants(
     }
 
     if matches!(config.workspace.project_type, ProjectTypeConfig::Decomp) {
-        let _ = constants.load_decomp_project(root).map_err(ProjectError::from)?;
+        let game_family = config
+            .game_family()
+            .ok_or(ProjectError::MissingGameFamily)?;
+        let (symbols, rebuilt) = Workspace::load_cached_symbols(
+            &config.cache_dir(root),
+            root,
+            &config.include_roots(root),
+            game_family,
+        )
+        .map_err(|source| ProjectError::Io {
+            action: "Failed to load constant cache",
+            path: config.cache_dir(root),
+            source,
+        })?;
+        let _ = constants.load_decomp_symbols(root, (*symbols).clone());
+        constant_cache_rebuilt = rebuilt;
     }
 
-    Ok((db, constants))
+    Ok((db, constants, db_hash, constant_cache_rebuilt))
 }
 
+/// Discover every project source file, map it to its target binary path, and
+/// reject ambiguous configurations where multiple inputs would write to the same
+/// output.
 fn collect_project_compile_work(
     root: &Path,
     config: &RotomConfig,
@@ -167,12 +601,10 @@ fn collect_project_decompile_work(
 
     for (source_root, binary_root) in root_pairs {
         let mut files = Vec::new();
-        collect_binary_files(&binary_root, &mut files).map_err(|source| {
-            ProjectError::Io {
-                action: "Failed to read binary root",
-                path: binary_root.clone(),
-                source,
-            }
+        collect_binary_files(&binary_root, &mut files).map_err(|source| ProjectError::Io {
+            action: "Failed to read binary root",
+            path: binary_root.clone(),
+            source,
         })?;
 
         for input in files {
@@ -193,10 +625,7 @@ fn collect_project_decompile_work(
     Ok(work)
 }
 
-fn project_root_pairs(
-    root: &Path,
-    config: &RotomConfig,
-) -> Result<Vec<(PathBuf, PathBuf)>> {
+fn project_root_pairs(root: &Path, config: &RotomConfig) -> Result<Vec<(PathBuf, PathBuf)>> {
     let source_roots = config.source_roots(root);
     if source_roots.is_empty() {
         return Err(ProjectError::MissingSourceRoots);
@@ -302,7 +731,9 @@ mod tests {
     use super::{
         collect_compile_source_files, compile_project, decompile_project,
         detect_project_output_collisions, project_output_path, project_root_pairs,
+        relative_project_path,
     };
+    use crate::compile_state::{COMPILER_VERSION, CompileState, FileStatus};
     use crate::project::config::{
         DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
         WorkspaceConfig,
@@ -339,6 +770,38 @@ mod tests {
         }
     }
 
+    fn decomp_project_config() -> RotomConfig {
+        RotomConfig {
+            format_version: 1,
+            project: ProjectMetadata {
+                name: "example".to_string(),
+            },
+            workspace: WorkspaceConfig {
+                project_type: ProjectTypeConfig::Decomp,
+                game_family: Some(crate::project::config::GameFamilyConfig::Platinum),
+            },
+            paths: PathsConfig {
+                database_dir: ".rotom/command_database".to_string(),
+                cache_dir: ".rotom/cache".to_string(),
+                status_dir: ".rotom/status".to_string(),
+                source_roots: vec!["res/field/scripts".to_string()],
+                include_roots: vec![
+                    "include".to_string(),
+                    "generated".to_string(),
+                    "res/field/scripts".to_string(),
+                ],
+                binary_roots: vec!["res/field/scripts".to_string()],
+            },
+            database: Some(DatabaseConfig {
+                default_file: std::env::current_dir()
+                    .unwrap()
+                    .join("src/db/platinum_v2.json")
+                    .display()
+                    .to_string(),
+            }),
+        }
+    }
+
     #[test]
     fn project_output_path_maps_dspre_and_decomp_layouts() {
         let source_root = Path::new("/tmp/scripts");
@@ -362,6 +825,25 @@ mod tests {
             ),
             Path::new("/tmp/build/scripts/sub/0001.bin")
         );
+    }
+
+    #[test]
+    fn relative_project_path_normalizes_project_paths_and_rejects_external_paths() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let nested = root.join("scripts/test.rotom");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, "function Main #1:\n    End\n").unwrap();
+
+        assert_eq!(
+            relative_project_path(root, &nested).unwrap(),
+            "scripts/test.rotom"
+        );
+        assert_eq!(
+            relative_project_path(root, &nested.canonicalize().unwrap()).unwrap(),
+            "scripts/test.rotom"
+        );
+        assert!(relative_project_path(root, Path::new("/tmp/not-in-project.rotom")).is_err());
     }
 
     #[test]
@@ -459,19 +941,33 @@ mod tests {
     #[test]
     fn detect_project_output_collisions_reports_duplicate_outputs() {
         let collisions = detect_project_output_collisions(&[
-            (PathBuf::from("scripts/a.rotom"), PathBuf::from("build/0001")),
-            (PathBuf::from("scripts/b.rotom"), PathBuf::from("build/0001")),
+            (
+                PathBuf::from("scripts/a.rotom"),
+                PathBuf::from("build/0001"),
+            ),
+            (
+                PathBuf::from("scripts/b.rotom"),
+                PathBuf::from("build/0001"),
+            ),
         ]);
 
         assert_eq!(
             collisions,
             vec!["build/0001 <= [scripts/a.rotom, scripts/b.rotom]".to_string()]
         );
-        assert!(detect_project_output_collisions(&[
-            (PathBuf::from("scripts/a.rotom"), PathBuf::from("build/0001")),
-            (PathBuf::from("scripts/b.rotom"), PathBuf::from("build/0002")),
-        ])
-        .is_empty());
+        assert!(
+            detect_project_output_collisions(&[
+                (
+                    PathBuf::from("scripts/a.rotom"),
+                    PathBuf::from("build/0001")
+                ),
+                (
+                    PathBuf::from("scripts/b.rotom"),
+                    PathBuf::from("build/0002")
+                ),
+            ])
+            .is_empty()
+        );
     }
 
     #[test]
@@ -511,5 +1007,305 @@ mod tests {
 
         assert!(result.is_success());
         assert!(root.join("scripts/0001.rotom").exists());
+    }
+
+    #[test]
+    fn decompile_project_updates_compile_state_for_generated_sources() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(
+            root.join("scripts/0001.rotom"),
+            "function Main #1:\n    End\n",
+        )
+        .unwrap();
+
+        let config = project_config(ProjectTypeConfig::Dspre);
+
+        compile_project(root, &config, false).unwrap();
+        fs::remove_file(root.join("scripts/0001.rotom")).unwrap();
+        decompile_project(root, &config).unwrap();
+
+        let state: CompileState = serde_json::from_str(
+            &fs::read_to_string(root.join(".rotom/status/compile-state.json")).unwrap(),
+        )
+        .unwrap();
+        let entry = state.entries.get("scripts/0001.rotom").unwrap();
+        let recompile = compile_project(root, &config, false).unwrap();
+
+        assert_eq!(entry.status, FileStatus::Decompiled);
+        assert_eq!(recompile.successes.len(), 0);
+        assert!(recompile.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_skips_unchanged_files_after_first_build() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("res/field/scripts")).unwrap();
+        fs::create_dir_all(root.join("include/constants")).unwrap();
+        fs::write(
+            root.join("include/constants/test.h"),
+            "#define TEST_CONST 1\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("res/field/scripts/test.rotom"),
+            "#include \"include/constants/test.h\"\nalias TEST_CONST as LOCAL\nfunction Main #1:\n    End\n",
+        )
+        .unwrap();
+
+        let config = decomp_project_config();
+
+        let first = compile_project(root, &config, false).unwrap();
+        let second = compile_project(root, &config, false).unwrap();
+        fs::write(
+            root.join("res/field/scripts/test.rotom"),
+            "#include \"include/constants/test.h\"\nalias TEST_CONST as LOCAL\n\nfunction Main #1:\n    End\n",
+        )
+        .unwrap();
+        let third = compile_project(root, &config, false).unwrap();
+
+        assert_eq!(first.successes.len(), 1);
+        assert!(first.failures.is_empty());
+        assert!(root.join(".rotom/status/compile-state.json").exists());
+        assert_eq!(second.successes.len(), 0);
+        assert!(second.failures.is_empty());
+        assert_eq!(third.successes.len(), 1);
+        assert!(third.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_rebuilds_when_dependency_header_changes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let source_root = root.join("res/field/scripts");
+        fs::create_dir_all(&source_root).unwrap();
+        let header = source_root.join("local_dep.h");
+        fs::write(&header, "#define TEST_CONST 1\n").unwrap();
+        fs::write(
+            source_root.join("test.rotom"),
+            "#include \"local_dep.h\"\nalias TEST_CONST as LOCAL\nfunction Main #1:\n    End\n",
+        )
+        .unwrap();
+
+        let config = decomp_project_config();
+
+        let first = compile_project(root, &config, false).unwrap();
+        let second = compile_project(root, &config, false).unwrap();
+        fs::write(&header, "#define TEST_CONST 2\n").unwrap();
+        let third = compile_project(root, &config, false).unwrap();
+
+        assert_eq!(first.successes.len(), 1);
+        assert_eq!(second.successes.len(), 0);
+        assert_eq!(third.successes.len(), 1);
+        assert!(third.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_tracks_non_cached_local_include_dependencies() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let source_root = root.join("res/field/scripts");
+        fs::create_dir_all(&source_root).unwrap();
+        let include_path = source_root.join("local_dep.inc");
+        fs::write(&include_path, "#define TEST_CONST 1\n").unwrap();
+        fs::write(
+            source_root.join("test.rotom"),
+            "#include \"local_dep.inc\"\nalias TEST_CONST as LOCAL\nfunction Main #1:\n    End\n",
+        )
+        .unwrap();
+
+        let config = decomp_project_config();
+
+        let first = compile_project(root, &config, false).unwrap();
+        let second = compile_project(root, &config, false).unwrap();
+        fs::write(&include_path, "#define TEST_CONST 2\n").unwrap();
+        let third = compile_project(root, &config, false).unwrap();
+
+        let state: CompileState = serde_json::from_str(
+            &fs::read_to_string(root.join(".rotom/status/compile-state.json")).unwrap(),
+        )
+        .unwrap();
+        let entry = state.entries.get("res/field/scripts/test.rotom").unwrap();
+
+        assert_eq!(first.successes.len(), 1);
+        assert_eq!(second.successes.len(), 0);
+        assert_eq!(third.successes.len(), 1);
+        assert!(
+            entry
+                .dependency_hashes
+                .contains_key("res/field/scripts/local_dep.inc")
+        );
+        assert!(
+            !entry
+                .dependency_hashes
+                .contains_key("res/field/scripts/test.rotom")
+        );
+    }
+
+    #[test]
+    fn compile_project_force_recompiles_unchanged_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("res/field/scripts")).unwrap();
+        fs::write(
+            root.join("res/field/scripts/test.rotom"),
+            "function Main #1:\n    End\n",
+        )
+        .unwrap();
+
+        let config = decomp_project_config();
+
+        let first = compile_project(root, &config, false).unwrap();
+        let forced = compile_project(root, &config, true).unwrap();
+
+        assert_eq!(first.successes.len(), 1);
+        assert_eq!(forced.successes.len(), 1);
+        assert!(forced.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_rebuilds_when_database_hash_changes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("res/field/scripts")).unwrap();
+        fs::create_dir_all(root.join(".rotom/command_database")).unwrap();
+        fs::copy(
+            std::env::current_dir()
+                .unwrap()
+                .join("src/db/platinum_v2.json"),
+            root.join(".rotom/command_database/platinum_v2.json"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("res/field/scripts/test.rotom"),
+            "function Main #1:\n    End\n",
+        )
+        .unwrap();
+
+        let mut config = decomp_project_config();
+        config.database = Some(DatabaseConfig {
+            default_file: root
+                .join(".rotom/command_database/platinum_v2.json")
+                .display()
+                .to_string(),
+        });
+
+        let first = compile_project(root, &config, false).unwrap();
+        let second = compile_project(root, &config, false).unwrap();
+        let mut db =
+            fs::read_to_string(root.join(".rotom/command_database/platinum_v2.json")).unwrap();
+        db.push('\n');
+        fs::write(root.join(".rotom/command_database/platinum_v2.json"), db).unwrap();
+        let third = compile_project(root, &config, false).unwrap();
+
+        assert_eq!(first.successes.len(), 1);
+        assert_eq!(second.successes.len(), 0);
+        assert_eq!(third.successes.len(), 1);
+        assert!(third.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_rebuilds_when_compile_state_compiler_version_changes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("res/field/scripts")).unwrap();
+        fs::write(
+            root.join("res/field/scripts/test.rotom"),
+            "function Main #1:\n    End\n",
+        )
+        .unwrap();
+
+        let config = decomp_project_config();
+
+        let first = compile_project(root, &config, false).unwrap();
+        let second = compile_project(root, &config, false).unwrap();
+        assert_eq!(first.successes.len(), 1);
+        assert_eq!(second.successes.len(), 0);
+
+        let state_path = root.join(".rotom/status/compile-state.json");
+        let state = fs::read_to_string(&state_path).unwrap();
+        fs::write(
+            &state_path,
+            state.replace(COMPILER_VERSION, "phase-c-test-version"),
+        )
+        .unwrap();
+
+        let third = compile_project(root, &config, false).unwrap();
+        assert_eq!(third.successes.len(), 1);
+        assert!(third.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_rebuilds_when_global_constant_cache_changes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("res/field/scripts")).unwrap();
+        fs::create_dir_all(root.join("include/constants")).unwrap();
+        fs::write(
+            root.join("include/constants/test.h"),
+            "#define TEST_CONST 1\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("res/field/scripts/test.rotom"),
+            "alias TEST_CONST as LOCAL\nfunction Main #1:\n    End\n",
+        )
+        .unwrap();
+
+        let config = decomp_project_config();
+
+        let first = compile_project(root, &config, false).unwrap();
+        let second = compile_project(root, &config, false).unwrap();
+        fs::write(
+            root.join("include/constants/test.h"),
+            "#define TEST_CONST 2\n",
+        )
+        .unwrap();
+        let third = compile_project(root, &config, false).unwrap();
+
+        assert_eq!(first.successes.len(), 1);
+        assert_eq!(second.successes.len(), 0);
+        assert_eq!(third.successes.len(), 1);
+        assert!(third.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_compiles_s_files_with_required_local_includes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let source_root = root.join("res/field/scripts");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(
+            source_root.join("test.s"),
+            "#define LOCAL_CONST 1\n#define LOCAL_ALIAS LOCAL_CONST\n\n    ScriptEntry Test\n    ScriptEntryEnd\n\nTest:\n    End\n",
+        )
+        .unwrap();
+
+        let config = decomp_project_config();
+
+        let result = compile_project(root, &config, false).unwrap();
+
+        assert_eq!(result.successes.len(), 1);
+        assert!(result.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_does_not_collect_file_local_constants_for_legacy_dspre_scripts() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(
+            root.join("scripts/test.script"),
+            "/*\n#include \"missing.h\"\n*/\nScript 1:\nEnd\n",
+        )
+        .unwrap();
+
+        let result =
+            compile_project(root, &project_config(ProjectTypeConfig::Dspre), false).unwrap();
+
+        assert_eq!(result.successes.len(), 1);
+        assert!(result.failures.is_empty());
     }
 }
