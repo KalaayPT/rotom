@@ -822,14 +822,11 @@ impl ConstantDb {
             return self.load_script_constants(script_path);
         }
 
-        let script_name = match script_path.as_ref().file_stem().and_then(|s| s.to_str()) {
-            Some(name) => name,
-            None => return Ok(0),
+        let Some(script_name) = script_path.as_ref().file_stem().and_then(|s| s.to_str()) else {
+            return Ok(0);
         };
 
-        let map_name = if let Some(stripped) = script_name.strip_prefix("scripts_") {
-            stripped
-        } else {
+        let Some(map_name) = script_name.strip_prefix("scripts_") else {
             return Ok(0);
         };
 

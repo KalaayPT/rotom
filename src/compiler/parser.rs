@@ -212,9 +212,8 @@ impl<'a> Parser<'a> {
     fn parse_bare_label(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
         let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
-        let name = match name_token.kind {
-            TokenType::Identifier(name) => name,
-            _ => unreachable!(),
+        let TokenType::Identifier(name) = name_token.kind else {
+            unreachable!()
         };
         self.expect_advance(TokenType::Colon)?;
         let body = self.parse_function_body()?;
@@ -310,9 +309,8 @@ impl<'a> Parser<'a> {
         let start = self.current_token.span.start;
         self.expect_advance(TokenType::Action)?;
         let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
-        let name = match name_token.kind {
-            TokenType::Identifier(name) => name,
-            _ => unreachable!(),
+        let TokenType::Identifier(name) = name_token.kind else {
+            unreachable!()
         };
         let mut body = self.parse_block(vec![TokenType::EndMovement])?;
         if self.current_token_is(TokenType::EndMovement) {

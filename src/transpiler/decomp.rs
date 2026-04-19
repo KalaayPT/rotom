@@ -694,9 +694,8 @@ fn reorder_decomp_args_to_binary(
     args_str: &str,
     db: &crate::database::DatabaseV2,
 ) -> String {
-    let cmd = match db.get_command(cmd_name) {
-        Ok(c) => c,
-        Err(_) => return args_str.to_owned(),
+    let Ok(cmd) = db.get_command(cmd_name) else {
+        return args_str.to_owned();
     };
 
     let params = &cmd.params;

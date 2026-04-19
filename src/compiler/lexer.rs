@@ -88,10 +88,7 @@ impl<'a> Lexer<'a> {
                 if let Some(&c) = self.chars.peek()
                     && is_identifier_start(c)
                 {
-                    let first = match self.read_char() {
-                        Some(char) => char,
-                        _ => unreachable!(),
-                    };
+                    let Some(first) = self.read_char() else { unreachable!() };
                     let name = match self.read_identifier(first) {
                         TokenType::Identifier(string) => string,
                         keyword => format!("{}", keyword),
