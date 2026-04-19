@@ -4,7 +4,7 @@ use super::{
         Statement, StatementKind,
     },
     lexer::Lexer,
-    parse_error::{ParseResult, parse_error},
+    parse_error::{parse_error, ParseResult},
     token::{Token, TokenType},
 };
 
@@ -243,18 +243,17 @@ impl<'a> Parser<'a> {
 
             self.expect_advance(TokenType::Function)?;
             let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
-            let name = match name_token.kind {
-                TokenType::Identifier(name) => name,
-                _ => unreachable!(),
+            let TokenType::Identifier(name) = name_token.kind else {
+                unreachable!()
             };
 
             // Require #N for function (public) declarations
             self.expect_advance(TokenType::Hash)?;
             let id_token = self.expect_advance(TokenType::Num(0))?;
-            let id = match id_token.kind {
-                TokenType::Num(num) => num as u32,
-                _ => unreachable!(),
+            let TokenType::Num(num) = id_token.kind else {
+                unreachable!()
             };
+            let id = num as u32;
 
             // Require colon after header
             self.expect_advance(TokenType::Colon)?;
@@ -356,9 +355,8 @@ impl<'a> Parser<'a> {
         let value = self.parse_expression(Precedence::Lowest)?;
         self.expect_advance(TokenType::As)?;
         let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
-        let name = match name_token.kind {
-            TokenType::Identifier(name) => name,
-            _ => unreachable!(),
+        let TokenType::Identifier(name) = name_token.kind else {
+            unreachable!()
         };
         let end = self.current_token.span.start;
         Ok(Spanned {
@@ -485,9 +483,8 @@ impl<'a> Parser<'a> {
     pub fn parse_command(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
         let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
-        let name = match name_token.kind {
-            TokenType::Identifier(s) => s,
-            _ => unreachable!(),
+        let TokenType::Identifier(name) = name_token.kind else {
+            unreachable!()
         };
         let mut args = Vec::new();
         if !self.current_token_is(TokenType::Newline)
@@ -837,12 +834,10 @@ function TestFunc #2:
         let mut parser = Parser::new(lexer);
         let result = parser.parse_script_file();
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Duplicate definition for function 'TestFunc'")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Duplicate definition for function 'TestFunc'"));
     }
 
     #[test]

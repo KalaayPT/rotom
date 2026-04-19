@@ -229,19 +229,16 @@ fn convert_space_to_comma_args(
     if let Some(db) = db {
         if in_action {
             let hex_str = command.strip_prefix("0x").unwrap_or(command.as_ref());
-            if let Ok(id) = u16::from_str_radix(hex_str, 16) {
-                if let Some((name, _)) = db.get_movement_by_id(id) {
+            if let Ok(id) = u16::from_str_radix(hex_str, 16)
+                && let Some((name, _)) = db.get_movement_by_id(id) {
                     command = Cow::Borrowed(name);
                     is_end_movement = command == "EndMovement";
                 }
-            }
-        } else if let Some(id_str) = command.strip_prefix("CMD_") {
-            if let Ok(id) = id_str.parse::<u16>() {
-                if let Some((name, _)) = db.get_script_cmd_by_id(id) {
+        } else if let Some(id_str) = command.strip_prefix("CMD_")
+            && let Ok(id) = id_str.parse::<u16>()
+                && let Some((name, _)) = db.get_script_cmd_by_id(id) {
                     command = Cow::Borrowed(name);
                 }
-            }
-        }
 
         if !in_action {
             command = canonicalize_dspre_command_name(command, db);
@@ -269,7 +266,7 @@ fn canonicalize_dspre_command_name<'a>(
         (_, "WaitFanfare") => Cow::Borrowed("WaitSE"),
         (_, "PlaySound") => Cow::Borrowed("PlayFanfare"),
         (_, "WaitSound") => Cow::Borrowed("WaitFanfare"),
-        (Some(GameFamily::DP) | Some(GameFamily::Platinum), "WildBattle") => {
+        (Some(GameFamily::DP | GameFamily::Platinum), "WildBattle") => {
             Cow::Borrowed("StartWildBattle")
         }
         (Some(GameFamily::HGSS), "WildBattle") => Cow::Borrowed("RocketTrapBattle"),

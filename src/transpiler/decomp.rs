@@ -524,7 +524,7 @@ fn collect_prepass_data(input: &str, db: Option<&crate::database::DatabaseV2>) -
     }
 }
 
-fn movement_commands_from_db<'a>(db: Option<&'a crate::database::DatabaseV2>) -> HashSet<&'a str> {
+fn movement_commands_from_db(db: Option<&crate::database::DatabaseV2>) -> HashSet<&str> {
     db.map(|db| {
         db.commands
             .iter()
@@ -679,9 +679,7 @@ fn resolve_script_command_name<'a>(
         return std::borrow::Cow::Borrowed(cmd_name);
     };
 
-    resolve_opcode_alias(db, cmd_name)
-        .map(std::borrow::Cow::Owned)
-        .unwrap_or_else(|| std::borrow::Cow::Borrowed(cmd_name))
+    resolve_opcode_alias(db, cmd_name).map_or_else(|| std::borrow::Cow::Borrowed(cmd_name), std::borrow::Cow::Owned)
 }
 
 fn resolve_opcode_alias(db: &crate::database::DatabaseV2, cmd_name: &str) -> Option<String> {

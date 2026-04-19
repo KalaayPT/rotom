@@ -1166,7 +1166,7 @@ impl<'a> Lowerer<'a> {
         } else {
             let resolved_args = self.resolve_args(&args_with_defaults)?;
             self.output.push(IrOpcode::Command {
-                name: name.to_string(),
+                name: name.clone(),
                 args: resolved_args,
             });
         }
