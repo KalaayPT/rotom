@@ -27,8 +27,8 @@ impl<'a> Parser<'a> {
         self.current_token = self.peek_token.clone();
         self.peek_token = self.lexer.next_token();
     }
-    pub fn current_token_is(&self, kind: TokenType) -> bool {
-        self.current_token.kind == kind
+    pub fn current_token_is(&self, kind: &TokenType) -> bool {
+        self.current_token.kind == *kind
     }
     pub fn current_token_is_keyword(&self) -> bool {
         let kind = self.current_token.kind.clone();
@@ -68,8 +68,8 @@ impl<'a> Parser<'a> {
             _ => false,
         }
     }
-    pub fn expect_advance(&mut self, kind: TokenType) -> ParseResult<Token> {
-        if std::mem::discriminant(&self.current_token.kind) == std::mem::discriminant(&kind) {
+    pub fn expect_advance(&mut self, kind: &TokenType) -> ParseResult<Token> {
+        if std::mem::discriminant(&self.current_token.kind) == std::mem::discriminant(kind) {
             let token = self.current_token.clone();
             self.advance();
             Ok(token)
@@ -89,8 +89,8 @@ impl<'a> Parser<'a> {
         let mut function_headers_by_name: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
-        while !self.current_token_is(TokenType::EOF) {
-            if self.current_token_is(TokenType::Newline) {
+        while !self.current_token_is(&TokenType::EOF) {
+            if self.current_token_is(&TokenType::Newline) {
                 self.advance();
                 continue;
             }
@@ -166,7 +166,7 @@ impl<'a> Parser<'a> {
                 let start = self.current_token.span.start;
                 let label_name = name;
                 self.advance();
-                self.expect_advance(TokenType::Colon)?;
+                self.expect_advance(&TokenType::Colon)?;
                 let end = self.current_token.span.start;
                 Spanned {
                     node: StatementKind::Label(label_name),
@@ -211,11 +211,11 @@ impl<'a> Parser<'a> {
     /// This becomes a private function (no jump table entry)
     fn parse_bare_label(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
-        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+        let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
         let TokenType::Identifier(name) = name_token.kind else {
             unreachable!()
         };
-        self.expect_advance(TokenType::Colon)?;
+        self.expect_advance(&TokenType::Colon)?;
         let body = self.parse_function_body()?;
         let end = self.current_token.span.start;
         Ok(Spanned {
@@ -236,26 +236,26 @@ impl<'a> Parser<'a> {
 
         // Consume all stacked `function name #N:` headers
         loop {
-            if !self.current_token_is(TokenType::Function) {
+            if !self.current_token_is(&TokenType::Function) {
                 break;
             }
 
-            self.expect_advance(TokenType::Function)?;
-            let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+            self.expect_advance(&TokenType::Function)?;
+            let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
             let TokenType::Identifier(name) = name_token.kind else {
                 unreachable!()
             };
 
             // Require #N for function (public) declarations
-            self.expect_advance(TokenType::Hash)?;
-            let id_token = self.expect_advance(TokenType::Num(0))?;
+            self.expect_advance(&TokenType::Hash)?;
+            let id_token = self.expect_advance(&TokenType::Num(0))?;
             let TokenType::Num(num) = id_token.kind else {
                 unreachable!()
             };
             let id = num as u32;
 
             // Require colon after header
-            self.expect_advance(TokenType::Colon)?;
+            self.expect_advance(&TokenType::Colon)?;
 
             headers.push(FunctionHeader {
                 name,
@@ -264,7 +264,7 @@ impl<'a> Parser<'a> {
             });
 
             // Skip newlines between stacked headers
-            while self.current_token_is(TokenType::Newline) {
+            while self.current_token_is(&TokenType::Newline) {
                 self.advance();
             }
         }
@@ -289,13 +289,13 @@ impl<'a> Parser<'a> {
     fn parse_function_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut body = Vec::new();
 
-        while !self.current_token_is(TokenType::EOF) {
+        while !self.current_token_is(&TokenType::EOF) {
             // Check for top-level boundary (next function, label, action)
             if self.at_top_level_boundary() {
                 break;
             }
 
-            if self.current_token_is(TokenType::Newline) {
+            if self.current_token_is(&TokenType::Newline) {
                 self.advance();
                 continue;
             }
@@ -307,13 +307,13 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_action(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
-        self.expect_advance(TokenType::Action)?;
-        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+        self.expect_advance(&TokenType::Action)?;
+        let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
         let TokenType::Identifier(name) = name_token.kind else {
             unreachable!()
         };
-        let mut body = self.parse_block(vec![TokenType::EndMovement])?;
-        if self.current_token_is(TokenType::EndMovement) {
+        let mut body = self.parse_block(&[TokenType::EndMovement])?;
+        if self.current_token_is(&TokenType::EndMovement) {
             let span = self.current_token.span.clone();
             self.advance();
             body.push(Spanned {
@@ -332,13 +332,13 @@ impl<'a> Parser<'a> {
             span: start..end,
         })
     }
-    pub fn parse_block(&mut self, end_condition: Vec<TokenType>) -> ParseResult<Vec<Statement>> {
+    pub fn parse_block(&mut self, end_condition: &[TokenType]) -> ParseResult<Vec<Statement>> {
         let mut block = Vec::new();
-        while !self.current_token_is(TokenType::EOF) {
+        while !self.current_token_is(&TokenType::EOF) {
             if end_condition.contains(&self.current_token.kind) {
                 break;
             }
-            if self.current_token_is(TokenType::Newline) {
+            if self.current_token_is(&TokenType::Newline) {
                 self.advance();
                 continue;
             }
@@ -349,10 +349,10 @@ impl<'a> Parser<'a> {
     pub fn parse_alias(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
 
-        self.expect_advance(TokenType::Alias)?;
+        self.expect_advance(&TokenType::Alias)?;
         let value = self.parse_expression(Precedence::Lowest)?;
-        self.expect_advance(TokenType::As)?;
-        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+        self.expect_advance(&TokenType::As)?;
+        let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
         let TokenType::Identifier(name) = name_token.kind else {
             unreachable!()
         };
@@ -364,22 +364,22 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_if(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
-        self.expect_advance(TokenType::If)?;
+        self.expect_advance(&TokenType::If)?;
         let condition = self.parse_expression(Precedence::Lowest)?;
-        self.expect_advance(TokenType::Then)?;
-        let then_branch = self.parse_block(vec![TokenType::Else, TokenType::EndIf])?;
-        let else_branch = if self.current_token_is(TokenType::Else) {
+        self.expect_advance(&TokenType::Then)?;
+        let then_branch = self.parse_block(&[TokenType::Else, TokenType::EndIf])?;
+        let else_branch = if self.current_token_is(&TokenType::Else) {
             self.advance();
-            if self.current_token_is(TokenType::If) {
+            if self.current_token_is(&TokenType::If) {
                 let elseif = self.parse_if()?;
                 Some(vec![elseif])
             } else {
-                Some(self.parse_block(vec![TokenType::EndIf])?)
+                Some(self.parse_block(&[TokenType::EndIf])?)
             }
         } else {
             None
         };
-        self.expect_advance(TokenType::EndIf)?;
+        self.expect_advance(&TokenType::EndIf)?;
         let end = self.current_token.span.start;
 
         Ok(Spanned {
@@ -393,11 +393,11 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_while(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
-        self.expect_advance(TokenType::While)?;
+        self.expect_advance(&TokenType::While)?;
         let condition = self.parse_expression(Precedence::Lowest)?;
-        self.expect_advance(TokenType::Do)?;
-        let body = self.parse_block(vec![TokenType::EndWhile])?;
-        self.expect_advance(TokenType::EndWhile)?;
+        self.expect_advance(&TokenType::Do)?;
+        let body = self.parse_block(&[TokenType::EndWhile])?;
+        self.expect_advance(&TokenType::EndWhile)?;
 
         let end = self.current_token.span.start;
 
@@ -411,43 +411,44 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_match(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
-        self.expect_advance(TokenType::Match)?;
+        self.expect_advance(&TokenType::Match)?;
         let subject = self.parse_expression(Precedence::Lowest)?;
-        self.expect_advance(TokenType::With)?;
+        self.expect_advance(&TokenType::With)?;
 
         let mut cases = Vec::new();
         let mut default = None;
 
-        while !self.current_token_is(TokenType::EndMatch) && !self.current_token_is(TokenType::EOF)
+        while !self.current_token_is(&TokenType::EndMatch)
+            && !self.current_token_is(&TokenType::EOF)
         {
-            if self.current_token_is(TokenType::Newline) {
+            if self.current_token_is(&TokenType::Newline) {
                 self.advance();
                 continue;
             }
 
-            if self.current_token_is(TokenType::Else) {
+            if self.current_token_is(&TokenType::Else) {
                 self.advance();
-                self.expect_advance(TokenType::Colon)?;
-                default = Some(self.parse_block(vec![TokenType::EndMatch, TokenType::Case])?);
+                self.expect_advance(&TokenType::Colon)?;
+                default = Some(self.parse_block(&[TokenType::EndMatch, TokenType::Case])?);
                 break;
             }
 
-            if self.current_token_is(TokenType::Case) {
+            if self.current_token_is(&TokenType::Case) {
                 let case_start = self.current_token.span.start;
                 self.advance();
 
                 let mut values = Vec::new();
                 loop {
                     values.push(self.parse_expression(Precedence::Lowest)?);
-                    if self.current_token_is(TokenType::Comma) {
+                    if self.current_token_is(&TokenType::Comma) {
                         self.advance();
                     } else {
                         break;
                     }
                 }
-                self.expect_advance(TokenType::Colon)?;
+                self.expect_advance(&TokenType::Colon)?;
                 let body =
-                    self.parse_block(vec![TokenType::Case, TokenType::Else, TokenType::EndMatch])?;
+                    self.parse_block(&[TokenType::Case, TokenType::Else, TokenType::EndMatch])?;
                 let case_end = self.current_token.span.start;
 
                 cases.push(MatchCase {
@@ -466,7 +467,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.expect_advance(TokenType::EndMatch)?;
+        self.expect_advance(&TokenType::EndMatch)?;
         let end = self.current_token.span.start;
 
         Ok(Spanned {
@@ -480,25 +481,25 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_command(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
-        let name_token = self.expect_advance(TokenType::Identifier(String::new()))?;
+        let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
         let TokenType::Identifier(name) = name_token.kind else {
             unreachable!()
         };
         let mut args = Vec::new();
-        if !self.current_token_is(TokenType::Newline)
+        if !self.current_token_is(&TokenType::Newline)
             && (!self.current_token_is_keyword()
                 || matches!(self.current_token.kind, TokenType::True | TokenType::False))
         {
             loop {
                 args.push(self.parse_expression(Precedence::Lowest)?);
-                if self.current_token_is(TokenType::Comma) {
+                if self.current_token_is(&TokenType::Comma) {
                     self.advance();
                 } else {
                     break;
                 }
             }
         }
-        if self.current_token_is(TokenType::Newline) {
+        if self.current_token_is(&TokenType::Newline) {
             self.advance();
         }
         let end = self.current_token.span.start;
@@ -512,7 +513,7 @@ impl<'a> Parser<'a> {
     }
     fn parse_jump(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
-        self.expect_advance(TokenType::Jump)?;
+        self.expect_advance(&TokenType::Jump)?;
         let target_expr = match &self.current_token.kind {
             TokenType::LocalLabel(name) => {
                 let span = self.current_token.span.clone();
@@ -550,13 +551,13 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_expression(&mut self, precedence: Precedence) -> ParseResult<Expression> {
         let mut left = self.parse_prefix()?;
-        while !self.current_token_is(TokenType::EOF)
-            && !self.current_token_is(TokenType::End)
-            && !self.current_token_is(TokenType::Comma)
-            && !self.current_token_is(TokenType::RParen)
-            && !self.current_token_is(TokenType::Then)
-            && !self.current_token_is(TokenType::Do)
-            && !self.current_token_is(TokenType::Newline)
+        while !self.current_token_is(&TokenType::EOF)
+            && !self.current_token_is(&TokenType::End)
+            && !self.current_token_is(&TokenType::Comma)
+            && !self.current_token_is(&TokenType::RParen)
+            && !self.current_token_is(&TokenType::Then)
+            && !self.current_token_is(&TokenType::Do)
+            && !self.current_token_is(&TokenType::Newline)
             && precedence < self.cur_precedence()
         {
             left = self.parse_infix(left)?;
@@ -596,7 +597,7 @@ impl<'a> Parser<'a> {
             TokenType::LParen => {
                 self.advance();
                 let expression = self.parse_expression(Precedence::Lowest)?;
-                self.expect_advance(TokenType::RParen)?;
+                self.expect_advance(&TokenType::RParen)?;
                 return Ok(expression);
             }
             _ => {
@@ -614,7 +615,7 @@ impl<'a> Parser<'a> {
     }
     fn parse_infix(&mut self, left: Expression) -> ParseResult<Expression> {
         let start = left.span.start;
-        if self.current_token_is(TokenType::LParen) {
+        if self.current_token_is(&TokenType::LParen) {
             return self.parse_call_expression(left);
         }
         let operator = self.current_token.kind.clone();
@@ -635,18 +636,18 @@ impl<'a> Parser<'a> {
         let start = function.span.start;
         self.advance();
         let mut args = Vec::new();
-        if !self.current_token_is(TokenType::RParen) {
+        if !self.current_token_is(&TokenType::RParen) {
             loop {
                 args.push(self.parse_expression(Precedence::Lowest)?);
 
-                if self.current_token_is(TokenType::Comma) {
+                if self.current_token_is(&TokenType::Comma) {
                     self.advance();
                 } else {
                     break;
                 }
             }
         }
-        self.expect_advance(TokenType::RParen)?;
+        self.expect_advance(&TokenType::RParen)?;
         let end = self.current_token.span.start;
         Ok(Spanned {
             node: ExpressionKind::Call {
@@ -722,7 +723,7 @@ mod tests {
         let source = "function TestFunc #1:\nEnd";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
-        let token = parser.expect_advance(TokenType::Function).unwrap();
+        let token = parser.expect_advance(&TokenType::Function).unwrap();
         assert_eq!(token.kind, TokenType::Function);
         assert_eq!(
             parser.current_token.kind,
@@ -735,7 +736,7 @@ mod tests {
         let source = "function TestFunc #1:\nEnd";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
-        let result = parser.expect_advance(TokenType::If);
+        let result = parser.expect_advance(&TokenType::If);
         assert!(result.is_err());
     }
 
