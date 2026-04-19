@@ -157,6 +157,7 @@ impl<'a> Emitter<'a> {
     }
     /// Emit a movement command (for actions)
     /// Movement format: u16 opcode + u16 param (always 4 bytes per movement)
+    #[allow(clippy::similar_names)]
     pub fn emit_movement(&mut self, ir_op: &IrOpcode) -> ParseResult<()> {
         match ir_op {
             IrOpcode::Label(name) => {
@@ -199,6 +200,8 @@ impl<'a> Emitter<'a> {
         }
         Ok(())
     }
+
+    #[allow(clippy::similar_names)]
     pub fn emit_command(&mut self, name: &str, cmd: &Command, args: &[Arg]) -> ParseResult<()> {
         let opcode = cmd.id.ok_or_else(|| {
             codegen_error(format!("Command '{}' has no opcode ID in database", name))
@@ -449,7 +452,7 @@ mod tests {
             assert!(result.is_ok());
         }
 
-        assert!(emitter.output.len() > 0);
+        assert!(emitter.output.is_empty());
         // FaceNorth(1) + WalkNormalSouth(3) + EndMovement(0) = 3 movements * 4 bytes each = 12 bytes
         assert_eq!(emitter.output.len(), 12);
     }
@@ -484,7 +487,7 @@ mod tests {
             assert!(result.is_ok(), "Failed to emit {:?}: {:?}", op, result);
         }
 
-        assert!(emitter.output.len() > 0);
+        assert!(emitter.output.is_empty());
         // FaceNorth(1) + EndMovement(0) = 2 movements * 4 bytes each = 8 bytes
         assert_eq!(emitter.output.len(), 8);
     }
@@ -651,7 +654,7 @@ mod tests {
         let end_cmd = db
             .get_command("End")
             .expect("End command should exist in DB");
-        emitter.emit_command("End", end_cmd, &vec![]).unwrap();
+        emitter.emit_command("End", end_cmd, &[]).unwrap();
 
         // End is opcode 0x02, no parameters = 2 bytes
         assert_eq!(emitter.output.len(), 2);
@@ -668,7 +671,7 @@ mod tests {
             .get_command("Message")
             .expect("Message command should exist in DB");
         emitter
-            .emit_command("Message", message_cmd, &vec![Arg::Value(42)])
+            .emit_command("Message", message_cmd, &[Arg::Value(42)])
             .unwrap();
 
         // Message is opcode (2 bytes) + 1 u8 param (1 byte) = 3 bytes total

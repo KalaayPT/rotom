@@ -84,8 +84,8 @@ impl ComparisonOperator {
             Self::Less => "LESS",
             Self::Equal => "EQUAL",
             Self::Greater => "GREATER",
-            Self::LessEqual => "LESS/EQUAL",
-            Self::GreaterEqual => "GREATER/EQUAL",
+            Self::LessEqual => "LESS_EQUAL",
+            Self::GreaterEqual => "GREATER_EQUAL",
             Self::Different => "DIFFERENT",
         }
     }
@@ -142,8 +142,6 @@ pub struct DatabaseV2 {
     pub commands: HashMap<String, Command>,
     #[serde(default)]
     pub sounds: HashMap<String, Sound>,
-    #[serde(default)]
-    pub comparison_operators: HashMap<String, String>,
     #[serde(default)]
     pub overworld_directions: HashMap<String, String>,
     #[serde(default)]
@@ -592,10 +590,9 @@ impl ConstantDb {
         self.constants.insert("VARS_START".to_string(), 0x4000);
         count += 1;
 
-        for (id_str, name) in &db.comparison_operators {
-            if let Ok(id) = id_str.parse::<i32>() {
-                let normalized = name.replace('/', "_");
-                self.constants.insert(normalized, id);
+        for i in 0..=5 {
+            if let Some(op) = ComparisonOperator::from_id(i) {
+                self.constants.insert(op.as_str().to_string(), i as i32);
                 count += 1;
             }
         }
@@ -981,7 +978,6 @@ mod tests {
             },
             commands,
             sounds: HashMap::new(),
-            comparison_operators: HashMap::new(),
             overworld_directions: HashMap::new(),
             special_overworlds: HashMap::new(),
         }

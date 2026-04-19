@@ -3,6 +3,8 @@
 //! This library provides functionality to compile Rotoscript source files
 //! to binary format and decompile binary scripts back to Rotoscript.
 
+#![allow(clippy::cast_sign_loss, clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+
 mod autovar;
 pub mod compile_state;
 pub mod compiler;

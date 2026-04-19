@@ -1026,7 +1026,6 @@ mod tests {
             },
             commands,
             sounds: HashMap::new(),
-            comparison_operators: HashMap::new(),
             overworld_directions: HashMap::new(),
             special_overworlds: HashMap::new(),
         }

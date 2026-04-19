@@ -21,7 +21,7 @@ use crate::compiler::{Lexer, Parser};
 use crate::database::{Command, ComparisonOperator, DatabaseV2, ParamDef, ResolvedCommandShape};
 use uxie::c_parser::defines::eval_expr_with_parent;
 
-use super::{Arg, Condition, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
+use super::{Arg, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
 
 /// Macro condition for argument count: matches "1 arg(s)", "2 args", "3 args", etc.
 static RE_ARG_COUNT: LazyLock<Regex> = LazyLock::new(|| {
@@ -298,7 +298,7 @@ impl<'a> Lowerer<'a> {
                 self.output.push(IrOpcode::Command {
                     name: "JumpIf".to_string(),
                     args: vec![
-                        Arg::Value(Condition::Equal as i32),
+                        Arg::Value(ComparisonOperator::Equal as i32),
                         Arg::Pointer(call_target),
                     ],
                 });
@@ -383,15 +383,14 @@ impl<'a> Lowerer<'a> {
                 name: command.to_string(),
                 args: resolved_args,
             });
-            Ok(())
         } else {
             let resolved_args = self.resolve_args(args)?;
             self.output.push(IrOpcode::Command {
                 name: command.to_string(),
                 args: resolved_args,
             });
-            Ok(())
         }
+        Ok(())
     }
 
     /// Pick which param list this call should use before defaults or `emit_args` run.
@@ -424,8 +423,8 @@ impl<'a> Lowerer<'a> {
         args: &[Expression],
     ) -> ParseResult<Vec<Expression>> {
         let shape = self.select_command_shape(cmd, args);
-        let source_args = self.apply_defaults_to_params(command, shape.params, args)?;
-        self.apply_emit_args(shape, &source_args)
+        let source_args = Self::apply_defaults_to_params(command, shape.params, args)?;
+        Self::apply_emit_args(shape, &source_args)
     }
 
     /// Apply defaults to a command or macro after its param list has already been chosen.
@@ -436,11 +435,10 @@ impl<'a> Lowerer<'a> {
         args: &[Expression],
     ) -> ParseResult<Vec<Expression>> {
         let params = self.select_command_shape(cmd, args).params;
-        self.apply_defaults_to_params(command, params, args)
+        Self::apply_defaults_to_params(command, params, args)
     }
 
     fn apply_defaults_to_params(
-        &self,
         command: &str,
         params: &[ParamDef],
         args: &[Expression],
@@ -519,7 +517,7 @@ impl<'a> Lowerer<'a> {
             if result[i].is_none() {
                 if let Some(default_str) = &param.default {
                     let substituted =
-                        self.substitute_default_params_sparse(default_str, params, &result[..i])?;
+                        Self::substitute_default_params_sparse(default_str, params, &result[..i])?;
                     let lexer = Lexer::new(&substituted);
                     let mut parser = Parser::new(lexer);
                     let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;
@@ -543,7 +541,6 @@ impl<'a> Lowerer<'a> {
     /// The expressions run after `$param` substitution on the already-defaulted args. If there is
     /// no rewrite, the args are used as-is.
     fn apply_emit_args(
-        &self,
         shape: ResolvedCommandShape<'_>,
         source_args: &[Expression],
     ) -> ParseResult<Vec<Expression>> {
@@ -553,7 +550,7 @@ impl<'a> Lowerer<'a> {
 
         let mut param_map: HashMap<String, String> = HashMap::new();
         for (param, arg) in shape.params.iter().zip(source_args.iter()) {
-            param_map.insert(param.name.clone(), self.format_arg_for_substitution(arg)?);
+            param_map.insert(param.name.clone(), Self::format_arg_for_substitution(arg)?);
         }
 
         let mut rewritten = Vec::with_capacity(emit_args.len());
@@ -582,7 +579,7 @@ impl<'a> Lowerer<'a> {
         let shape = self.select_command_shape(cmd, args);
         let params = shape.params;
 
-        let args_with_defaults = self.apply_defaults_to_params(macro_name, params, args)?;
+        let args_with_defaults = Self::apply_defaults_to_params(macro_name, params, args)?;
 
         if args_with_defaults.len() > params.len() {
             return Err(lowering_error(format!(
@@ -623,7 +620,7 @@ impl<'a> Lowerer<'a> {
 
         let mut param_map: HashMap<String, String> = HashMap::new();
         for (param, arg) in params.iter().zip(args_with_defaults.iter()) {
-            let formatted = self.format_arg_for_substitution(arg)?;
+            let formatted = Self::format_arg_for_substitution(arg)?;
             param_map.insert(param.name.clone(), formatted);
         }
 
@@ -640,7 +637,7 @@ impl<'a> Lowerer<'a> {
         &self,
         condition: &str,
         args: &[Expression],
-        params: &[crate::database::ParamDef],
+        params: &[ParamDef],
     ) -> ParseResult<bool> {
         let exprs: HashMap<String, String> = HashMap::new();
         let mut resolved: HashMap<String, i64> = HashMap::new();
@@ -693,7 +690,7 @@ impl<'a> Lowerer<'a> {
         &self,
         condition: &str,
         args: &[Expression],
-        params: &[crate::database::ParamDef],
+        params: &[ParamDef],
     ) -> ParseResult<bool> {
         if let Some(caps) = RE_ARG_COUNT.captures(condition) {
             let expected_count: usize = caps[1].parse().unwrap_or(0);
@@ -783,12 +780,12 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn format_arg_for_substitution(&self, expr: &Expression) -> ParseResult<String> {
+    fn format_arg_for_substitution(expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
             ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Ok(name.clone()),
             ExpressionKind::Prefix { operator, id } => {
-                let inner = self.format_arg_for_substitution(id)?;
+                let inner = Self::format_arg_for_substitution(id)?;
                 let op_str = match operator {
                     TokenType::Minus => "-",
                     TokenType::Plus => "+",
@@ -807,8 +804,8 @@ impl<'a> Lowerer<'a> {
                 operator,
                 right,
             } => {
-                let left_str = self.format_arg_for_substitution(left)?;
-                let right_str = self.format_arg_for_substitution(right)?;
+                let left_str = Self::format_arg_for_substitution(left)?;
+                let right_str = Self::format_arg_for_substitution(right)?;
                 let op_str = match operator {
                     TokenType::Plus => "+",
                     TokenType::Minus => "-",
@@ -839,7 +836,7 @@ impl<'a> Lowerer<'a> {
 
                 let mut formatted_args = Vec::with_capacity(args.len());
                 for arg in args {
-                    formatted_args.push(self.format_arg_for_substitution(arg)?);
+                    formatted_args.push(Self::format_arg_for_substitution(arg)?);
                 }
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
@@ -859,12 +856,12 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn format_expression_for_constant_eval(&self, expr: &Expression) -> ParseResult<String> {
+    fn format_expression_for_constant_eval(expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
             ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Ok(name.clone()),
             ExpressionKind::Prefix { operator, id } => {
-                let inner = self.format_expression_for_constant_eval(id)?;
+                let inner = Self::format_expression_for_constant_eval(id)?;
                 let op = match operator {
                     TokenType::Minus => "-",
                     TokenType::Plus => "+",
@@ -883,8 +880,8 @@ impl<'a> Lowerer<'a> {
                 operator,
                 right,
             } => {
-                let left_str = self.format_expression_for_constant_eval(left)?;
-                let right_str = self.format_expression_for_constant_eval(right)?;
+                let left_str = Self::format_expression_for_constant_eval(left)?;
+                let right_str = Self::format_expression_for_constant_eval(right)?;
                 let op = match operator {
                     TokenType::Plus => "+",
                     TokenType::Minus => "-",
@@ -915,7 +912,7 @@ impl<'a> Lowerer<'a> {
 
                 let mut formatted_args = Vec::with_capacity(args.len());
                 for arg in args {
-                    formatted_args.push(self.format_expression_for_constant_eval(arg)?);
+                    formatted_args.push(Self::format_expression_for_constant_eval(arg)?);
                 }
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
@@ -939,11 +936,10 @@ impl<'a> Lowerer<'a> {
     ) -> ParseResult<String> {
         let sparse_args: Vec<Option<Expression>> =
             resolved_args.iter().cloned().map(Some).collect();
-        self.substitute_default_params_sparse(default_str, params, &sparse_args)
+        Self::substitute_default_params_sparse(default_str, params, &sparse_args)
     }
 
     fn substitute_default_params_sparse(
-        &self,
         default_str: &str,
         params: &[ParamDef],
         resolved_args: &[Option<Expression>],
@@ -955,7 +951,7 @@ impl<'a> Lowerer<'a> {
             if result.contains(&placeholder)
                 && let Some(arg) = resolved_args.get(i).and_then(|arg| arg.as_ref())
             {
-                let formatted = self.format_arg_for_substitution(arg)?;
+                let formatted = Self::format_arg_for_substitution(arg)?;
                 result = result.replace(&placeholder, &formatted);
             }
         }
@@ -963,10 +959,10 @@ impl<'a> Lowerer<'a> {
         Ok(result)
     }
 
-/// Parse one expression with the normal Rotom parser.
-///
-/// Defaults and `emit_args` use this so they follow the same expression rules as source code.
-fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
+    /// Parse one expression with the normal Rotom parser.
+    ///
+    /// Defaults and `emit_args` use this so they follow the same expression rules as source code.
+    fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
         let expr_with_newline = format!("{}\n", expr.trim());
         let lexer = Lexer::new(&expr_with_newline);
         let mut parser = Parser::new(lexer);
@@ -1015,9 +1011,9 @@ fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
                 args: vec![Arg::Value(VAR_RESULT), Arg::Value(1)],
             });
             let cond = if invert {
-                Condition::Different
+                ComparisonOperator::Different
             } else {
-                Condition::Equal
+                ComparisonOperator::Equal
             };
             self.output.push(IrOpcode::Command {
                 name: "JumpIf".to_string(),
@@ -1144,7 +1140,7 @@ fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
         if cmd.is_macro() {
             let mut param_map: HashMap<String, String> = HashMap::new();
             for (param, arg) in cmd.params.iter().zip(args_with_defaults.iter()) {
-                let formatted = self.format_arg_for_substitution(arg)?;
+                let formatted = Self::format_arg_for_substitution(arg)?;
                 param_map.insert(param.name.clone(), formatted);
             }
 
@@ -1180,7 +1176,9 @@ fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
                 }
 
                 match self.global_symbols.resolve(name) {
-                    Some(SymbolType::Variable(id) | SymbolType::Constant(id)) => return Ok(Arg::Value(*id)),
+                    Some(SymbolType::Variable(id) | SymbolType::Constant(id)) => {
+                        return Ok(Arg::Value(*id));
+                    }
                     Some(SymbolType::Function(_) | SymbolType::Label | SymbolType::Action) => {
                         return Ok(Arg::Pointer(name.clone()));
                     }
@@ -1248,7 +1246,7 @@ fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
                     )));
                 }
 
-                let expr_text = self.format_expression_for_constant_eval(expr)?;
+                let expr_text = Self::format_expression_for_constant_eval(expr)?;
                 if let Some(constants) = self.constants
                     && let Some(value) = constants.evaluate_expression(&expr_text)
                 {
@@ -1290,8 +1288,8 @@ fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
         }
     }
 
-    fn get_condition(token: &TokenType, swapped: bool) -> Condition {
-        use Condition::{Different, Equal, Greater, GreaterEqual, Less, LessEqual};
+    fn get_condition(token: &TokenType, swapped: bool) -> ComparisonOperator {
+        use ComparisonOperator::{Different, Equal, Greater, GreaterEqual, Less, LessEqual};
 
         let effective_op = if swapped {
             Self::swap_operator(token)
@@ -1309,8 +1307,8 @@ fn parse_expression_text(expr: &str) -> ParseResult<Expression> {
         }
     }
 
-    fn get_inverted_condition(token: &TokenType, swapped: bool) -> Condition {
-        use Condition::{Different, Equal, Greater, GreaterEqual, Less, LessEqual};
+    fn get_inverted_condition(token: &TokenType, swapped: bool) -> ComparisonOperator {
+        use ComparisonOperator::{Different, Equal, Greater, GreaterEqual, Less, LessEqual};
 
         let effective_op = if swapped {
             Self::swap_operator(token)
@@ -1414,7 +1412,6 @@ mod tests {
             },
             commands,
             sounds: HashMap::new(),
-            comparison_operators: HashMap::new(),
             overworld_directions: HashMap::new(),
             special_overworlds: HashMap::new(),
         }
@@ -1622,8 +1619,8 @@ action TestAction
         let lowerer = Lowerer::new(&symbols, &db);
 
         let expr = Expression {
-            span: 0..1,
             node: ExpressionKind::Number(42),
+            span: 0..1,
         };
         let arg = lowerer.resolve_arg(&expr).unwrap();
         assert_eq!(arg.unwrap_value(), 42);
@@ -1637,8 +1634,8 @@ action TestAction
         let lowerer = Lowerer::new(&symbols, &db);
 
         let expr = Expression {
-            span: 0..1,
             node: ExpressionKind::Number(0x42),
+            span: 0..1,
         };
         let arg = lowerer.resolve_arg(&expr).unwrap();
         assert_eq!(arg.unwrap_value(), 0x42);
@@ -2351,7 +2348,7 @@ func_c:
                 let label_count = ir_func
                     .instructions
                     .iter()
-                    .filter(|op| matches!(op, IrOpcode::Label(name) if name.starts_with(".")))
+                    .filter(|op| matches!(op, IrOpcode::Label(name) if name.starts_with('.')))
                     .count();
                 assert_eq!(
                     label_count, 0,
@@ -2431,7 +2428,7 @@ label_c:
                 let label_count = ir_func
                     .instructions
                     .iter()
-                    .filter(|op| matches!(op, IrOpcode::Label(name) if name.starts_with(".")))
+                    .filter(|op| matches!(op, IrOpcode::Label(name) if name.starts_with('.')))
                     .count();
                 assert_eq!(
                     label_count, 0,
@@ -2567,12 +2564,12 @@ label6:
                     .instructions
                     .iter()
                     .filter_map(|op| {
-                        if let IrOpcode::Command { name, args } = op {
-                            if name == "JumpIf" && !args.is_empty() {
-                                if let Arg::Value(v) = &args[0] {
-                                    return Some(*v);
-                                }
-                            }
+                        if let IrOpcode::Command { name, args } = op
+                            && name == "JumpIf"
+                            && !args.is_empty()
+                            && let Arg::Value(v) = &args[0]
+                        {
+                            return Some(*v);
                         }
                         None
                     })

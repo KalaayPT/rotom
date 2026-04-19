@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
-use crate::compiler::ir::{Arg, Condition, IrOpcode, TopLevelItem};
-use crate::database::DatabaseV2;
+use crate::compiler::ir::{Arg, IrOpcode, TopLevelItem};
+use crate::database::{ComparisonOperator, DatabaseV2};
 
 use super::disassembler::ScriptOutput;
 use super::levelscript::LevelScript;
@@ -17,7 +17,7 @@ fn format_arg(arg: &Arg, param_name: Option<&str>) -> String {
     match arg {
         Arg::Value(v) => {
             if param_name == Some("condition")
-                && let Some(cond) = Condition::from_id(*v as u8) {
+                && let Some(cond) = ComparisonOperator::from_id(*v as u8) {
                     return cond.as_str().to_string();
                 }
             if *v >= 0x4000 {

@@ -9,4 +9,4 @@ mod types;
 
 pub use lowerer::Lowerer;
 pub(crate) use types::OperandType;
-pub use types::{Arg, Condition, IrAction, IrFunction, IrOpcode, TopLevelItem};
+pub use types::{Arg, IrAction, IrFunction, IrOpcode, TopLevelItem};
