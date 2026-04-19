@@ -406,13 +406,12 @@ fn skip_or_handle_structural_line(
     output: &mut String,
 ) -> Result<bool, TranspileError> {
     match classify_structural_line(statement) {
-        StructuralLine::ScriptEntry(_) => Ok(true),
+        StructuralLine::ScriptEntry(_) | StructuralLine::AssemblerDirective => Ok(true),
         StructuralLine::ScriptEntryEnd => {
             state.seen_script_entry_end = true;
             state.has_script_entry_end = true;
             Ok(true)
         }
-        StructuralLine::AssemblerDirective => Ok(true),
         StructuralLine::Label(label_name) => {
             state.seen_script_entry_end = true;
             render_label_line(
@@ -679,7 +678,10 @@ fn resolve_script_command_name<'a>(
         return std::borrow::Cow::Borrowed(cmd_name);
     };
 
-    resolve_opcode_alias(db, cmd_name).map_or_else(|| std::borrow::Cow::Borrowed(cmd_name), std::borrow::Cow::Owned)
+    resolve_opcode_alias(db, cmd_name).map_or_else(
+        || std::borrow::Cow::Borrowed(cmd_name),
+        std::borrow::Cow::Owned,
+    )
 }
 
 fn resolve_opcode_alias(db: &crate::database::DatabaseV2, cmd_name: &str) -> Option<String> {
@@ -1074,11 +1076,9 @@ MoveLabel:
 
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("action MoveLabel"));
-        assert!(
-            output
-                .source
-                .contains("    EndMovement\n_unused_end_0:\n    End\n")
-        );
+        assert!(output
+            .source
+            .contains("    EndMovement\n_unused_end_0:\n    End\n"));
     }
 
     #[test]
@@ -1351,11 +1351,9 @@ Test:
     end
 ";
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(
-            output
-                .source
-                .contains("    CopyVar 0x8008, VAR_SPECIAL_RESULT")
-        );
+        assert!(output
+            .source
+            .contains("    CopyVar 0x8008, VAR_SPECIAL_RESULT"));
         assert!(output.source.contains("    CompareVarValue 0x8008, 5"));
         assert!(output.source.contains("    JumpIf EQUAL, _0071"));
         assert!(output.source.contains("    CompareVarValue 0x8008, 0"));
@@ -1379,11 +1377,9 @@ Test:
 
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("// file comment"));
-        assert!(
-            output
-                .source
-                .contains("    SetVar VAR_RESULT, 1 // inline comment")
-        );
+        assert!(output
+            .source
+            .contains("    SetVar VAR_RESULT, 1 // inline comment"));
         assert!(output.source.contains("// block comment"));
     }
 

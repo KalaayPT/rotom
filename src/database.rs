@@ -233,10 +233,12 @@ impl ParamType {
     pub fn size(&self) -> usize {
         match self {
             ParamType::U8 => 1,
-            ParamType::U16 | ParamType::Var | ParamType::Flag => 2,
+            ParamType::U16
+            | ParamType::Var
+            | ParamType::Flag
+            | ParamType::MsgId
+            | ParamType::Unknown => 2,
             ParamType::U32 | ParamType::Label | ParamType::ScriptId | ParamType::MovementId => 4,
-            ParamType::MsgId => 2,
-            ParamType::Unknown => 2,
         }
     }
 }

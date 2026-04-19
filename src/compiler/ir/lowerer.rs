@@ -657,9 +657,8 @@ impl<'a> Lowerer<'a> {
         let parent_resolver = |name: &str| -> Option<i64> {
             match name {
                 "VARS_START" => Some(0x4000),
-                "VARS_END" => Some(0x800D),
                 "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
-                "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
+                "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
                 _ => {
                     if let Some(&val) = self.active_aliases.get(name) {
                         return Some(i64::from(val));
@@ -708,9 +707,8 @@ impl<'a> Lowerer<'a> {
             ExpressionKind::Number(n) => Ok(*n),
             ExpressionKind::Identifier(name) => match name.as_str() {
                 "VARS_START" => Ok(0x4000),
-                "VARS_END" => Ok(0x800D),
                 "SCRIPT_LOCAL_VARS_START" => Ok(0x8000),
-                "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
+                "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
                 _ => {
                     if let Some(&val) = self.active_aliases.get(name) {
                         return Ok(val);
@@ -788,8 +786,7 @@ impl<'a> Lowerer<'a> {
     fn format_arg_for_substitution(&self, expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(name) => Ok(name.clone()),
-            ExpressionKind::Label(name) => Ok(name.clone()),
+            ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Ok(name.clone()),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = self.format_arg_for_substitution(id)?;
                 let op_str = match operator {
@@ -865,8 +862,7 @@ impl<'a> Lowerer<'a> {
     fn format_expression_for_constant_eval(&self, expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(name) => Ok(name.clone()),
-            ExpressionKind::Label(name) => Ok(name.clone()),
+            ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Ok(name.clone()),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = self.format_expression_for_constant_eval(id)?;
                 let op = match operator {
@@ -1045,10 +1041,8 @@ impl<'a> Lowerer<'a> {
             let (left_type, left_val) = self.analyze_operand_after_call(left, left_type)?;
             let (right_type, right_val) = self.analyze_operand_after_call(right, right_type)?;
             let (final_left, final_right, swapped) = match (&left_type, &right_type) {
-                (OperandType::Variable, OperandType::Value) => (left_val, right_val, false),
                 (OperandType::Value, OperandType::Variable) => (right_val, left_val, true),
-                (OperandType::Variable, OperandType::Variable) => (left_val, right_val, false),
-                (OperandType::Value, OperandType::Value) => (left_val, right_val, false),
+                _ => (left_val, right_val, false),
             };
             let cmd_name =
                 if left_type == OperandType::Variable && right_type == OperandType::Variable {
@@ -1186,8 +1180,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 match self.global_symbols.resolve(name) {
-                    Some(SymbolType::Variable(id)) => return Ok(Arg::Value(*id)),
-                    Some(SymbolType::Constant(id)) => return Ok(Arg::Value(*id)),
+                    Some(SymbolType::Variable(id) | SymbolType::Constant(id)) => return Ok(Arg::Value(*id)),
                     Some(SymbolType::Function(_) | SymbolType::Label | SymbolType::Action) => {
                         return Ok(Arg::Pointer(name.clone()));
                     }
@@ -1307,7 +1300,6 @@ impl<'a> Lowerer<'a> {
         };
 
         match effective_op {
-            TokenType::Equal => Equal,
             TokenType::NotEqual => Different,
             TokenType::GreaterThan => Greater,
             TokenType::LesserThan => Less,
@@ -1327,7 +1319,6 @@ impl<'a> Lowerer<'a> {
         };
 
         match effective_op {
-            TokenType::Equal => Different,
             TokenType::NotEqual => Equal,
             TokenType::GreaterThan => LessEqual,
             TokenType::LesserThan => GreaterEqual,
