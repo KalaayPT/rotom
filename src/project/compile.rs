@@ -524,23 +524,31 @@ fn load_project_database_and_constants(
             .map_err(ProjectError::from)?;
     }
 
-    if matches!(config.workspace.project_type, ProjectTypeConfig::Decomp) {
-        let game_family = config
-            .game_family()
-            .ok_or(ProjectError::MissingGameFamily)?;
-        let (symbols, rebuilt) = Workspace::load_cached_symbols(
-            &config.cache_dir(root),
-            root,
-            &config.include_roots(root),
-            game_family,
-        )
-        .map_err(|source| ProjectError::Io {
-            action: "Failed to load constant cache",
-            path: config.cache_dir(root),
-            source,
-        })?;
-        let _ = constants.load_decomp_symbols(root, (*symbols).clone());
-        constant_cache_rebuilt = rebuilt;
+    match config.workspace.project_type {
+        ProjectTypeConfig::Decomp => {
+            let game_family = config
+                .game_family()
+                .ok_or(ProjectError::MissingGameFamily)?;
+            let (symbols, rebuilt) = Workspace::load_cached_symbols(
+                &config.cache_dir(root),
+                root,
+                &config.include_roots(root),
+                game_family,
+            )
+            .map_err(|source| ProjectError::Io {
+                action: "Failed to load constant cache",
+                path: config.cache_dir(root),
+                source,
+            })?;
+            let _ = constants.load_decomp_symbols(root, (*symbols).clone());
+            constant_cache_rebuilt = rebuilt;
+        }
+        ProjectTypeConfig::Dspre => {
+            let _ = constants
+                .load_dspre_text_archives(root)
+                .map_err(ProjectError::from)?;
+        }
+        ProjectTypeConfig::Generic => {}
     }
 
     Ok((db, constants, db_hash, constant_cache_rebuilt))
@@ -983,6 +991,39 @@ mod tests {
 
         let result = compile_project(root, &project_config(ProjectTypeConfig::Dspre), false)
             .expect("project compile should succeed");
+
+        assert!(result.is_success());
+        assert!(root.join("build/scripts/0001").exists());
+    }
+
+    #[test]
+    fn compile_project_loads_dspre_text_archive_constants() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("expanded/textArchives")).unwrap();
+        fs::write(
+            root.join("scripts/0001.rotom"),
+            "alias SPECIES_NIDORANF as MON\nfunction Main #1:\n    End\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("expanded/textArchives/0412.json"),
+            concat!(
+                "{\n",
+                "  \"key\": 30764,\n",
+                "  \"messages\": [\n",
+                "    { \"id\": \"msg_0412_00000\", \"en_US\": \"-----\" },\n",
+                "    { \"id\": \"msg_0412_00001\", \"en_US\": \"Bulbasaur\" },\n",
+                "    { \"id\": \"msg_0412_00002\", \"en_US\": \"Nidoran♀\" }\n",
+                "  ]\n",
+                "}\n"
+            ),
+        )
+        .unwrap();
+
+        let result = compile_project(root, &project_config(ProjectTypeConfig::Dspre), false)
+            .expect("project compile should succeed with DSPRE text archive constants");
 
         assert!(result.is_success());
         assert!(root.join("build/scripts/0001").exists());

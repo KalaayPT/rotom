@@ -411,9 +411,10 @@ impl<'a> Disassembler<'a> {
         let all_starts: Vec<usize> = self.symbols.keys().copied().collect();
         for start in all_starts {
             if let Some(info) = self.symbols.get(&start)
-                && matches!(info.kind, LabelKind::Action { .. }) {
-                    continue;
-                }
+                && matches!(info.kind, LabelKind::Action { .. })
+            {
+                continue;
+            }
 
             let mut pc = start;
             while pc + 2 <= self.bytes.len() {
@@ -423,13 +424,15 @@ impl<'a> Disassembler<'a> {
                     let cmd_size = self.command_size_at(pc, cmd);
 
                     if let Some(target) = self.extract_jump_target(pc, cmd)
-                        && target < self.bytes.len() && !self.symbols.contains_key(&target) {
-                            if Self::is_action_reference(name) && target % 4 == 0 {
-                                missed_actions.push(target);
-                            } else if target >= code_start {
-                                missed_targets.push(target);
-                            }
+                        && target < self.bytes.len()
+                        && !self.symbols.contains_key(&target)
+                    {
+                        if Self::is_action_reference(name) && target % 4 == 0 {
+                            missed_actions.push(target);
+                        } else if target >= code_start {
+                            missed_targets.push(target);
                         }
+                    }
 
                     let is_terminator =
                         Self::is_hard_terminator_name(name) || Self::is_soft_terminator_name(name);
@@ -461,9 +464,9 @@ impl<'a> Disassembler<'a> {
 
         for target in missed_targets {
             self.symbols.entry(target).or_insert_with(|| LabelInfo {
-                        kind: LabelKind::Internal,
-                        name: format!("_L{:04X}", target),
-                    });
+                kind: LabelKind::Internal,
+                name: format!("_L{:04X}", target),
+            });
         }
 
         Ok(())

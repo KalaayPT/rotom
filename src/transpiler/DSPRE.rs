@@ -230,15 +230,17 @@ fn convert_space_to_comma_args(
         if in_action {
             let hex_str = command.strip_prefix("0x").unwrap_or(command.as_ref());
             if let Ok(id) = u16::from_str_radix(hex_str, 16)
-                && let Some((name, _)) = db.get_movement_by_id(id) {
-                    command = Cow::Borrowed(name);
-                    is_end_movement = command == "EndMovement";
-                }
+                && let Some((name, _)) = db.get_movement_by_id(id)
+            {
+                command = Cow::Borrowed(name);
+                is_end_movement = command == "EndMovement";
+            }
         } else if let Some(id_str) = command.strip_prefix("CMD_")
             && let Ok(id) = id_str.parse::<u16>()
-                && let Some((name, _)) = db.get_script_cmd_by_id(id) {
-                    command = Cow::Borrowed(name);
-                }
+            && let Some((name, _)) = db.get_script_cmd_by_id(id)
+        {
+            command = Cow::Borrowed(name);
+        }
 
         if !in_action {
             command = canonicalize_dspre_command_name(command, db);

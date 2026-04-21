@@ -6,6 +6,7 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -721,12 +722,117 @@ impl ConstantDb {
         Ok(self.load_decomp_symbols(root, (*ws.symbols).clone()))
     }
 
-    pub fn load_decomp_symbols<P: AsRef<Path>>(&mut self, root: P, symbols: SymbolTable) -> usize {
+    pub fn load_decomp_symbols<P: AsRef<Path>>(
+        &mut self,
+        root: P,
+        mut symbols: SymbolTable,
+    ) -> usize {
+        Self::add_dspre_species_aliases(&mut symbols);
         let count = symbols.get_all_defines().len();
         self.uxie_project_root = Some(root.as_ref().to_path_buf());
         self.uxie_base_symbols = Some(symbols.clone());
         self.uxie_symbols = Some(symbols);
         count
+    }
+
+    pub fn load_dspre_text_archives<P: AsRef<Path>>(
+        &mut self,
+        root: P,
+    ) -> Result<usize, CompileError> {
+        #[derive(Deserialize)]
+        struct DspreArchiveKey {
+            key: u16,
+        }
+
+        let archives_dir = root.as_ref().join("expanded/textArchives");
+        if !archives_dir.is_dir() {
+            return Ok(0);
+        }
+
+        let mut symbols = SymbolTable::default();
+        let mut total = 0;
+
+        let entries = fs::read_dir(&archives_dir).map_err(|e| CompileError::Database {
+            message: format!(
+                "Failed to read DSPRE text archives directory '{}': {}",
+                archives_dir.display(),
+                e
+            ),
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| CompileError::Database {
+                message: format!(
+                    "Failed to read DSPRE text archive entry in '{}': {}",
+                    archives_dir.display(),
+                    e
+                ),
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+
+            let content = fs::read_to_string(&path).map_err(|e| CompileError::Database {
+                message: format!(
+                    "Failed to read DSPRE text archive '{}': {}",
+                    path.display(),
+                    e
+                ),
+            })?;
+            let archive = serde_json::from_str::<DspreArchiveKey>(&content).map_err(|e| {
+                CompileError::Database {
+                    message: format!(
+                        "Failed to parse DSPRE text archive key from '{}': {}",
+                        path.display(),
+                        e
+                    ),
+                }
+            })?;
+
+            if archive.key == 12973 {
+                total += symbols
+                    .load_dspre_sound_archive_constants(&path)
+                    .map_err(|e| CompileError::Database {
+                        message: format!(
+                            "Failed to load DSPRE sound archive constants from '{}': {}",
+                            path.display(),
+                            e
+                        ),
+                    })?;
+                continue;
+            }
+
+            let Some((prefix, index_suffix_width)) =
+                Self::dspre_text_archive_constant_format(archive.key)
+            else {
+                continue;
+            };
+
+            total += symbols
+                .load_text_bank_json_constants(&path, prefix, index_suffix_width)
+                .map_err(|e| CompileError::Database {
+                    message: format!(
+                        "Failed to load DSPRE text archive constants from '{}': {}",
+                        path.display(),
+                        e
+                    ),
+                })?;
+        }
+
+        if total == 0 {
+            return Ok(0);
+        }
+
+        Self::add_dspre_species_aliases(&mut symbols);
+
+        if let Some(existing) = &mut self.uxie_symbols {
+            existing.extend(symbols);
+        } else {
+            self.uxie_symbols = Some(symbols);
+        }
+
+        Ok(total)
     }
 
     /// Load file-local constants for a specific source file using Uxie's include handling.
@@ -906,6 +1012,33 @@ impl ConstantDb {
         }
 
         Ok(false)
+    }
+
+    fn add_dspre_species_aliases(symbols: &mut SymbolTable) {
+        for (alias, canonical) in [
+            ("SPECIES_NIDORANF", "SPECIES_NIDORAN_F"),
+            ("SPECIES_NIDORANM", "SPECIES_NIDORAN_M"),
+        ] {
+            if symbols.resolve_constant(alias).is_some() {
+                continue;
+            }
+
+            if let Some(value) = symbols.resolve_constant(canonical) {
+                symbols.insert_define(alias.to_string(), value);
+            }
+        }
+    }
+
+    fn dspre_text_archive_constant_format(key: u16) -> Option<(&'static str, Option<usize>)> {
+        match key {
+            51885 => Some(("ITEM_", None)),
+            30764 => Some(("SPECIES_", None)),
+            2566 => Some(("LOCATION_", None)),
+            55533 => Some(("TRAINER_", Some(3))),
+            64556 => Some(("TRAINER_CLASS_", None)),
+            63689 => Some(("MOVE_", None)),
+            _ => None,
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<i32> {
@@ -1308,5 +1441,251 @@ mod tests {
 
         assert!(!loaded);
         assert_eq!(table.resolve_constant("LOCALID_HIKER"), None);
+    }
+
+    #[test]
+    fn test_load_decomp_symbols_adds_dspre_nidoran_aliases() {
+        let temp_dir = unique_temp_dir("decomp_species_aliases");
+        fs::create_dir_all(&temp_dir).expect("failed to create temp dir");
+
+        let mut symbols = SymbolTable::default();
+        symbols.insert_define("SPECIES_NIDORAN_F".to_string(), 29);
+        symbols.insert_define("SPECIES_NIDORAN_M".to_string(), 32);
+
+        let mut constants = ConstantDb::new();
+        let loaded = constants.load_decomp_symbols(&temp_dir, symbols);
+
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(constants.get("SPECIES_NIDORAN_F"), Some(29));
+        assert_eq!(constants.get("SPECIES_NIDORAN_M"), Some(32));
+        assert_eq!(constants.get("SPECIES_NIDORANF"), Some(29));
+        assert_eq!(constants.get("SPECIES_NIDORANM"), Some(32));
+        assert!(
+            loaded >= 4,
+            "expected canonical constants plus the two DSPRE aliases"
+        );
+    }
+
+    #[test]
+    fn test_load_dspre_text_archives_emits_canonicalized_constants() {
+        let temp_dir = unique_temp_dir("dspre_text_archives");
+        let archives_dir = temp_dir.join("expanded/textArchives");
+        fs::create_dir_all(&archives_dir).expect("failed to create textArchives dir");
+
+        fs::write(
+            archives_dir.join("0412.json"),
+            concat!(
+                "{\n",
+                "  \"key\": 30764,\n",
+                "  \"messages\": [\n",
+                "    { \"id\": \"msg_0412_00000\", \"en_US\": \"-----\" },\n",
+                "    { \"id\": \"msg_0412_00001\", \"en_US\": \"Farfetch'd\" },\n",
+                "    { \"id\": \"msg_0412_00002\", \"en_US\": \"Nidoran♀\" },\n",
+                "    { \"id\": \"msg_0412_00003\", \"en_US\": \"Nidoran♂\" }\n",
+                "  ]\n",
+                "}\n"
+            ),
+        )
+        .expect("failed to write species archive");
+        fs::write(
+            archives_dir.join("0618.json"),
+            concat!(
+                "{\n",
+                "  \"key\": 55533,\n",
+                "  \"messages\": [\n",
+                "    { \"id\": \"msg_0618_00000\", \"en_US\": \"{TRAINER_NAME: -}\" },\n",
+                "    { \"id\": \"msg_0618_00001\", \"en_US\": \"{TRAINER_NAME:Silver}\" },\n",
+                "    { \"id\": \"msg_0618_00002\", \"en_US\": \"{TRAINER_NAME:Amy & Mimi}\" }\n",
+                "  ]\n",
+                "}\n"
+            ),
+        )
+        .expect("failed to write trainer archive");
+
+        let mut constants = ConstantDb::new();
+        let loaded = constants
+            .load_dspre_text_archives(&temp_dir)
+            .expect("failed to load dspre text archives");
+
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(loaded, 7);
+        assert_eq!(constants.get("SPECIES_NONE"), Some(0));
+        assert_eq!(constants.get("SPECIES_FARFETCHD"), Some(1));
+        assert_eq!(constants.get("SPECIES_NIDORAN_F"), Some(2));
+        assert_eq!(constants.get("SPECIES_NIDORAN_M"), Some(3));
+        assert_eq!(constants.get("SPECIES_NIDORANF"), Some(2));
+        assert_eq!(constants.get("SPECIES_NIDORANM"), Some(3));
+        assert_eq!(constants.get("TRAINER_NONE"), Some(0));
+        assert_eq!(constants.get("TRAINER_SILVER_001"), Some(1));
+        assert_eq!(constants.get("TRAINER_AMY_AND_MIMI_002"), Some(2));
+    }
+
+    #[test]
+    fn test_load_dspre_text_archives_emits_sound_constants_without_database_sounds() {
+        let temp_dir = unique_temp_dir("dspre_sound_archives");
+        let archives_dir = temp_dir.join("expanded/textArchives");
+        fs::create_dir_all(&archives_dir).expect("failed to create textArchives dir");
+
+        let mut names = vec!["UNUSED".to_string(); 1013];
+        names[0] = "PV001".to_string();
+        names[1] = "PV".to_string();
+        names[2] = "PV-END".to_string();
+        names[229] = "LAST-BGM".to_string();
+        names[230] = "PL-W012".to_string();
+        names[264] = "DUMMY01".to_string();
+        names[287] = "DUMMY02".to_string();
+        names[380] = "DP-SELECT".to_string();
+        let messages: Vec<_> = names
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| {
+                serde_json::json!({
+                    "id": format!("msg_0545_{index:05}"),
+                    "en_US": text,
+                })
+            })
+            .collect();
+        fs::write(
+            archives_dir.join("0545.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "key": 12973,
+                "messages": messages,
+            }))
+            .unwrap(),
+        )
+        .expect("failed to write sound archive");
+
+        let mut constants = ConstantDb::new();
+        let loaded = constants
+            .load_dspre_text_archives(&temp_dir)
+            .expect("failed to load dspre sound archive");
+
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(loaded, 1013);
+        assert_eq!(constants.get("SEQ_PV001"), Some(1));
+        assert_eq!(constants.get("SEQ_LAST_BGM"), Some(1226));
+        assert_eq!(constants.get("SEQ_SE_PL_W012"), Some(1350));
+        assert_eq!(constants.get("SEQ_DUMMY01"), Some(1384));
+        assert_eq!(constants.get("SEQ_DUMMY02"), Some(1407));
+        assert_eq!(constants.get("SEQ_SE_DP_SELECT"), Some(1500));
+        assert_eq!(constants.get("SEQ_SE_CONFIRM"), Some(1500));
+    }
+
+    #[test]
+    #[ignore = "requires local DSPRE fixture tree"]
+    fn integration_dspre_platinum_sound_archive_covers_fixture_script_symbols() {
+        let root = std::path::Path::new("tests/fixtures/pt_DSPRE_contents");
+        assert!(
+            root.is_dir(),
+            "missing DSPRE fixture tree: {}",
+            root.display()
+        );
+
+        let mut constants = ConstantDb::new();
+        constants
+            .load_dspre_text_archives(root)
+            .expect("failed to load platinum DSPRE text archives");
+
+        let sound_regex = regex::Regex::new(r"\bSEQ_[A-Z0-9_]+\b").unwrap();
+        for entry in fs::read_dir(root.join("expanded/scripts")).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("script") {
+                continue;
+            }
+            let content = fs::read_to_string(&path).unwrap();
+            for capture in sound_regex.find_iter(&content) {
+                let symbol = capture.as_str();
+                assert!(
+                    constants.get(symbol).is_some(),
+                    "missing platinum DSPRE sound constant '{}' referenced by {}",
+                    symbol,
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local DSPRE fixture tree"]
+    fn integration_dspre_hgss_sound_archive_covers_fixture_script_symbols() {
+        let root = std::path::Path::new("tests/fixtures/hg_DSPRE_contents");
+        assert!(
+            root.is_dir(),
+            "missing DSPRE fixture tree: {}",
+            root.display()
+        );
+
+        let mut constants = ConstantDb::new();
+        constants
+            .load_dspre_text_archives(root)
+            .expect("failed to load hgss DSPRE text archives");
+
+        let sound_regex = regex::Regex::new(r"\bSEQ_[A-Z0-9_]+\b").unwrap();
+        for entry in fs::read_dir(root.join("expanded/scripts")).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("script") {
+                continue;
+            }
+            let content = fs::read_to_string(&path).unwrap();
+            for capture in sound_regex.find_iter(&content) {
+                let symbol = capture.as_str();
+                assert!(
+                    constants.get(symbol).is_some(),
+                    "missing HGSS DSPRE sound constant '{}' referenced by {}",
+                    symbol,
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local DSPRE fixture tree"]
+    fn integration_dspre_trainer_archives_match_shipped_trainer_banks() {
+        for (root, expected_bank) in [
+            (
+                std::path::Path::new("tests/fixtures/pt_DSPRE_contents"),
+                std::path::Path::new("src/db/trainers.json"),
+            ),
+            (
+                std::path::Path::new("tests/fixtures/hg_DSPRE_contents"),
+                std::path::Path::new("src/db/hgss/trainers.json"),
+            ),
+        ] {
+            assert!(
+                root.is_dir(),
+                "missing DSPRE fixture tree: {}",
+                root.display()
+            );
+            assert!(
+                expected_bank.is_file(),
+                "missing trainer bank fixture: {}",
+                expected_bank.display()
+            );
+
+            let mut constants = ConstantDb::new();
+            constants
+                .load_dspre_text_archives(root)
+                .expect("failed to load DSPRE trainer archive");
+
+            let expected: std::collections::HashMap<String, String> =
+                serde_json::from_str(&fs::read_to_string(expected_bank).unwrap()).unwrap();
+            for (id, symbol) in expected {
+                let id = id.parse::<i32>().unwrap();
+                assert_eq!(
+                    constants.get(&symbol),
+                    Some(id),
+                    "trainer symbol '{}' from {} did not resolve to {}",
+                    symbol,
+                    expected_bank.display(),
+                    id
+                );
+            }
+        }
     }
 }

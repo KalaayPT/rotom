@@ -17,9 +17,10 @@ fn format_arg(arg: &Arg, param_name: Option<&str>) -> String {
     match arg {
         Arg::Value(v) => {
             if param_name == Some("condition")
-                && let Some(cond) = ComparisonOperator::from_id(*v as u8) {
-                    return cond.as_str().to_string();
-                }
+                && let Some(cond) = ComparisonOperator::from_id(*v as u8)
+            {
+                return cond.as_str().to_string();
+            }
             if *v >= 0x4000 {
                 format!("0x{:X}", v)
             } else {

@@ -1075,9 +1075,11 @@ MoveLabel:
 
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("action MoveLabel"));
-        assert!(output
-            .source
-            .contains("    EndMovement\n_unused_end_0:\n    End\n"));
+        assert!(
+            output
+                .source
+                .contains("    EndMovement\n_unused_end_0:\n    End\n")
+        );
     }
 
     #[test]
@@ -1350,9 +1352,11 @@ Test:
     end
 ";
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(output
-            .source
-            .contains("    CopyVar 0x8008, VAR_SPECIAL_RESULT"));
+        assert!(
+            output
+                .source
+                .contains("    CopyVar 0x8008, VAR_SPECIAL_RESULT")
+        );
         assert!(output.source.contains("    CompareVarValue 0x8008, 5"));
         assert!(output.source.contains("    JumpIf EQUAL, _0071"));
         assert!(output.source.contains("    CompareVarValue 0x8008, 0"));
@@ -1376,9 +1380,11 @@ Test:
 
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("// file comment"));
-        assert!(output
-            .source
-            .contains("    SetVar VAR_RESULT, 1 // inline comment"));
+        assert!(
+            output
+                .source
+                .contains("    SetVar VAR_RESULT, 1 // inline comment")
+        );
         assert!(output.source.contains("// block comment"));
     }
 

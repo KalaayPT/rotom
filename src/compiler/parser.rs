@@ -4,7 +4,7 @@ use super::{
         Statement, StatementKind,
     },
     lexer::Lexer,
-    parse_error::{parse_error, ParseResult},
+    parse_error::{ParseResult, parse_error},
     token::{Token, TokenType},
 };
 
@@ -833,10 +833,12 @@ function TestFunc #2:
         let mut parser = Parser::new(lexer);
         let result = parser.parse_script_file();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Duplicate definition for function 'TestFunc'"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Duplicate definition for function 'TestFunc'")
+        );
     }
 
     #[test]
