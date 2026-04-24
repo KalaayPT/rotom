@@ -108,14 +108,14 @@ pub fn compile_to_bytes(
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> Result<Vec<u8>, CompileError> {
-    compile_to_bytes_with_options(source, db, constants, true)
+    compile_to_bytes_with_options(source, db, constants, 1)
 }
 
 pub fn compile_to_bytes_with_options(
     source: &str,
     db: &DatabaseV2,
     constants: &ConstantDb,
-    emit_end_marker: bool,
+    jump_table_end_marker_count: u8,
 ) -> Result<Vec<u8>, CompileError> {
     let cleaned_source = compiler::preprocessor::preprocess(source).cleaned_source;
     let lexer = Lexer::new(&cleaned_source);
@@ -129,7 +129,7 @@ pub fn compile_to_bytes_with_options(
     let items = lowerer.lower_script_file(&file)?;
 
     let mut emitter = Emitter::new(db);
-    emitter.emit_script_file(&items, emit_end_marker)
+    emitter.emit_script_file(&items, jump_table_end_marker_count)
 }
 
 pub fn compile_levelscript_to_bytes(
@@ -224,9 +224,9 @@ fn compile_file_internal(
             }
         })?
     } else {
-        let (rotom_source, emit_end_marker) = match extension.as_str() {
-            "rotom" => (source, true),
-            "script" => (transpiler::transpile_dspre(&source, Some(db)), true),
+        let (rotom_source, jump_table_end_marker_count) = match extension.as_str() {
+            "rotom" => (source, 1),
+            "script" => (transpiler::transpile_dspre(&source, Some(db)), 1),
             "s" => {
                 let result = transpiler::transpile_decomp(&source, Some(db)).map_err(|e| {
                     CompileFileError::CompileError {
@@ -236,7 +236,7 @@ fn compile_file_internal(
                         source: source.clone(),
                     }
                 })?;
-                (result.source, result.emit_end_marker)
+                (result.source, result.jump_table_end_marker_count)
             }
             _ => {
                 return Err(CompileFileError::IoError(CompileError::Io {
@@ -245,7 +245,7 @@ fn compile_file_internal(
             }
         };
 
-        compile_to_bytes_with_options(&rotom_source, db, constants, emit_end_marker).map_err(
+        compile_to_bytes_with_options(&rotom_source, db, constants, jump_table_end_marker_count).map_err(
             |e| CompileFileError::CompileError {
                 error: e,
                 source: rotom_source.clone(),

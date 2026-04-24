@@ -49,7 +49,7 @@ impl<'a> Emitter<'a> {
     pub fn emit_script_file(
         &mut self,
         items: &[TopLevelItem],
-        emit_end_marker: bool,
+        jump_table_end_marker_count: u8,
     ) -> ParseResult<Vec<u8>> {
         // Collect jump table slots from all functions
         // Sort by slot ID to match game expectations (jump table entries are indexed by slot ID)
@@ -74,7 +74,7 @@ impl<'a> Emitter<'a> {
             });
             self.emit_u32(0);
         }
-        if emit_end_marker {
+        for _ in 0..jump_table_end_marker_count {
             self.output.extend_from_slice(&JUMP_TABLE_END_MARKER);
             self.pc += JUMP_TABLE_END_MARKER.len();
         }
@@ -452,7 +452,6 @@ mod tests {
             assert!(result.is_ok());
         }
 
-        assert!(emitter.output.is_empty());
         // FaceNorth(1) + WalkNormalSouth(3) + EndMovement(0) = 3 movements * 4 bytes each = 12 bytes
         assert_eq!(emitter.output.len(), 12);
     }
@@ -487,7 +486,6 @@ mod tests {
             assert!(result.is_ok(), "Failed to emit {:?}: {:?}", op, result);
         }
 
-        assert!(emitter.output.is_empty());
         // FaceNorth(1) + EndMovement(0) = 2 movements * 4 bytes each = 8 bytes
         assert_eq!(emitter.output.len(), 8);
     }
@@ -720,7 +718,7 @@ mod tests {
             }),
         ];
 
-        let output = emitter.emit_script_file(&items, true).unwrap();
+        let output = emitter.emit_script_file(&items, 1).unwrap();
 
         // Jump table: 2 entries * 4 bytes = 8 bytes, plus 2-byte marker
         // Marker is 0xFD13 = [0x13, 0xFD]
@@ -763,7 +761,7 @@ mod tests {
             ],
         })];
 
-        let output = emitter.emit_script_file(&items, true).unwrap();
+        let output = emitter.emit_script_file(&items, 1).unwrap();
 
         // Should compile successfully with the label reference resolved
         assert!(
@@ -813,7 +811,7 @@ mod tests {
             }),
         ];
 
-        let output = emitter.emit_script_file(&items, true).unwrap();
+        let output = emitter.emit_script_file(&items, 1).unwrap();
 
         // Jump table: 1 entry (4 bytes) + marker (2 bytes) = 6 bytes
         // Function: End = 2 bytes, but at offset 6, so function starts at 6
@@ -857,7 +855,7 @@ mod tests {
         };
 
         let items = vec![TopLevelItem::Function(ir_func)];
-        let output = emitter.emit_script_file(&items, true).unwrap();
+        let output = emitter.emit_script_file(&items, 1).unwrap();
 
         // Jump table should have two entries (sorted by ID)
         // Entry 1 (ID 1) -> Pointer to End

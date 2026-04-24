@@ -41,7 +41,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone)]
 pub struct TranspileResult {
     pub source: String,
-    pub emit_end_marker: bool,
+    pub jump_table_end_marker_count: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +104,7 @@ struct SwitchCaseLine {
 
 #[derive(Default)]
 struct RenderState {
-    has_script_entry_end: bool,
+    jump_table_end_marker_count: u8,
     seen_script_entry_end: bool,
     seen_first_label_after_entry_end: bool,
     seen_labels: HashSet<String>,
@@ -191,7 +191,7 @@ fn render_transpile_body(
 
     Ok(TranspileResult {
         source: output,
-        emit_end_marker: state.has_script_entry_end,
+        jump_table_end_marker_count: state.jump_table_end_marker_count,
     })
 }
 
@@ -409,7 +409,9 @@ fn skip_or_handle_structural_line(
         StructuralLine::ScriptEntry(_) | StructuralLine::AssemblerDirective => Ok(true),
         StructuralLine::ScriptEntryEnd => {
             state.seen_script_entry_end = true;
-            state.has_script_entry_end = true;
+            if state.jump_table_end_marker_count < u8::MAX {
+                state.jump_table_end_marker_count += 1;
+            }
             Ok(true)
         }
         StructuralLine::Label(label_name) => {

@@ -78,16 +78,14 @@ pub struct BulkCompileResult {
     pub outcomes: Mutex<HashMap<String, CompileOutcome>>,
 }
 
-const DEFAULT_POKEPLATINUM_ROOT: &str = "/home/kalaay/dev/pokeplatinum";
-const DEFAULT_POKEHEARTGOLD_ROOT: &str = "/home/kalaay/dev/pokeheartgold";
-const DEFAULT_DSPRE_PLATINUM_ROOT: &str = "/home/kalaay/Desktop/pt_DSPRE_contents";
-const DEFAULT_DSPRE_HEARTGOLD_ROOT: &str = "/home/kalaay/Desktop/hg_DSPRE_contents";
-const DSPRE_PLATINUM_KNOWN_PADDING_MISMATCH_ID: &str = "0000";
+fn fixture_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
 
 fn get_pokeplatinum_root() -> PathBuf {
     std::env::var("POKEPLATINUM_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_POKEPLATINUM_ROOT))
+        .unwrap_or_else(|_| fixture_root().join("decomp/pokeplatinum"))
 }
 
 fn get_scripts_dir() -> PathBuf {
@@ -134,19 +132,19 @@ fn find_levelscripts() -> Vec<PathBuf> {
 fn get_pokeheartgold_root() -> PathBuf {
     std::env::var("POKEHEARTGOLD_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_POKEHEARTGOLD_ROOT))
+        .unwrap_or_else(|_| fixture_root().join("decomp/pokeheartgold"))
 }
 
 fn get_dspre_platinum_root() -> PathBuf {
     std::env::var("DSPRE_PLATINUM_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_DSPRE_PLATINUM_ROOT))
+        .unwrap_or_else(|_| fixture_root().join("dspre/pt_DSPRE_contents"))
 }
 
 fn get_dspre_heartgold_root() -> PathBuf {
     std::env::var("DSPRE_HEARTGOLD_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_DSPRE_HEARTGOLD_ROOT))
+        .unwrap_or_else(|_| fixture_root().join("dspre/hg_DSPRE_contents"))
 }
 
 fn get_dspre_platinum_scripts_dir() -> PathBuf {
@@ -309,7 +307,7 @@ fn compile_single_script(
             &transpile_result.source,
             db,
             &constants,
-            transpile_result.emit_end_marker,
+            transpile_result.jump_table_end_marker_count,
         ) {
             Ok(b) => b,
             Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
@@ -329,13 +327,6 @@ fn compile_single_script(
     }
 }
 
-fn has_jump_table_end_marker(bytes: &[u8]) -> bool {
-    const MARKER: [u8; 2] = [0x13, 0xFD];
-    bytes
-        .chunks_exact(4)
-        .any(|chunk| chunk[0] == MARKER[0] && chunk[1] == MARKER[1])
-}
-
 fn round_trip_single_binary(
     binary_path: &Path,
     db: &DatabaseV2,
@@ -347,7 +338,6 @@ fn round_trip_single_binary(
     };
     let expected_size = original_bytes.len();
     let expected_hash = sha256_hex(&original_bytes);
-    let emit_end_marker = has_jump_table_end_marker(&original_bytes);
 
     let ir = match rotom::decompile_to_ir(original_bytes, db) {
         Ok(ir) => ir,
@@ -365,8 +355,8 @@ fn round_trip_single_binary(
                 ));
             }
         },
-        ScriptOutput::Normal(_) => {
-            match compile_to_bytes_with_options(&source, db, constants, emit_end_marker) {
+        ScriptOutput::Normal { jump_table_end_marker_count, .. } => {
+            match compile_to_bytes_with_options(&source, db, constants, *jump_table_end_marker_count) {
                 Ok(b) => b,
                 Err(e) => {
                     return CompileOutcome::CompileError(format!("Recompile failed: {:?}", e));
@@ -404,7 +394,7 @@ fn compile_dspre_script(
     let rotom_source = transpile_dspre(&source, Some(db));
 
     // 3. Compile to binary (no expected hash - just check if it compiles)
-    match compile_to_bytes_with_options(&rotom_source, db, constants, true) {
+    match compile_to_bytes_with_options(&rotom_source, db, constants, 1) {
         Ok(_) => CompileOutcome::Match, // "Match" means successful compile
         Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
     }
@@ -680,60 +670,6 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
             }
         }
     }
-}
-
-fn is_known_dspre_platinum_padding_mismatch(script_name: &str, outcome: &CompileOutcome) -> bool {
-    if script_name != DSPRE_PLATINUM_KNOWN_PADDING_MISMATCH_ID {
-        return false;
-    }
-
-    match outcome {
-        CompileOutcome::HashMismatch {
-            expected_size,
-            actual_size,
-            ..
-        } => *expected_size == 16 && *actual_size == 12,
-        _ => false,
-    }
-}
-
-fn assert_dspre_platinum_round_trip_with_known_exception(result: &BulkCompileResult) {
-    let outcomes = result.outcomes.lock().unwrap();
-    let mut unexpected_failures: Vec<String> = Vec::new();
-    let mut known_exceptions: Vec<String> = Vec::new();
-
-    for (script_name, outcome) in outcomes.iter() {
-        if matches!(outcome, CompileOutcome::Match) {
-            continue;
-        }
-
-        if is_known_dspre_platinum_padding_mismatch(script_name, outcome) {
-            known_exceptions.push(script_name.clone());
-            continue;
-        }
-
-        unexpected_failures.push(script_name.clone());
-    }
-
-    known_exceptions.sort();
-    unexpected_failures.sort();
-
-    if !known_exceptions.is_empty() {
-        println!();
-        println!("WARNING: Known DSPRE Platinum round-trip mismatch exception(s):");
-        for script_name in &known_exceptions {
-            println!(
-                "  {} - expected known original padding mismatch (16 bytes vs 12 bytes)",
-                script_name
-            );
-        }
-    }
-
-    assert!(
-        unexpected_failures.is_empty(),
-        "DSPRE Platinum round-trip has unexpected failures beyond known exception(s): {:?}",
-        unexpected_failures
-    );
 }
 
 fn classify_compile_error(msg: &str) -> String {
@@ -1136,7 +1072,7 @@ fn compile_heartgold_single_script(
             &transpile_result.source,
             db,
             &constants,
-            transpile_result.emit_end_marker,
+            transpile_result.jump_table_end_marker_count,
         ) {
             Ok(_) => CompileOutcome::Match, // Compiled successfully
             Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),

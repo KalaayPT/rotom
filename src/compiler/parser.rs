@@ -127,7 +127,7 @@ impl<'a> Parser<'a> {
         Ok(ScriptFile {
             aliases,
             items,
-            emit_end_marker: true,
+            jump_table_end_marker_count: 1,
         })
     }
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {

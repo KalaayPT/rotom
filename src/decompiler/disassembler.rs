@@ -10,7 +10,10 @@ use super::levelscript::LevelScript;
 
 #[derive(Debug, Clone)]
 pub enum ScriptOutput {
-    Normal(Vec<TopLevelItem>),
+    Normal {
+        items: Vec<TopLevelItem>,
+        jump_table_end_marker_count: u8,
+    },
     Levelscript(LevelScript),
 }
 
@@ -51,6 +54,7 @@ pub struct Disassembler<'a> {
     script_type: ScriptType,
     jump_table_end: usize,
     has_jump_table_marker: bool,
+    jump_table_end_marker_count: u8,
     script_slots: BTreeMap<usize, Vec<u32>>,
     symbols: HashMap<usize, LabelInfo>,
     action_offsets: HashSet<usize>,
@@ -68,6 +72,7 @@ impl<'a> Disassembler<'a> {
             script_type: ScriptType::Normal,
             jump_table_end: 0,
             has_jump_table_marker: false,
+            jump_table_end_marker_count: 1,
             script_slots: BTreeMap::new(),
             symbols: HashMap::new(),
             action_offsets: HashSet::new(),
@@ -114,7 +119,13 @@ impl<'a> Disassembler<'a> {
         self.script_type = self.detect_script_type();
 
         match self.script_type {
-            ScriptType::Normal => self.disassemble_normal_script().map(ScriptOutput::Normal),
+            ScriptType::Normal => {
+                self.disassemble_normal_script()
+                    .map(|(items, count)| ScriptOutput::Normal {
+                        items,
+                        jump_table_end_marker_count: count,
+                    })
+            }
             ScriptType::Levelscript => self
                 .disassemble_levelscript()
                 .map(ScriptOutput::Levelscript),
@@ -125,16 +136,16 @@ impl<'a> Disassembler<'a> {
         LevelScript::from_bytes(&self.bytes).map_err(invalid_format)
     }
 
-    fn disassemble_normal_script(&mut self) -> DecompileResult<Vec<TopLevelItem>> {
+    fn disassemble_normal_script(&mut self) -> DecompileResult<(Vec<TopLevelItem>, u8)> {
         self.parse_jump_table()?;
-        self.discover_boundaries()?;
-        self.discover_gap_targets()?;
+        self.discover_boundaries();
+        self.discover_gap_targets();
         let items = self.disassemble_chunks()?;
         Self::validate_pointer_labels(&items)?;
-        Ok(items)
+        Ok((items, self.jump_table_end_marker_count))
     }
 
-    fn discover_gap_targets(&mut self) -> DecompileResult<()> {
+    fn discover_gap_targets(&mut self) {
         let code_start = self.code_start();
 
         loop {
@@ -186,8 +197,6 @@ impl<'a> Disassembler<'a> {
                 break;
             }
         }
-
-        Ok(())
     }
 
     fn validate_pointer_labels(items: &[TopLevelItem]) -> DecompileResult<()> {
@@ -293,6 +302,21 @@ impl<'a> Disassembler<'a> {
         let table_end = marker_pos.unwrap_or_else(|| self.find_jump_table_boundary());
         self.jump_table_end = table_end;
 
+        if let Some(pos) = marker_pos {
+            let mut count = 1u8;
+            let mut cursor = pos + 2;
+            while cursor + 2 <= self.bytes.len()
+                && self.bytes[cursor..cursor + 2] == JUMP_TABLE_END_MARKER
+                && count < u8::MAX
+            {
+                count += 1;
+                cursor += 2;
+            }
+            self.jump_table_end_marker_count = count;
+        } else {
+            self.jump_table_end_marker_count = 0;
+        }
+
         if table_end % 4 != 0 {
             return Err(invalid_format(format!(
                 "Jump table size {} is not a multiple of 4",
@@ -338,13 +362,13 @@ impl<'a> Disassembler<'a> {
 
     fn code_start(&self) -> usize {
         if self.has_jump_table_marker {
-            self.jump_table_end + 2
+            self.jump_table_end + 2 * usize::from(self.jump_table_end_marker_count)
         } else {
             self.jump_table_end
         }
     }
 
-    fn discover_boundaries(&mut self) -> DecompileResult<()> {
+    fn discover_boundaries(&mut self) {
         let code_start = self.code_start();
         let mut pending_jump_targets: Vec<usize> = Vec::new();
 
@@ -396,14 +420,11 @@ impl<'a> Disassembler<'a> {
         }
 
         self.insert_missing_action_symbols();
-
-        self.discover_remaining_targets()?;
+        self.discover_remaining_targets();
         self.insert_missing_action_symbols();
-
-        Ok(())
     }
 
-    fn discover_remaining_targets(&mut self) -> DecompileResult<()> {
+    fn discover_remaining_targets(&mut self) {
         let code_start = self.code_start();
         let mut missed_targets: Vec<usize> = Vec::new();
         let mut missed_actions: Vec<usize> = Vec::new();
@@ -468,8 +489,6 @@ impl<'a> Disassembler<'a> {
                 name: format!("_L{:04X}", target),
             });
         }
-
-        Ok(())
     }
 
     fn scan_function_for_targets(&mut self, start: usize, targets: &mut Vec<usize>) -> usize {
@@ -626,41 +645,20 @@ impl<'a> Disassembler<'a> {
             return Ok(Vec::new());
         }
 
-        let mut items = self.scan_gap_for_movements(gap_start, gap_end)?;
-        let movement_covered_end = items
-            .iter()
-            .filter_map(|item| match item {
-                TopLevelItem::Action(action) => action
-                    .instructions
-                    .last()
-                    .and_then(|last| {
-                        if let IrOpcode::Command { name, .. } = last {
-                            if Self::is_end_movement_name(name) {
-                                Some(())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .map(|()| ()),
-                TopLevelItem::Function(_) => None,
-            })
-            .count();
+        let (mut items, movement_end) = self.scan_gap_for_movements(gap_start, gap_end)?;
 
-        if movement_covered_end == 0 {
-            let gap_size = gap_end - gap_start;
+        if movement_end < gap_end {
+            let tail_size = gap_end - movement_end;
             let is_small_zero_padding =
-                gap_size < 4 && self.bytes[gap_start..gap_end].iter().all(|&b| b == 0);
+                tail_size < 4 && self.bytes[movement_end..gap_end].iter().all(|&b| b == 0);
             if !is_small_zero_padding {
-                self.discover_targets_from_offset(gap_start);
+                self.discover_targets_from_offset(movement_end);
                 let (func_opt, actual_end) =
-                    self.disassemble_function_with_span(gap_start, gap_end)?;
+                    self.disassemble_function_with_span(movement_end, gap_end)?;
                 if let Some(func) = func_opt {
                     items.push(TopLevelItem::Function(func));
                 }
-                if actual_end > gap_start && actual_end < gap_end {
+                if actual_end > movement_end && actual_end < gap_end {
                     let remaining = self.recover_gap_items(actual_end, gap_end)?;
                     items.extend(remaining);
                 }
@@ -674,7 +672,7 @@ impl<'a> Disassembler<'a> {
         &mut self,
         gap_start: usize,
         gap_end: usize,
-    ) -> DecompileResult<Vec<TopLevelItem>> {
+    ) -> DecompileResult<(Vec<TopLevelItem>, usize)> {
         let mut items = Vec::new();
         let mut current_start = gap_start;
 
@@ -714,7 +712,7 @@ impl<'a> Disassembler<'a> {
             }
         }
 
-        Ok(items)
+        Ok((items, current_start))
     }
 
     fn find_next_terminator(&self, start: usize, end: usize) -> Option<usize> {
@@ -1072,12 +1070,6 @@ impl<'a> Disassembler<'a> {
 
     fn is_soft_terminator_name(name: &str) -> bool {
         name.eq_ignore_ascii_case("return")
-    }
-
-    fn is_end_movement_name(name: &str) -> bool {
-        name.eq_ignore_ascii_case("EndMovement")
-            || name.eq_ignore_ascii_case("end_movement")
-            || name.eq_ignore_ascii_case("step_end")
     }
 
     fn extract_jump_target(&self, pc: usize, cmd: &Command) -> Option<usize> {
