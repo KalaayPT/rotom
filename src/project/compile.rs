@@ -30,6 +30,7 @@ struct PendingCompile {
     source_hash: u64,
     dependency_hashes: HashMap<String, u64>,
     constants: Option<ConstantDb>,
+    was_transpiled: bool,
 }
 
 struct PlannedCompileWork {
@@ -289,6 +290,13 @@ fn plan_compile_job(
         return PlannedCompileJob::Skip;
     }
 
+    let extension = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let was_transpiled = extension == "s" || extension == "script";
+
     PlannedCompileJob::Job(Box::new(PendingCompile {
         relative_path,
         input: input.to_path_buf(),
@@ -296,6 +304,7 @@ fn plan_compile_job(
         source_hash,
         dependency_hashes,
         constants: file_constants,
+        was_transpiled,
     }))
 }
 
@@ -405,10 +414,12 @@ fn execute_compile_jobs(
                             path: job.output.clone(),
                             source,
                         })?;
-                state.entries.insert(
-                    job.relative_path,
-                    FileState::compiled(job.source_hash, output_hash, job.dependency_hashes),
-                );
+                let file_state = if job.was_transpiled {
+                    FileState::transpiled(job.source_hash, output_hash, job.dependency_hashes)
+                } else {
+                    FileState::compiled(job.source_hash, output_hash, job.dependency_hashes)
+                };
+                state.entries.insert(job.relative_path, file_state);
                 successes.push(success);
             }
             Err(failure) => {
@@ -480,10 +491,9 @@ fn update_decompile_state(
                 path: success.input.clone(),
                 source,
             })?;
-        state.entries.insert(
-            relative_path,
-            FileState::decompiled(source_hash, output_hash),
-        );
+        let mut file_state = FileState::decompiled(source_hash, output_hash);
+        file_state.quirks = success.quirks.clone();
+        state.entries.insert(relative_path, file_state);
     }
 
     state.mark_metadata(db_hash, COMPILER_VERSION);

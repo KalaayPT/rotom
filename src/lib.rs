@@ -79,6 +79,7 @@ pub struct DecompileFileResult {
     pub input: PathBuf,
     pub output: PathBuf,
     pub size: usize,
+    pub quirks: Vec<crate::compile_state::BinaryQuirk>,
 }
 
 #[derive(Debug, Serialize)]
@@ -570,6 +571,13 @@ fn decompile_file_internal(
         error: e,
     })?;
 
+    let quirks = match &script_output {
+        ScriptOutput::Normal { jump_table_end_marker_count, .. } if *jump_table_end_marker_count != 1 => {
+            vec![crate::compile_state::BinaryQuirk::JumpTableEndMarkerCount(*jump_table_end_marker_count)]
+        }
+        _ => Vec::new(),
+    };
+
     let is_levelscript = matches!(script_output, ScriptOutput::Levelscript(_));
 
     let output_path = resolve_decompile_output_path(input, output_file, output_dir, is_levelscript);
@@ -605,6 +613,7 @@ fn decompile_file_internal(
         input: input.to_path_buf(),
         output: output_path,
         size,
+        quirks,
     })
 }
 

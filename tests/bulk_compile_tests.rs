@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 
 use rotom::compile_levelscript_json_to_bytes;
 use rotom::compile_levelscript_to_bytes;
-use rotom::compile_to_bytes_with_options;
+use rotom::{compile_to_bytes, compile_to_bytes_with_options};
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::decompiler::disassembler::ScriptOutput;
 use rotom::decompiler::ir_to_source;
@@ -356,7 +356,32 @@ fn round_trip_single_binary(
             }
         },
         ScriptOutput::Normal { jump_table_end_marker_count, .. } => {
-            match compile_to_bytes_with_options(&source, db, constants, *jump_table_end_marker_count) {
+            // Round-trip through an actual file to ensure source text round-trips
+            let temp_path = std::env::temp_dir().join(format!(
+                "rotom_roundtrip_{}.rotom",
+                binary_path.file_stem().unwrap().to_string_lossy()
+            ));
+            if let Err(e) = std::fs::write(&temp_path, &source) {
+                return CompileOutcome::IoError(format!(
+                    "Failed to write round-trip temp file: {}",
+                    e
+                ));
+            }
+            let source_from_disk = match std::fs::read_to_string(&temp_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    return CompileOutcome::IoError(format!(
+                        "Failed to read round-trip temp file: {}",
+                        e
+                    ));
+                }
+            };
+            match compile_to_bytes_with_options(
+                &source_from_disk,
+                db,
+                constants,
+                *jump_table_end_marker_count,
+            ) {
                 Ok(b) => b,
                 Err(e) => {
                     return CompileOutcome::CompileError(format!("Recompile failed: {:?}", e));
@@ -394,7 +419,7 @@ fn compile_dspre_script(
     let rotom_source = transpile_dspre(&source, Some(db));
 
     // 3. Compile to binary (no expected hash - just check if it compiles)
-    match compile_to_bytes_with_options(&rotom_source, db, constants, 1) {
+    match compile_to_bytes(&rotom_source, db, constants) {
         Ok(_) => CompileOutcome::Match, // "Match" means successful compile
         Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
     }

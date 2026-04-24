@@ -16,17 +16,25 @@ pub struct CompileState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BinaryQuirk {
+    JumpTableEndMarkerCount(u8),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileState {
     pub source_hash: u64,
     pub output_hash: u64,
     pub dependency_hashes: HashMap<String, u64>,
     pub status: FileStatus,
     pub last_compiled: DateTime<Utc>,
+    #[serde(default)]
+    pub quirks: Vec<BinaryQuirk>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FileStatus {
     Compiled,
+    Transpiled,
     Decompiled,
     Dirty,
 }
@@ -43,6 +51,7 @@ impl FileState {
             dependency_hashes,
             status: FileStatus::Compiled,
             last_compiled: Utc::now(),
+            quirks: Vec::new(),
         }
     }
 
@@ -53,6 +62,7 @@ impl FileState {
             dependency_hashes: HashMap::new(),
             status: FileStatus::Decompiled,
             last_compiled: Utc::now(),
+            quirks: Vec::new(),
         }
     }
 
@@ -67,7 +77,28 @@ impl FileState {
             dependency_hashes,
             status: FileStatus::Dirty,
             last_compiled: Utc::now(),
+            quirks: Vec::new(),
         }
+    }
+
+    pub fn transpiled(
+        source_hash: u64,
+        output_hash: u64,
+        dependency_hashes: HashMap<String, u64>,
+    ) -> Self {
+        Self {
+            source_hash,
+            output_hash,
+            dependency_hashes,
+            status: FileStatus::Transpiled,
+            last_compiled: Utc::now(),
+            quirks: Vec::new(),
+        }
+    }
+
+    pub fn with_quirks(mut self, quirks: Vec<BinaryQuirk>) -> Self {
+        self.quirks = quirks;
+        self
     }
 }
 
