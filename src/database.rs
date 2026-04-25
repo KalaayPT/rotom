@@ -543,7 +543,7 @@ pub struct ConstantDb {
     /// Decomp project root for include resolution
     uxie_project_root: Option<PathBuf>,
     /// Base Uxie symbol table loaded for the whole decomp project
-    uxie_base_symbols: Option<SymbolTable>,
+    uxie_base_symbols: Option<Arc<SymbolTable>>,
     /// Active Uxie symbol table, optionally extended with file-local constants
     uxie_symbols: Option<SymbolTable>,
 }
@@ -730,7 +730,7 @@ impl ConstantDb {
         Self::add_dspre_species_aliases(&mut symbols);
         let count = symbols.get_all_defines().len();
         self.uxie_project_root = Some(root.as_ref().to_path_buf());
-        self.uxie_base_symbols = Some(symbols.clone());
+        self.uxie_base_symbols = Some(Arc::new(symbols.clone()));
         self.uxie_symbols = Some(symbols);
         count
     }
@@ -857,7 +857,7 @@ impl ConstantDb {
         };
 
         let include_dirs = Self::decomp_include_dirs(project_root);
-        let mut collected = SymbolTable::with_parent(Arc::new(base_symbols.clone()));
+        let mut collected = SymbolTable::with_parent(Arc::clone(base_symbols));
         let mut unresolved_include_handler = |table: &mut SymbolTable,
                                               parent_dir: &Path,
                                               include_dirs: &[PathBuf],
@@ -931,7 +931,19 @@ impl ConstantDb {
 
     /// Clone the constant database and apply file-local constants for one source file.
     pub fn clone_for_script<Q: AsRef<Path>>(&self, script_path: Q) -> Result<Self, CompileError> {
-        let mut cloned = self.clone();
+        let mut cloned = Self {
+            constants: self.constants.clone(),
+            uxie_project_root: self.uxie_project_root.clone(),
+            uxie_base_symbols: self.uxie_base_symbols.clone(),
+            // Decomp projects use uxie_base_symbols globally and create a
+            // file-local overlay in load_script_constants.  DSPRE projects
+            // store everything in uxie_symbols, so we must preserve it.
+            uxie_symbols: if self.uxie_base_symbols.is_some() {
+                None
+            } else {
+                self.uxie_symbols.clone()
+            },
+        };
         cloned.load_script_constants(script_path)?;
         Ok(cloned)
     }
