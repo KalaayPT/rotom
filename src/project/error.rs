@@ -40,6 +40,12 @@ pub enum ProjectError {
         source: toml::ser::Error,
     },
 
+    #[error("Failed to serialize JSON: {source}")]
+    SerializeJson {
+        #[source]
+        source: serde_json::Error,
+    },
+
     #[error("rotom.toml is missing [database].default_file")]
     MissingDefaultDatabase,
 

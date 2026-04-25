@@ -409,9 +409,7 @@ fn skip_or_handle_structural_line(
         StructuralLine::ScriptEntry(_) | StructuralLine::AssemblerDirective => Ok(true),
         StructuralLine::ScriptEntryEnd => {
             state.seen_script_entry_end = true;
-            if state.jump_table_end_marker_count < u8::MAX {
-                state.jump_table_end_marker_count += 1;
-            }
+            state.jump_table_end_marker_count = state.jump_table_end_marker_count.saturating_add(1);
             Ok(true)
         }
         StructuralLine::Label(label_name) => {
@@ -543,6 +541,7 @@ fn collect_jump_table_and_movement_labels(
     let mut jump_table: Vec<String> = Vec::new();
     let mut movement_labels: HashSet<String> = HashSet::new();
     let mut current_label: Option<String> = None;
+    let mut saw_balign = false;
 
     for (line_idx, line) in lines.iter().enumerate() {
         let statement = match preprocess_body_line(line.trim()) {
@@ -558,11 +557,29 @@ fn collect_jump_table_and_movement_labels(
         match classify_structural_line(statement) {
             StructuralLine::ScriptEntry(name) => {
                 jump_table.push(name.to_string());
+                saw_balign = false;
                 continue;
             }
-            StructuralLine::ScriptEntryEnd | StructuralLine::AssemblerDirective => continue,
+            StructuralLine::ScriptEntryEnd => {
+                saw_balign = false;
+                continue;
+            }
+            StructuralLine::AssemblerDirective => {
+                // .balign before a label is a strong signal for movement data
+                if statement.trim().starts_with(".balign") {
+                    saw_balign = true;
+                }
+                continue;
+            }
             StructuralLine::Label(label_name) => {
-                current_label = Some(label_name.to_string());
+                // If a label follows .balign, treat it as a movement label immediately.
+                let name = label_name.to_string();
+                if saw_balign {
+                    movement_labels.insert(name);
+                } else {
+                    current_label = Some(name);
+                }
+                saw_balign = false;
                 continue;
             }
             StructuralLine::Other => {}
@@ -628,11 +645,11 @@ fn can_parse_rotom_alias_value(value: &str) -> bool {
 }
 
 fn parse_script_entry_directive(trimmed: &str) -> ScriptEntryDirective<'_> {
-    if trimmed == "ScriptEntryEnd" {
+    if trimmed == "ScriptEntryEnd" || trimmed == "ScrDefEnd" {
         return ScriptEntryDirective::End;
     }
 
-    let Some(rest) = trimmed.strip_prefix("ScriptEntry") else {
+    let Some(rest) = trimmed.strip_prefix("ScriptEntry").or_else(|| trimmed.strip_prefix("ScrDef")) else {
         return ScriptEntryDirective::Other;
     };
 

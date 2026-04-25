@@ -1,7 +1,8 @@
-use crate::{DatabaseV2, is_levelscript_path, transpiler};
+use crate::{ConstantDb, DatabaseV2, is_levelscript_path, transpiler};
 use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
+use uxie::Workspace;
 
 use super::config::{ProjectTypeConfig, RotomConfig};
 use super::error::{ProjectError, Result};
@@ -51,10 +52,41 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
         .transpose()
         .map_err(ProjectError::from)?;
 
+    let mut constants = ConstantDb::new();
+    if let Some(ref db) = db {
+        let _ = constants.load_from_db(db);
+    }
+    let database_dir = config.database_dir(root);
+    if database_dir.exists() {
+        let _ = constants
+            .load_directory(&database_dir)
+            .map_err(ProjectError::from)?;
+    }
+    match config.workspace.project_type {
+        ProjectTypeConfig::Decomp => {
+            if let Some(game_family) = config.game_family() {
+                let include_roots = config.include_roots(root);
+                if let Ok((symbols, _)) = Workspace::load_cached_symbols(
+                    &config.cache_dir(root),
+                    root,
+                    &include_roots,
+                    game_family,
+                ) {
+                    let _ = constants.load_decomp_symbols(root, (*symbols).clone());
+                }
+            }
+        }
+        ProjectTypeConfig::Dspre => {
+            let _ = constants
+                .load_dspre_text_archives(root)
+                .map_err(ProjectError::from)?;
+        }
+        ProjectTypeConfig::Generic => {}
+    }
+
     let mut plans = Vec::with_capacity(files.len());
     for input in files {
         let relative = input.strip_prefix(root).unwrap_or(&input);
-        let output = input.with_extension("rotom");
         let backup = backup_dir.join(relative);
 
         let source = fs::read_to_string(&input).map_err(|source| ProjectError::Io {
@@ -62,23 +94,45 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
             path: input.clone(),
             source,
         })?;
-        let mut converted = match config.workspace.project_type {
-            ProjectTypeConfig::Dspre => transpiler::transpile_dspre(&source, db.as_ref()),
-            ProjectTypeConfig::Decomp => transpiler::transpile_decomp(&source, db.as_ref())
-                .map(|result| result.source)
-                .map_err(|error| ProjectError::ConvertDecomp {
-                    path: input.clone(),
-                    line: error.line,
-                    message: error.to_string(),
-                })?,
-            ProjectTypeConfig::Generic => continue,
-        };
-        if let Some(include_path) = config.global_include_path() {
-            let include_line = format!("#include \"{include_path}\"");
-            if !converted.lines().any(|line| line.trim() == include_line) {
-                converted = format!("{include_line}\n\n{converted}");
+
+        // Detect levelscripts and route to the appropriate transpiler/output format.
+        let is_levelscript =
+            is_levelscript_path(&input) || transpiler::is_levelscript_source(&source);
+
+        let (output, converted) = if is_levelscript {
+            let output = input.with_extension("json");
+            let result =
+                transpiler::transpile_levelscript(&source, Some(&constants)).map_err(|error| {
+                    ProjectError::ConvertDecomp {
+                        path: input.clone(),
+                        line: error.line,
+                        message: error.to_string(),
+                    }
+                })?;
+            let json = serde_json::to_string_pretty(&result.levelscript)
+                .map_err(|source| ProjectError::SerializeJson { source })?;
+            (output, json)
+        } else {
+            let output = input.with_extension("rotom");
+            let mut converted = match config.workspace.project_type {
+                ProjectTypeConfig::Dspre => transpiler::transpile_dspre(&source, db.as_ref()),
+                ProjectTypeConfig::Decomp => transpiler::transpile_decomp(&source, db.as_ref())
+                    .map(|result| result.source)
+                    .map_err(|error| ProjectError::ConvertDecomp {
+                        path: input.clone(),
+                        line: error.line,
+                        message: error.to_string(),
+                    })?,
+                ProjectTypeConfig::Generic => continue,
+            };
+            if let Some(include_path) = config.global_include_path() {
+                let include_line = format!("#include \"{include_path}\"");
+                if !converted.lines().any(|line| line.trim() == include_line) {
+                    converted = format!("{include_line}\n\n{converted}");
+                }
             }
-        }
+            (output, converted)
+        };
 
         plans.push(ConversionPlan {
             input: input.clone(),
@@ -159,7 +213,7 @@ fn collect_convertible_files(
             continue;
         }
 
-        if is_convertible_file(&path, project_type)? {
+        if is_convertible_file(&path, project_type) {
             out.push(path);
         }
     }
@@ -167,28 +221,21 @@ fn collect_convertible_files(
     Ok(())
 }
 
-fn is_convertible_file(path: &Path, project_type: ProjectTypeConfig) -> Result<bool> {
+fn is_convertible_file(path: &Path, project_type: ProjectTypeConfig) -> bool {
     let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
 
     match project_type {
-        ProjectTypeConfig::Dspre => Ok(extension.eq_ignore_ascii_case("script")),
+        ProjectTypeConfig::Dspre => extension.eq_ignore_ascii_case("script"),
         ProjectTypeConfig::Decomp => {
             if !extension.eq_ignore_ascii_case("s") {
-                return Ok(false);
+                return false;
             }
 
-            if is_levelscript_path(path) {
-                return Ok(false);
-            }
-
-            let source = fs::read_to_string(path).map_err(|source| ProjectError::Io {
-                action: "Failed to read",
-                path: path.to_path_buf(),
-                source,
-            })?;
-            Ok(!transpiler::is_levelscript_source(&source))
+            // Both regular scripts and levelscripts are convertible,
+            // just to different output formats.
+            true
         }
-        ProjectTypeConfig::Generic => Ok(false),
+        ProjectTypeConfig::Generic => false,
     }
 }
 
@@ -335,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn find_convertible_files_for_decomp_filters_by_extension_and_levelscript_name() {
+    fn find_convertible_files_for_decomp_includes_all_s_files_including_levelscripts() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let source_dir = root.join("res/field/scripts");
@@ -370,7 +417,9 @@ mod tests {
         assert_eq!(
             files,
             vec![
+                source_dir.join("map_hdr.s"),
                 source_dir.join("normal.s"),
+                source_dir.join("town_init_main.s"),
                 source_dir.join("town_init_new_game.s")
             ]
         );

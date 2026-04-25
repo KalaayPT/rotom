@@ -2,6 +2,7 @@
 
 pub mod analysis;
 pub mod ast;
+pub mod batch_compile;
 pub mod codegen;
 pub mod ir;
 pub mod lexer;

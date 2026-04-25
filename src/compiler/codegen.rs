@@ -83,8 +83,11 @@ impl<'a> Emitter<'a> {
         for item in items {
             match item {
                 TopLevelItem::Function(ir_func) => {
-                    self.function_offsets
-                        .insert(ir_func.name().to_string(), self.pc);
+                    // All stacked headers share the same body offset.
+                    for header in &ir_func.headers {
+                        self.function_offsets
+                            .insert(header.name.clone(), self.pc);
+                    }
                     for ir_op in &ir_func.instructions {
                         self.emit_ir_opcode(ir_op)?;
                     }

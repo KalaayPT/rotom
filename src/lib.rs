@@ -22,6 +22,7 @@ pub use project::{
     error as project_error, init as project_init,
 };
 
+pub use compiler::batch_compile::compile_batch;
 pub use compiler::codegen::Emitter;
 pub use compiler::{
     Analyzer, Lexer, Lowerer, Parser,
@@ -174,12 +175,12 @@ pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<Scrip
     disassemble_bytes(db, bytes)
 }
 
-enum CompileFileError {
+pub(crate) enum CompileFileError {
     IoError(CompileError),
     CompileError { error: CompileError, source: String },
 }
 
-fn compile_file_internal(
+pub(crate) fn compile_file_internal(
     input: &Path,
     output: &Path,
     db: &DatabaseV2,
@@ -277,46 +278,6 @@ fn compile_file_internal(
         input: input.to_path_buf(),
         output: output.to_path_buf(),
         size,
-    })
-}
-
-pub(crate) fn compile_file_for_batch(
-    input: &Path,
-    output: &Path,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-) -> Result<CompileResult, CompileFailure> {
-    compile_file_internal(input, output, db, constants, true).map_err(|error| match error {
-        CompileFileError::IoError(error) => CompileFailure {
-            path: input.to_path_buf(),
-            error,
-            source: String::new(),
-        },
-        CompileFileError::CompileError { error, source } => CompileFailure {
-            path: input.to_path_buf(),
-            error,
-            source,
-        },
-    })
-}
-
-pub(crate) fn compile_file_for_batch_preloaded_constants(
-    input: &Path,
-    output: &Path,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-) -> Result<CompileResult, CompileFailure> {
-    compile_file_internal(input, output, db, constants, false).map_err(|error| match error {
-        CompileFileError::IoError(error) => CompileFailure {
-            path: input.to_path_buf(),
-            error,
-            source: String::new(),
-        },
-        CompileFileError::CompileError { error, source } => CompileFailure {
-            path: input.to_path_buf(),
-            error,
-            source,
-        },
     })
 }
 
@@ -510,42 +471,12 @@ pub fn compile_path(
             });
         }
 
-        // Compile all files in parallel
-        let results: Vec<Result<CompileResult, CompileFailure>> = files
-            .par_iter()
-            .map(|input_file| {
-                let output_path = generate_output_path_compile(input_file, output);
-                compile_file_internal(input_file, &output_path, db, constants, true).map_err(|e| {
-                    match e {
-                        CompileFileError::IoError(error) => CompileFailure {
-                            path: input_file.clone(),
-                            error,
-                            source: String::new(),
-                        },
-                        CompileFileError::CompileError { error, source } => CompileFailure {
-                            path: input_file.clone(),
-                            error,
-                            source,
-                        },
-                    }
-                })
-            })
+        let work: Vec<_> = files
+            .into_iter()
+            .map(|f| (f.clone(), generate_output_path_compile(&f, output)))
             .collect();
 
-        let mut successes = Vec::new();
-        let mut failures = Vec::new();
-
-        for result in results {
-            match result {
-                Ok(r) => successes.push(r),
-                Err(failure) => failures.push(failure),
-            }
-        }
-
-        Ok(BatchCompileResult {
-            successes,
-            failures,
-        })
+        Ok(compile_batch(&work, db, constants, true))
     } else {
         Err(CompileError::Io {
             message: format!("Input path does not exist: {}", input.display()),

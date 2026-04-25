@@ -237,13 +237,18 @@ fn detect_workspace(root: &Path) -> Result<WorkspaceInfo> {
                     vec![
                         "include".to_string(),
                         "generated".to_string(),
-                        "res/field/scripts".to_string(),
                         "asm".to_string(),
                     ],
                 ),
                 uxie::GameFamily::DP => unreachable!("decomp detection should not resolve to DP"),
             };
-            let binary_roots = source_roots.clone();
+            let binary_roots = match workspace.family {
+                uxie::GameFamily::HGSS => source_roots.clone(),
+                uxie::GameFamily::Platinum => {
+                    vec!["build/res/field/scripts/scr_seq.narc.p".to_string()]
+                }
+                uxie::GameFamily::DP => unreachable!("decomp detection should not resolve to DP"),
+            };
 
             WorkspaceInfo {
                 project_type: ProjectTypeConfig::Decomp,
@@ -399,16 +404,36 @@ fn find_default_database_file(
     collect_v2_files(database_dir, &mut files)?;
     files.sort();
 
-    if let Some(preferred_family) = preferred_family
-        && let Some(file) = files
+    // Try to match by reading the JSON meta.version field — much more reliable
+    // than filename guessing.
+    if let Some(preferred_family) = preferred_family {
+        for file in &files {
+            if let Ok(contents) = fs::read_to_string(file)
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
+                && let Some(version) = json
+                    .get("meta")
+                    .and_then(|m| m.get("version"))
+                    .and_then(|v| v.as_str())
+                && game_family_from_hint(version) == Some(preferred_family)
+            {
+                return Ok(Some(
+                    file.strip_prefix(root)
+                        .unwrap_or(file.as_path())
+                        .to_path_buf(),
+                ));
+            }
+        }
+        // Fallback to filename matching if JSON meta.version didn't match
+        if let Some(file) = files
             .iter()
             .find(|file| game_family_from_hint(file.to_string_lossy()) == Some(preferred_family))
-    {
-        return Ok(Some(
-            file.strip_prefix(root)
-                .unwrap_or(file.as_path())
-                .to_path_buf(),
-        ));
+        {
+            return Ok(Some(
+                file.strip_prefix(root)
+                    .unwrap_or(file.as_path())
+                    .to_path_buf(),
+            ));
+        }
     }
 
     Ok((files.len() == 1).then(|| {
@@ -432,12 +457,13 @@ fn collect_v2_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
                 source,
             })?
             .path();
-        if path.is_dir() {
-            collect_v2_files(&path, out)?;
-        } else if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with("_v2.json"))
+        // Only consider files directly in the database dir, not subdirectories
+        // like custom_databases/.
+        if path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("_v2.json"))
         {
             out.push(path);
         }

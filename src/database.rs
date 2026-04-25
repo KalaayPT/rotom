@@ -593,7 +593,7 @@ impl ConstantDb {
 
         for i in 0..=5 {
             if let Some(op) = ComparisonOperator::from_id(i) {
-                self.constants.insert(op.as_str().to_string(), i as i32);
+                self.constants.insert(op.as_str().to_string(), i32::from(i));
                 count += 1;
             }
         }
@@ -882,6 +882,15 @@ impl ConstantDb {
             }
 
             if SymbolTable::try_load_text_bank_include_json(
+                table,
+                parent_dir,
+                include_dirs,
+                include_path,
+            )? {
+                return Ok(true);
+            }
+
+            if SymbolTable::try_load_gmm_fallback(
                 table,
                 parent_dir,
                 include_dirs,

@@ -128,12 +128,13 @@ fn handle_compile_command(
     json: bool,
     force: bool,
 ) {
+    let start = std::time::Instant::now();
     let result = if database.is_none() && input.is_none() {
         if output.is_some() || decomp_root.is_some() {
             Err(ProjectError::UnsupportedProjectCompileArgs)
         } else {
             compile_project_mode(force).and_then(|result| {
-                report_compile_result(&result, json).map_err(ProjectError::from)?;
+                report_compile_result(&result, json, Some(start.elapsed())).map_err(ProjectError::from)?;
                 if result.is_success() {
                     Ok(())
                 } else {
@@ -146,7 +147,7 @@ fn handle_compile_command(
         let input = input.ok_or(ProjectError::MissingCompileArgs);
         match (database, input) {
             (Ok(database), Ok(input)) => {
-                compile(database, input, output, decomp_root, json).map_err(ProjectError::from)
+                compile(database, input, output, decomp_root, json, Some(start)).map_err(ProjectError::from)
             }
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
@@ -260,8 +261,9 @@ fn compile(
     output: Option<&std::path::Path>,
     decomp_root: Option<&std::path::Path>,
     json: bool,
+    start: Option<std::time::Instant>,
 ) -> Result<(), CompileError> {
-    let start_total = std::time::Instant::now();
+    let start_total = start.unwrap_or_else(std::time::Instant::now);
     if !json {
         println!("Loading database from: {}", db_path.display());
     }
@@ -331,11 +333,8 @@ fn compile(
     }
 
     let result = compile_path(input, &output_path, &db, &constants)?;
-    if !json {
-        println!("Total time: {}ms", start_total.elapsed().as_millis());
-    }
 
-    report_compile_result(&result, json)?;
+    report_compile_result(&result, json, Some(start_total.elapsed()))?;
 
     if result.is_success() {
         Ok(())
@@ -397,6 +396,7 @@ fn decompile(
 fn report_compile_result(
     result: &rotom::BatchCompileResult,
     json: bool,
+    elapsed: Option<std::time::Duration>,
 ) -> Result<(), CompileError> {
     if json {
         let json_output =
@@ -429,10 +429,14 @@ fn report_compile_result(
         }
     }
 
+    let time_str = elapsed
+        .map(|d| format!(" in {}ms", d.as_millis()))
+        .unwrap_or_default();
     println!(
-        "\nCompilation complete: {}/{} succeeded",
+        "\nDone: {}/{} files compiled{}",
         result.successes.len(),
-        result.total()
+        result.total(),
+        time_str
     );
     Ok(())
 }

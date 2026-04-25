@@ -83,9 +83,7 @@ fn fixture_root() -> PathBuf {
 }
 
 fn get_pokeplatinum_root() -> PathBuf {
-    std::env::var("POKEPLATINUM_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| fixture_root().join("decomp/pokeplatinum"))
+    std::env::var("POKEPLATINUM_ROOT").map_or_else(|_| fixture_root().join("decomp/pokeplatinum"), PathBuf::from)
 }
 
 fn get_scripts_dir() -> PathBuf {
@@ -101,14 +99,23 @@ fn script_to_binary_path(script_path: &Path) -> PathBuf {
     get_binaries_dir().join(stem)
 }
 
+fn fixture_panic(path: &Path, what: &str) -> ! {
+    panic!(
+        "Missing fixture: {} at {}\n\
+         Run `cargo xtask setup-fixtures` and copy DSPRE outputs per CONTRIBUTING.md.",
+        what,
+        path.display()
+    )
+}
+
 fn find_normal_scripts() -> Vec<PathBuf> {
     let scripts_dir = get_scripts_dir();
     let mut scripts: Vec<PathBuf> = std::fs::read_dir(&scripts_dir)
-        .expect("Failed to read scripts directory")
-        .filter_map(|entry| entry.ok())
+        .unwrap_or_else(|_| fixture_panic(&scripts_dir, "decomp scripts"))
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
-            path.extension().map(|e| e == "s").unwrap_or(false) && !is_levelscript_path(path)
+            path.extension().is_some_and(|e| e == "s") && !is_levelscript_path(path)
         })
         .collect();
     scripts.sort();
@@ -118,11 +125,11 @@ fn find_normal_scripts() -> Vec<PathBuf> {
 fn find_levelscripts() -> Vec<PathBuf> {
     let scripts_dir = get_scripts_dir();
     let mut scripts: Vec<PathBuf> = std::fs::read_dir(&scripts_dir)
-        .expect("Failed to read scripts directory")
-        .filter_map(|entry| entry.ok())
+        .unwrap_or_else(|_| fixture_panic(&scripts_dir, "decomp scripts"))
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
-            path.extension().map(|e| e == "s").unwrap_or(false) && is_levelscript_path(path)
+            path.extension().is_some_and(|e| e == "s") && is_levelscript_path(path)
         })
         .collect();
     scripts.sort();
@@ -130,21 +137,15 @@ fn find_levelscripts() -> Vec<PathBuf> {
 }
 
 fn get_pokeheartgold_root() -> PathBuf {
-    std::env::var("POKEHEARTGOLD_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| fixture_root().join("decomp/pokeheartgold"))
+    std::env::var("POKEHEARTGOLD_ROOT").map_or_else(|_| fixture_root().join("decomp/pokeheartgold"), PathBuf::from)
 }
 
 fn get_dspre_platinum_root() -> PathBuf {
-    std::env::var("DSPRE_PLATINUM_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| fixture_root().join("dspre/pt_DSPRE_contents"))
+    std::env::var("DSPRE_PLATINUM_ROOT").map_or_else(|_| fixture_root().join("dspre/pt_DSPRE_contents"), PathBuf::from)
 }
 
 fn get_dspre_heartgold_root() -> PathBuf {
-    std::env::var("DSPRE_HEARTGOLD_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| fixture_root().join("dspre/hg_DSPRE_contents"))
+    std::env::var("DSPRE_HEARTGOLD_ROOT").map_or_else(|_| fixture_root().join("dspre/hg_DSPRE_contents"), PathBuf::from)
 }
 
 fn get_dspre_platinum_scripts_dir() -> PathBuf {
@@ -169,10 +170,10 @@ fn get_pokeheartgold_scripts_dir() -> PathBuf {
 
 fn find_dspre_script_files(dir: &Path) -> Vec<PathBuf> {
     let mut scripts: Vec<PathBuf> = std::fs::read_dir(dir)
-        .expect("Failed to read DSPRE scripts directory")
-        .filter_map(|entry| entry.ok())
+        .unwrap_or_else(|_| fixture_panic(dir, "DSPRE scripts"))
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().map(|e| e == "script").unwrap_or(false))
+        .filter(|path| path.extension().is_some_and(|e| e == "script"))
         .collect();
     scripts.sort();
     scripts
@@ -180,8 +181,8 @@ fn find_dspre_script_files(dir: &Path) -> Vec<PathBuf> {
 
 fn find_dspre_binary_files(dir: &Path) -> Vec<PathBuf> {
     let mut binaries: Vec<PathBuf> = std::fs::read_dir(dir)
-        .expect("Failed to read DSPRE binaries directory")
-        .filter_map(|entry| entry.ok())
+        .unwrap_or_else(|_| fixture_panic(dir, "DSPRE binaries"))
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.is_file() && path.extension().is_none())
         .collect();
@@ -192,10 +193,10 @@ fn find_dspre_binary_files(dir: &Path) -> Vec<PathBuf> {
 fn find_heartgold_scripts() -> Vec<PathBuf> {
     let scripts_dir = get_pokeheartgold_scripts_dir();
     let mut scripts: Vec<PathBuf> = std::fs::read_dir(&scripts_dir)
-        .expect("Failed to read HeartGold scripts directory")
-        .filter_map(|entry| entry.ok())
+        .unwrap_or_else(|_| fixture_panic(&scripts_dir, "HeartGold scripts"))
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().map(|e| e == "s").unwrap_or(false))
+        .filter(|path| path.extension().is_some_and(|e| e == "s"))
         .collect();
     scripts.sort();
     scripts
@@ -426,7 +427,7 @@ fn compile_dspre_script(
 }
 
 fn bulk_compile_scripts(
-    scripts: Vec<PathBuf>,
+    scripts: &[PathBuf],
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> BulkCompileResult {
@@ -475,7 +476,7 @@ fn bulk_compile_scripts(
 }
 
 fn bulk_round_trip_binaries(
-    binaries: Vec<PathBuf>,
+    binaries: &[PathBuf],
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> BulkCompileResult {
@@ -524,7 +525,7 @@ fn bulk_round_trip_binaries(
 }
 
 fn bulk_compile_dspre_scripts(
-    scripts: Vec<PathBuf>,
+    scripts: &[PathBuf],
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> BulkCompileResult {
@@ -660,7 +661,7 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
                         println!("  {} - COMPILE ERROR: {}", name, msg);
                     }
                     CompileOutcome::MissingExpectedBinary(path) => {
-                        println!("  {} - MISSING BINARY: {:?}", name, path);
+                        println!("  {} - MISSING BINARY: {}", name, path.display());
                     }
                     CompileOutcome::IoError(msg) => {
                         println!("  {} - IO ERROR: {}", name, msg);
@@ -720,22 +721,18 @@ fn classify_compile_error(msg: &str) -> String {
 
 fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_scripts_dir();
-    if !scripts_dir.exists() {
-        panic!(
-            "Bulk test failed: scripts directory not found at {:?}. \
+    assert!(scripts_dir.exists(),
+            "Bulk test failed: scripts directory not found at {}. \
              Set POKEPLATINUM_ROOT environment variable to run this test.",
-            scripts_dir
+            scripts_dir.display()
         );
-    }
 
     let binaries_dir = get_binaries_dir();
-    if !binaries_dir.exists() {
-        panic!(
-            "Bulk test failed: binaries directory not found at {:?}. \
+    assert!(binaries_dir.exists(),
+            "Bulk test failed: binaries directory not found at {}. \
              Make sure you've built the pokeplatinum project first.",
-            binaries_dir
+            binaries_dir.display()
         );
-    }
 
     let (db, constants) = load_test_db_and_constants();
 
@@ -743,7 +740,7 @@ fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
     assert!(!scripts.is_empty(), "No normal scripts found");
     println!("Found {} normal scripts to compile", scripts.len());
 
-    let result = bulk_compile_scripts(scripts, &db, &constants);
+    let result = bulk_compile_scripts(&scripts, &db, &constants);
 
     print_bulk_compile_report("Normal Scripts", &result, verbose);
 
@@ -752,22 +749,18 @@ fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
 
 fn run_levelscripts_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_scripts_dir();
-    if !scripts_dir.exists() {
-        panic!(
-            "Bulk test failed: scripts directory not found at {:?}. \
+    assert!(scripts_dir.exists(),
+            "Bulk test failed: scripts directory not found at {}. \
              Set POKEPLATINUM_ROOT environment variable to run this test.",
-            scripts_dir
+            scripts_dir.display()
         );
-    }
 
     let binaries_dir = get_binaries_dir();
-    if !binaries_dir.exists() {
-        panic!(
-            "Bulk test failed: binaries directory not found at {:?}. \
+    assert!(binaries_dir.exists(),
+            "Bulk test failed: binaries directory not found at {}. \
              Make sure you've built the pokeplatinum project first.",
-            binaries_dir
+            binaries_dir.display()
         );
-    }
 
     let (db, constants) = load_test_db_and_constants();
 
@@ -775,7 +768,7 @@ fn run_levelscripts_test(verbose: bool) -> BulkCompileResult {
     assert!(!scripts.is_empty(), "No levelscripts found");
     println!("Found {} levelscripts to compile", scripts.len());
 
-    let result = bulk_compile_scripts(scripts, &db, &constants);
+    let result = bulk_compile_scripts(&scripts, &db, &constants);
 
     print_bulk_compile_report("Levelscripts", &result, verbose);
 
@@ -842,9 +835,7 @@ fn test_bulk_compile_levelscripts_verbose() {
 
 fn run_dspre_platinum_round_trip_test(verbose: bool) -> BulkCompileResult {
     let binaries_dir = get_dspre_platinum_binaries_dir();
-    if !binaries_dir.exists() {
-        panic!("DSPRE Platinum binaries not found at {:?}", binaries_dir);
-    }
+    assert!(binaries_dir.exists(), "DSPRE Platinum binaries not found at {}", binaries_dir.display());
 
     let (db, constants) = load_platinum_db_and_constants();
     let binaries = find_dspre_binary_files(&binaries_dir);
@@ -853,7 +844,7 @@ fn run_dspre_platinum_round_trip_test(verbose: bool) -> BulkCompileResult {
         binaries.len()
     );
 
-    let result = bulk_round_trip_binaries(binaries, &db, &constants);
+    let result = bulk_round_trip_binaries(&binaries, &db, &constants);
     print_bulk_compile_report("DSPRE Platinum Round-Trip", &result, verbose);
     result
 }
@@ -881,15 +872,13 @@ fn test_dspre_platinum_round_trip_verbose() {
 
 fn run_dspre_platinum_compile_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_dspre_platinum_scripts_dir();
-    if !scripts_dir.exists() {
-        panic!("DSPRE Platinum scripts not found at {:?}", scripts_dir);
-    }
+    assert!(scripts_dir.exists(), "DSPRE Platinum scripts not found at {}", scripts_dir.display());
 
     let (db, constants) = load_platinum_db_and_constants();
     let scripts = find_dspre_script_files(&scripts_dir);
     println!("Found {} DSPRE Platinum scripts to compile", scripts.len());
 
-    let result = bulk_compile_dspre_scripts(scripts, &db, &constants);
+    let result = bulk_compile_dspre_scripts(&scripts, &db, &constants);
     print_bulk_compile_report("DSPRE Platinum Compile", &result, verbose);
     result
 }
@@ -925,9 +914,7 @@ fn test_dspre_platinum_compile_verbose() {
 
 fn run_dspre_heartgold_round_trip_test(verbose: bool) -> BulkCompileResult {
     let binaries_dir = get_dspre_heartgold_binaries_dir();
-    if !binaries_dir.exists() {
-        panic!("DSPRE HeartGold binaries not found at {:?}", binaries_dir);
-    }
+    assert!(binaries_dir.exists(), "DSPRE HeartGold binaries not found at {}", binaries_dir.display());
 
     let (db, constants) = load_heartgold_db_and_constants();
     let binaries = find_dspre_binary_files(&binaries_dir);
@@ -936,7 +923,7 @@ fn run_dspre_heartgold_round_trip_test(verbose: bool) -> BulkCompileResult {
         binaries.len()
     );
 
-    let result = bulk_round_trip_binaries(binaries, &db, &constants);
+    let result = bulk_round_trip_binaries(&binaries, &db, &constants);
     print_bulk_compile_report("DSPRE HeartGold Round-Trip", &result, verbose);
     result
 }
@@ -964,15 +951,13 @@ fn test_dspre_heartgold_round_trip_verbose() {
 
 fn run_dspre_heartgold_compile_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_dspre_heartgold_scripts_dir();
-    if !scripts_dir.exists() {
-        panic!("DSPRE HeartGold scripts not found at {:?}", scripts_dir);
-    }
+    assert!(scripts_dir.exists(), "DSPRE HeartGold scripts not found at {}", scripts_dir.display());
 
     let (db, constants) = load_heartgold_db_and_constants();
     let scripts = find_dspre_script_files(&scripts_dir);
     println!("Found {} DSPRE HeartGold scripts to compile", scripts.len());
 
-    let result = bulk_compile_dspre_scripts(scripts, &db, &constants);
+    let result = bulk_compile_dspre_scripts(&scripts, &db, &constants);
     print_bulk_compile_report("DSPRE HeartGold Compile", &result, verbose);
     result
 }
@@ -1106,7 +1091,7 @@ fn compile_heartgold_single_script(
 }
 
 fn bulk_compile_heartgold_scripts(
-    scripts: Vec<PathBuf>,
+    scripts: &[PathBuf],
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> BulkCompileResult {
@@ -1148,12 +1133,10 @@ fn bulk_compile_heartgold_scripts(
 
 fn run_heartgold_scripts_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_pokeheartgold_scripts_dir();
-    if !scripts_dir.exists() {
-        panic!(
-            "HeartGold scripts directory not found at {:?}. Set POKEHEARTGOLD_ROOT env var.",
-            scripts_dir
+    assert!(scripts_dir.exists(),
+            "HeartGold scripts directory not found at {}. Set POKEHEARTGOLD_ROOT env var.",
+            scripts_dir.display()
         );
-    }
 
     let (db, constants) = load_heartgold_decomp_db_and_constants();
     let scripts = find_heartgold_scripts();
@@ -1162,7 +1145,7 @@ fn run_heartgold_scripts_test(verbose: bool) -> BulkCompileResult {
         scripts.len()
     );
 
-    let result = bulk_compile_heartgold_scripts(scripts, &db, &constants);
+    let result = bulk_compile_heartgold_scripts(&scripts, &db, &constants);
     print_bulk_compile_report("HeartGold Decomp Scripts", &result, verbose);
     result
 }
