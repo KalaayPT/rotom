@@ -19,6 +19,15 @@ fn run_rotom(args: &[&str], cwd: &std::path::Path) -> Result<String, String> {
     let mut cmd = rotom_bin();
     cmd.args(args);
     cmd.current_dir(cwd);
+    // Isolate the per-user database cache so parallel tests don't race on
+    // the shared default directory (~/.local/share/rotom/databases).
+    // Use the *project* directory name so different test projects get
+    // different caches, while repeated calls from the same test reuse it.
+    let cache_dir = cwd
+        .file_name()
+        .map(|n| std::env::temp_dir().join("rotom_test_cache").join(n))
+        .unwrap_or_else(|| std::env::temp_dir().join("rotom_test_cache").join("default"));
+    cmd.env("XDG_DATA_HOME", &cache_dir);
     let output = cmd.output().map_err(|e| format!("Failed to run rotom: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
