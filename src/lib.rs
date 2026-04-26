@@ -14,6 +14,7 @@ pub mod compile_state;
 pub mod compiler;
 pub mod database;
 pub mod decompiler;
+pub mod progress;
 pub mod project;
 pub mod transpiler;
 
@@ -192,7 +193,17 @@ pub(crate) fn compile_file_internal(
             message: format!("Failed to read input file '{}': {}", input.display(), e),
         })
     })?;
+    compile_file_internal_with_source(input, output, db, constants, load_file_constants, &source)
+}
 
+pub(crate) fn compile_file_internal_with_source(
+    input: &Path,
+    output: &Path,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+    load_file_constants: bool,
+    source: &str,
+) -> Result<CompileResult, CompileFileError> {
     let extension = input
         .extension()
         .and_then(|e| e.to_str())
@@ -211,31 +222,31 @@ pub(crate) fn compile_file_internal(
     let constants = file_constants.as_ref().unwrap_or(constants);
 
     let is_levelscript = is_levelscript_path(input)
-        || (extension == "s" && transpiler::is_levelscript_source(&source));
+        || (extension == "s" && transpiler::is_levelscript_source(source));
 
     let bytes = if extension == "json" {
-        compile_levelscript_json_to_bytes(&source).map_err(|e| CompileFileError::CompileError {
+        compile_levelscript_json_to_bytes(source).map_err(|e| CompileFileError::CompileError {
             error: e,
-            source: source.clone(),
+            source: source.to_string(),
         })?
     } else if is_levelscript && extension == "s" {
-        compile_levelscript_to_bytes(&source, constants).map_err(|e| {
+        compile_levelscript_to_bytes(source, constants).map_err(|e| {
             CompileFileError::CompileError {
                 error: e,
-                source: source.clone(),
+                source: source.to_string(),
             }
         })?
     } else {
         let (rotom_source, jump_table_end_marker_count) = match extension.as_str() {
-            "rotom" => (source, 1),
-            "script" => (transpiler::transpile_dspre(&source, Some(db)), 1),
+            "rotom" => (source.to_string(), 1),
+            "script" => (transpiler::transpile_dspre(source, Some(db)), 1),
             "s" => {
-                let result = transpiler::transpile_decomp(&source, Some(db)).map_err(|e| {
+                let result = transpiler::transpile_decomp(source, Some(db)).map_err(|e| {
                     CompileFileError::CompileError {
                         error: CompileError::Transpile {
                             message: format!("Decomp transpile error at line {}: {}", e.line, e),
                         },
-                        source: source.clone(),
+                        source: source.to_string(),
                     }
                 })?;
                 (result.source, result.jump_table_end_marker_count)
@@ -476,7 +487,7 @@ pub fn compile_path(
             .map(|f| (f.clone(), generate_output_path_compile(&f, output)))
             .collect();
 
-        Ok(compile_batch(&work, db, constants, true))
+        Ok(compile_batch(&work, db, constants, true, None))
     } else {
         Err(CompileError::Io {
             message: format!("Input path does not exist: {}", input.display()),

@@ -929,7 +929,6 @@ impl<'a> Lowerer<'a> {
     }
 
     fn substitute_default_params(
-        &self,
         default_str: &str,
         params: &[ParamDef],
         resolved_args: &[Expression],
@@ -1114,7 +1113,7 @@ impl<'a> Lowerer<'a> {
                 let param = &cmd.params[final_args.len()];
                 if let Some(default_str) = &param.default {
                     let substituted =
-                        self.substitute_default_params(default_str, &cmd.params, &final_args)?;
+                        Self::substitute_default_params(default_str, &cmd.params, &final_args)?;
                     let lexer = Lexer::new(&substituted);
                     let mut parser = Parser::new(lexer);
                     let expr = parser.parse_expression(crate::compiler::ast::Precedence::Lowest)?;

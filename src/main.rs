@@ -50,6 +50,10 @@ enum Commands {
         /// Rebuild all project files, ignoring any future incremental state
         #[arg(long)]
         force: bool,
+
+        /// Show per-file compilation output
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     /// Decompile a binary script to .rotom source
@@ -99,6 +103,7 @@ fn main() {
             decomp_root,
             json,
             force,
+            verbose,
         } => handle_compile_command(
             database.as_deref(),
             input.as_deref(),
@@ -106,6 +111,7 @@ fn main() {
             decomp_root.as_deref(),
             *json,
             *force,
+            *verbose,
         ),
         Commands::Decompile {
             database,
@@ -127,6 +133,7 @@ fn handle_compile_command(
     decomp_root: Option<&std::path::Path>,
     json: bool,
     force: bool,
+    verbose: bool,
 ) {
     let start = std::time::Instant::now();
     let result = if database.is_none() && input.is_none() {
@@ -134,7 +141,7 @@ fn handle_compile_command(
             Err(ProjectError::UnsupportedProjectCompileArgs)
         } else {
             compile_project_mode(force).and_then(|result| {
-                report_compile_result(&result, json, Some(start.elapsed())).map_err(ProjectError::from)?;
+                report_compile_result(&result, json, verbose, Some(start.elapsed())).map_err(ProjectError::from)?;
                 if result.is_success() {
                     Ok(())
                 } else {
@@ -334,7 +341,7 @@ fn compile(
 
     let result = compile_path(input, &output_path, &db, &constants)?;
 
-    report_compile_result(&result, json, Some(start_total.elapsed()))?;
+    report_compile_result(&result, json, false, Some(start_total.elapsed()))?;
 
     if result.is_success() {
         Ok(())
@@ -396,6 +403,7 @@ fn decompile(
 fn report_compile_result(
     result: &rotom::BatchCompileResult,
     json: bool,
+    verbose: bool,
     elapsed: Option<std::time::Duration>,
 ) -> Result<(), CompileError> {
     if json {
@@ -407,13 +415,15 @@ fn report_compile_result(
         return Ok(());
     }
 
-    for success in &result.successes {
-        println!(
-            "  ✓ {} -> {} ({} bytes)",
-            success.input.display(),
-            success.output.display(),
-            success.size
-        );
+    if verbose {
+        for success in &result.successes {
+            println!(
+                "  ✓ {} -> {} ({} bytes)",
+                success.input.display(),
+                success.output.display(),
+                success.size
+            );
+        }
     }
 
     for failure in &result.failures {
@@ -433,7 +443,7 @@ fn report_compile_result(
         .map(|d| format!(" in {}ms", d.as_millis()))
         .unwrap_or_default();
     println!(
-        "\nDone: {}/{} files compiled{}",
+        "Done: {}/{} files compiled{}",
         result.successes.len(),
         result.total(),
         time_str

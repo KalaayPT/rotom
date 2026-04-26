@@ -29,6 +29,7 @@ toml = "0.8.19"
 uxie = { path = "../uxie" }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+indicatif = { version = "0.18.4", features = ["rayon"] }
 
 [build-dependencies]
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }

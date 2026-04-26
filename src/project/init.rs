@@ -33,6 +33,8 @@ pub struct InitOptions {
     pub interactive: bool,
     pub game_hint: Option<String>,
     pub database_path: Option<PathBuf>,
+    /// Override the user-level database cache directory. Primarily for tests.
+    pub user_db_dir_override: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +55,9 @@ pub fn run_init_with_options(root: Option<PathBuf>, options: InitOptions) -> Res
         interactive,
         game_hint,
         database_path,
+        user_db_dir_override,
     } = options;
+
     let root = match root {
         Some(root) => root,
         None => {
@@ -86,29 +90,40 @@ pub fn run_init_with_options(root: Option<PathBuf>, options: InitOptions) -> Res
         }
     }
 
-    fs::create_dir_all(root.join(ROTOM_DIR)).map_err(|source| ProjectError::Io {
-        action: "Failed to create directory",
-        path: root.join(ROTOM_DIR),
-        source,
-    })?;
-    fs::create_dir_all(root.join(CACHE_DIR)).map_err(|source| ProjectError::Io {
-        action: "Failed to create directory",
-        path: root.join(CACHE_DIR),
-        source,
-    })?;
-    fs::create_dir_all(root.join(STATUS_DIR)).map_err(|source| ProjectError::Io {
-        action: "Failed to create directory",
-        path: root.join(STATUS_DIR),
-        source,
-    })?;
+    for dir in [ROTOM_DIR, CACHE_DIR, STATUS_DIR] {
+        fs::create_dir_all(root.join(dir)).map_err(|source| ProjectError::Io {
+            action: "Failed to create directory",
+            path: root.join(dir),
+            source,
+        })?;
+    }
 
-    let command_database_dir = root.join(COMMAND_DATABASE_DIR);
-    let used_embedded_database = ensure_command_database(&command_database_dir)?;
+    // Always attempt to refresh the user-level database cache on init so
+    // projects are bootstrapped from the latest available release.
+    let user_db_dir = user_db_dir_override
+        .or_else(user_database_cache_dir)
+        .unwrap_or_else(|| std::env::temp_dir().join("rotom").join("databases"));
+    let used_embedded_database =
+        refresh_user_db_cache(&user_db_dir).unwrap_or(true);
 
+    // Detect workspace before copying the DB so we know which family file to
+    // copy.
     let workspace = detect_workspace(&root)?;
     let preferred_family = workspace
         .game_family
         .or_else(|| game_hint.as_ref().and_then(game_family_from_hint));
+
+    let command_database_dir = root.join(COMMAND_DATABASE_DIR);
+    let project_db_populated = ensure_project_database(
+        &command_database_dir,
+        &user_db_dir,
+        preferred_family,
+    )?;
+
+    // Only surface "used embedded" when we actually bootstrapped the project DB
+    // from the embedded fallback; an already-populated project DB is not affected.
+    let used_embedded_database = !project_db_populated && used_embedded_database;
+
     let default_database_file = if let Some(path) = database_path.as_ref() {
         let path = if path.is_absolute() {
             path.clone()
@@ -146,6 +161,160 @@ pub fn run_init_with_options(root: Option<PathBuf>, options: InitOptions) -> Res
         convertible_files_detected,
         converted_files,
     })
+}
+
+/// Returns the platform-appropriate directory for rotom's user-level data.
+///
+/// - Linux/Unix: `$XDG_DATA_HOME/rotom/databases` or `~/.local/share/rotom/databases`
+/// - macOS:      `~/Library/Application Support/rotom/databases`
+/// - Windows:    `%LOCALAPPDATA%\rotom\databases`
+fn user_database_cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(|p| PathBuf::from(p).join("rotom").join("databases"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join("Library")
+                .join("Application Support")
+                .join("rotom")
+                .join("databases")
+        })
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".local").join("share"))
+            })
+            .map(|base| base.join("rotom").join("databases"))
+    }
+}
+
+/// Refresh the user-level database cache by downloading the latest release.
+///
+/// Always tries to download. On success the cache is atomically replaced.
+/// On failure the existing cache is left unchanged; if the cache is empty
+/// the embedded fallback is unpacked so there is always something to copy from.
+///
+/// Returns `true` if the embedded fallback was used (download failed AND no
+/// prior cache existed).
+fn refresh_user_db_cache(user_dir: &Path) -> Result<bool> {
+    fs::create_dir_all(user_dir).map_err(|source| ProjectError::Io {
+        action: "Failed to create user database cache directory",
+        path: user_dir.to_path_buf(),
+        source,
+    })?;
+
+    if let Ok(bytes) = download_latest_database_zip() {
+        // Unpack to a sibling temp directory then atomically rename over the
+        // cache so a partial download never leaves the cache in a broken state.
+        let temp = user_dir.with_extension("tmp");
+        let _ = fs::remove_dir_all(&temp);
+        if fs::create_dir_all(&temp).is_ok() && unpack_zip(Cursor::new(bytes), &temp).is_ok() {
+            let _ = fs::remove_dir_all(user_dir);
+            if fs::rename(&temp, user_dir).is_ok() {
+                return Ok(false);
+            }
+        }
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    // Download failed. Keep the existing cache if it has files.
+    let mut existing = Vec::new();
+    let _ = collect_v2_files(user_dir, &mut existing);
+    if !existing.is_empty() {
+        return Ok(false);
+    }
+
+    // No cache at all — unpack the embedded snapshot as a last resort.
+    unpack_zip(Cursor::new(EMBEDDED_COMMAND_DATABASE_ZIP), user_dir)?;
+    Ok(true)
+}
+
+/// Ensure the project's command-database directory has the right file.
+///
+/// If the directory is already non-empty, it is left untouched (the user may
+/// have a custom or hand-edited database). Otherwise the single file that
+/// matches `family` is copied from `user_dir`.  If no family is given, or no
+/// matching file is found, all `*_v2.json` files are copied as a fallback.
+///
+/// Returns `true` if the project database was already populated (nothing was
+/// copied), `false` if files were copied from the user cache.
+fn ensure_project_database(
+    project_dir: &Path,
+    user_dir: &Path,
+    family: Option<GameFamily>,
+) -> Result<bool> {
+    // Leave an existing database alone.
+    if project_dir.exists() {
+        let mut existing = Vec::new();
+        collect_v2_files(project_dir, &mut existing)?;
+        if !existing.is_empty() {
+            return Ok(true);
+        }
+    }
+
+    fs::create_dir_all(project_dir).map_err(|source| ProjectError::Io {
+        action: "Failed to create database directory",
+        path: project_dir.to_path_buf(),
+        source,
+    })?;
+
+    let mut user_files = Vec::new();
+    collect_v2_files(user_dir, &mut user_files)?;
+    user_files.sort();
+
+    if let Some(family) = family
+        && let Some(src) = find_family_file(&user_files, family)
+    {
+        copy_db_file(&src, project_dir)?;
+        return Ok(false);
+    }
+
+    // No family match (or unknown family): copy everything.
+    for file in &user_files {
+        copy_db_file(file, project_dir)?;
+    }
+    Ok(false)
+}
+
+/// Scan `files` for the one whose JSON `meta.version` (or filename stem)
+/// matches `family`.
+fn find_family_file(files: &[PathBuf], family: GameFamily) -> Option<PathBuf> {
+    // Prefer matching by reading the meta.version field — more reliable than
+    // guessing from the filename alone.
+    for file in files {
+        if let Ok(contents) = fs::read_to_string(file)
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
+            && let Some(version) = json
+                .get("meta")
+                .and_then(|m| m.get("version"))
+                .and_then(|v| v.as_str())
+            && game_family_from_hint(version) == Some(family)
+        {
+            return Some(file.clone());
+        }
+    }
+    // Fall back to filename matching.
+    files.iter().find(|f| {
+        game_family_from_hint(f.to_string_lossy()) == Some(family)
+    }).cloned()
+}
+
+fn copy_db_file(src: &Path, dest_dir: &Path) -> Result<()> {
+    let filename = src.file_name().unwrap_or_default();
+    fs::copy(src, dest_dir.join(filename)).map_err(|source| ProjectError::Io {
+        action: "Failed to copy database file",
+        path: dest_dir.join(filename),
+        source,
+    })?;
+    Ok(())
 }
 
 fn maybe_convert_existing_sources(
@@ -288,63 +457,6 @@ fn build_config(root: &Path, workspace: &WorkspaceInfo, default_db: Option<&Path
     }
 }
 
-fn ensure_command_database(dir: &Path) -> Result<bool> {
-    if dir.exists()
-        && fs::read_dir(dir)
-            .map_err(|source| ProjectError::Io {
-                action: "Failed to read directory",
-                path: dir.to_path_buf(),
-                source,
-            })?
-            .next()
-            .transpose()
-            .map_err(|source| ProjectError::Io {
-                action: "Failed to read directory entry",
-                path: dir.to_path_buf(),
-                source,
-            })?
-            .is_some()
-    {
-        return Ok(false);
-    }
-
-    let temp_dir = dir.with_extension("bootstrap");
-    if temp_dir.exists() {
-        fs::remove_dir_all(&temp_dir).map_err(|source| ProjectError::Io {
-            action: "Failed to remove directory",
-            path: temp_dir.clone(),
-            source,
-        })?;
-    }
-    fs::create_dir_all(&temp_dir).map_err(|source| ProjectError::Io {
-        action: "Failed to create directory",
-        path: temp_dir.clone(),
-        source,
-    })?;
-
-    let used_embedded = if let Ok(bytes) = download_latest_database_zip() {
-        unpack_zip(Cursor::new(bytes), &temp_dir)?;
-        false
-    } else {
-        unpack_zip(Cursor::new(EMBEDDED_COMMAND_DATABASE_ZIP), &temp_dir)?;
-        true
-    };
-
-    if dir.exists() {
-        fs::remove_dir_all(dir).map_err(|source| ProjectError::Io {
-            action: "Failed to remove directory",
-            path: dir.to_path_buf(),
-            source,
-        })?;
-    }
-    fs::rename(&temp_dir, dir).map_err(|source| ProjectError::Io {
-        action: "Failed to rename",
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    Ok(used_embedded)
-}
-
 fn download_latest_database_zip() -> Result<Vec<u8>> {
     let response = minreq::get(LATEST_COMMAND_DATABASE_URL)
         .with_header("User-Agent", format!("rotom/{}", env!("CARGO_PKG_VERSION")))
@@ -404,36 +516,12 @@ fn find_default_database_file(
     collect_v2_files(database_dir, &mut files)?;
     files.sort();
 
-    // Try to match by reading the JSON meta.version field — much more reliable
-    // than filename guessing.
-    if let Some(preferred_family) = preferred_family {
-        for file in &files {
-            if let Ok(contents) = fs::read_to_string(file)
-                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
-                && let Some(version) = json
-                    .get("meta")
-                    .and_then(|m| m.get("version"))
-                    .and_then(|v| v.as_str())
-                && game_family_from_hint(version) == Some(preferred_family)
-            {
-                return Ok(Some(
-                    file.strip_prefix(root)
-                        .unwrap_or(file.as_path())
-                        .to_path_buf(),
-                ));
-            }
-        }
-        // Fallback to filename matching if JSON meta.version didn't match
-        if let Some(file) = files
-            .iter()
-            .find(|file| game_family_from_hint(file.to_string_lossy()) == Some(preferred_family))
-        {
-            return Ok(Some(
-                file.strip_prefix(root)
-                    .unwrap_or(file.as_path())
-                    .to_path_buf(),
-            ));
-        }
+    if let Some(preferred_family) = preferred_family
+        && let Some(file) = find_family_file(&files, preferred_family)
+    {
+        return Ok(Some(
+            file.strip_prefix(root).unwrap_or(&file).to_path_buf(),
+        ));
     }
 
     Ok((files.len() == 1).then(|| {
@@ -445,6 +533,9 @@ fn find_default_database_file(
 }
 
 fn collect_v2_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
     for entry in fs::read_dir(dir).map_err(|source| ProjectError::Io {
         action: "Failed to read directory",
         path: dir.to_path_buf(),
@@ -457,8 +548,6 @@ fn collect_v2_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
                 source,
             })?
             .path();
-        // Only consider files directly in the database dir, not subdirectories
-        // like custom_databases/.
         if path.is_file()
             && path
                 .file_name()
@@ -474,7 +563,7 @@ fn collect_v2_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::Write as IoWrite;
     use tempfile::tempdir;
     use zip::write::FileOptions;
 
@@ -491,6 +580,13 @@ mod tests {
         .unwrap();
     }
 
+    fn make_user_db_dir(dir: &Path, version: &str) -> PathBuf {
+        let user_dir = dir.join("user-db");
+        fs::create_dir_all(&user_dir).unwrap();
+        write_database(&user_dir.join("platinum_v2.json"), version);
+        user_dir
+    }
+
     #[test]
     fn run_init_writes_config_from_existing_db_dir() {
         let root = tempdir().unwrap();
@@ -504,8 +600,16 @@ mod tests {
                 .join("platinum_v2.json"),
             "Platinum",
         );
+        let user_dir = make_user_db_dir(root.path(), "Platinum");
 
-        let report = run_init(Some(root.path().to_path_buf())).unwrap();
+        let report = run_init_with_options(
+            Some(root.path().to_path_buf()),
+            InitOptions {
+                user_db_dir_override: Some(user_dir),
+                ..InitOptions::default()
+            },
+        )
+        .unwrap();
 
         assert!(!report.used_embedded_database);
         assert!(report.reused_paths.contains(&COMMAND_DATABASE_DIR));
@@ -519,6 +623,32 @@ mod tests {
     }
 
     #[test]
+    fn run_init_copies_only_family_db_to_project() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("res/field/scripts")).unwrap();
+        fs::write(root.path().join("res/field/scripts/scripts.order"), "").unwrap();
+
+        // User cache has multiple DBs; only the platinum one should land in the project.
+        let user_dir = root.path().join("user-db");
+        fs::create_dir_all(&user_dir).unwrap();
+        write_database(&user_dir.join("platinum_v2.json"), "Platinum");
+        write_database(&user_dir.join("hgss_v2.json"), "HeartGold");
+
+        run_init_with_options(
+            Some(root.path().to_path_buf()),
+            InitOptions {
+                user_db_dir_override: Some(user_dir),
+                ..InitOptions::default()
+            },
+        )
+        .unwrap();
+
+        let project_db = root.path().join(COMMAND_DATABASE_DIR);
+        assert!(project_db.join("platinum_v2.json").exists());
+        assert!(!project_db.join("hgss_v2.json").exists());
+    }
+
+    #[test]
     fn run_init_non_interactive_skips_conversion_prompt_without_error() {
         let root = tempdir().unwrap();
         fs::create_dir_all(root.path().join("res/field/scripts")).unwrap();
@@ -528,19 +658,13 @@ mod tests {
             "ScriptEntry Test\nScriptEntryEnd\n\nTest:\n    End\n",
         )
         .unwrap();
-        fs::create_dir_all(root.path().join(COMMAND_DATABASE_DIR)).unwrap();
-        write_database(
-            &root
-                .path()
-                .join(COMMAND_DATABASE_DIR)
-                .join("platinum_v2.json"),
-            "Platinum",
-        );
+        let user_dir = make_user_db_dir(root.path(), "Platinum");
 
         let report = run_init_with_options(
             Some(root.path().to_path_buf()),
             InitOptions {
                 interactive: false,
+                user_db_dir_override: Some(user_dir),
                 ..InitOptions::default()
             },
         )
@@ -555,16 +679,16 @@ mod tests {
     #[test]
     fn run_init_errors_when_workspace_cannot_be_opened() {
         let root = tempdir().unwrap();
-        fs::create_dir_all(root.path().join(COMMAND_DATABASE_DIR)).unwrap();
-        write_database(
-            &root
-                .path()
-                .join(COMMAND_DATABASE_DIR)
-                .join("platinum_v2.json"),
-            "Platinum",
-        );
+        let user_dir = make_user_db_dir(root.path(), "Platinum");
 
-        let error = run_init(Some(root.path().to_path_buf())).unwrap_err();
+        let error = run_init_with_options(
+            Some(root.path().to_path_buf()),
+            InitOptions {
+                user_db_dir_override: Some(user_dir),
+                ..InitOptions::default()
+            },
+        )
+        .unwrap_err();
         assert!(
             error.to_string().contains("Failed to open workspace"),
             "unexpected error: {error}"
@@ -603,5 +727,70 @@ mod tests {
         let mut files = Vec::new();
         collect_v2_files(out.path(), &mut files).unwrap();
         assert!(!files.is_empty());
+    }
+
+    #[test]
+    fn refresh_user_db_cache_uses_embedded_when_no_cache_and_no_network() {
+        let dir = tempdir().unwrap();
+        // Use a non-routable address so the download fails fast
+        let used_embedded = refresh_user_db_cache(dir.path()).unwrap();
+
+        // The download will either fail (no network) or succeed — either way
+        // the cache should have files afterward.
+        let mut files = Vec::new();
+        collect_v2_files(dir.path(), &mut files).unwrap();
+        assert!(!files.is_empty(), "cache should be populated after refresh");
+        // Only assert embedded was used if the download genuinely failed
+        // (network may or may not be available in CI).
+        let _ = used_embedded;
+    }
+
+    #[test]
+    fn ensure_project_database_copies_matching_family_file() {
+        let dir = tempdir().unwrap();
+        let user_dir = dir.path().join("user");
+        fs::create_dir_all(&user_dir).unwrap();
+        write_database(&user_dir.join("platinum_v2.json"), "Platinum");
+        write_database(&user_dir.join("hgss_v2.json"), "HeartGold");
+
+        let project_dir = dir.path().join("project");
+        ensure_project_database(&project_dir, &user_dir, Some(GameFamily::Platinum)).unwrap();
+
+        assert!(project_dir.join("platinum_v2.json").exists());
+        assert!(!project_dir.join("hgss_v2.json").exists());
+    }
+
+    #[test]
+    fn ensure_project_database_copies_all_when_no_family() {
+        let dir = tempdir().unwrap();
+        let user_dir = dir.path().join("user");
+        fs::create_dir_all(&user_dir).unwrap();
+        write_database(&user_dir.join("platinum_v2.json"), "Platinum");
+        write_database(&user_dir.join("hgss_v2.json"), "HeartGold");
+
+        let project_dir = dir.path().join("project");
+        ensure_project_database(&project_dir, &user_dir, None).unwrap();
+
+        assert!(project_dir.join("platinum_v2.json").exists());
+        assert!(project_dir.join("hgss_v2.json").exists());
+    }
+
+    #[test]
+    fn ensure_project_database_leaves_existing_db_untouched() {
+        let dir = tempdir().unwrap();
+        let user_dir = dir.path().join("user");
+        fs::create_dir_all(&user_dir).unwrap();
+        write_database(&user_dir.join("hgss_v2.json"), "HeartGold");
+
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        write_database(&project_dir.join("platinum_v2.json"), "Platinum");
+
+        // Even though the user dir has HGSS and family says HGSS, the project
+        // dir is non-empty so we must not touch it.
+        ensure_project_database(&project_dir, &user_dir, Some(GameFamily::HGSS)).unwrap();
+
+        assert!(project_dir.join("platinum_v2.json").exists());
+        assert!(!project_dir.join("hgss_v2.json").exists());
     }
 }

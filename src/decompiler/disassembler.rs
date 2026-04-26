@@ -961,7 +961,7 @@ impl<'a> Disassembler<'a> {
         }
 
         let bytes_consumed = offset - start;
-        let final_args = self.omit_trailing_defaults(&binary_args, params);
+        let final_args = Self::omit_trailing_defaults(&binary_args, params);
         Ok((final_args, bytes_consumed))
     }
 
@@ -981,7 +981,6 @@ impl<'a> Disassembler<'a> {
     }
 
     fn omit_trailing_defaults(
-        &self,
         binary_args: &[Arg],
         params: &[crate::database::ParamDef],
     ) -> Vec<Arg> {

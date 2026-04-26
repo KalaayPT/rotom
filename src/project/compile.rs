@@ -1,8 +1,8 @@
 use crate::{
-    BatchCompileResult, BatchDecompileResult, CompileError, CompileFailure, ConstantDb, DatabaseV2,
-    DecompileFailure, compile_batch, decompile_file_for_batch,
+    BatchCompileResult, BatchDecompileResult, CompileError, CompileFailure, CompileResult,
+    ConstantDb, DatabaseV2, DecompileFailure, decompile_file_for_batch,
 };
-use rayon::prelude::{ParallelIterator, IntoParallelRefIterator};
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,22 +11,23 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use super::config::{ProjectTypeConfig, RotomConfig};
 use super::error::{ProjectError, Result};
-use crate::compile_state::{COMPILER_VERSION, CompileState, FileState};
+use crate::compile_state::{COMPILER_VERSION, CompileState, FileState, FileStatus};
 
-enum PlanResult {
+enum WorkerResult {
     Skip {
         relative_path: String,
+        source_hash: u64,
+        dependency_hashes: HashMap<String, u64>,
     },
     Failure {
         relative_path: String,
         failure: CompileFailure,
     },
-    Compile {
-        input: PathBuf,
-        output: PathBuf,
+    Success {
         relative_path: String,
         source_hash: u64,
         dependency_hashes: HashMap<String, u64>,
+        result: CompileResult,
     },
 }
 
@@ -84,6 +85,7 @@ pub fn project_output_path(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn compile_project(
     root: &Path,
     config: &RotomConfig,
@@ -92,28 +94,54 @@ pub fn compile_project(
     let work = collect_project_compile_work(root, config)?;
     let mut session = load_compile_session(root, config, force)?;
 
-    // Borrow fields immutably so the parallel planning closure can use them.
+    // Borrow fields immutably so the parallel closure can use them.
     let constants = &session.constants;
     let state = &session.state;
     let force_compile = session.force_compile;
+    let db = &session.db;
 
-    // Parallel planning: hash sources and discover dependencies for every file.
-    // Most files will be skipped; we want this to use all cores.
-    let planned: Vec<_> = work
+    let total_files = work.len();
+    let progress = indicatif::ProgressBar::new(total_files as u64);
+    progress.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+    progress.set_message("");
+
+    // Single parallel pass: check staleness and compile stale files in one go.
+    let results: Vec<_> = work
         .par_iter()
         .map(|(input, output)| {
-            let relative_path = relative_project_path(root, input)?;
+            let relative_path = match relative_project_path(root, input) {
+                Ok(rp) => rp,
+                Err(error) => {
+                    progress.inc(1);
+                    return Ok(WorkerResult::Failure {
+                        relative_path: input.to_string_lossy().to_string(),
+                        failure: CompileFailure {
+                            path: input.clone(),
+                            error: CompileError::Io {
+                                message: error.to_string(),
+                            },
+                            source: String::new(),
+                        },
+                    });
+                }
+            };
 
-            let source_hash = match fs::read(input).map(|bytes| xxh3_64(&bytes)) {
-                Ok(hash) => hash,
+            let source = match fs::read_to_string(input) {
+                Ok(s) => s,
                 Err(source) => {
-                    return Ok(PlanResult::Failure {
+                    progress.inc(1);
+                    return Ok(WorkerResult::Failure {
                         relative_path,
                         failure: CompileFailure {
                             path: input.clone(),
                             error: CompileError::Io {
                                 message: format!(
-                                    "Failed to hash input file '{}': {}",
+                                    "Failed to read input file '{}': {}",
                                     input.display(),
                                     source
                                 ),
@@ -123,17 +151,51 @@ pub fn compile_project(
                     });
                 }
             };
-
+            let source_hash = xxh3_64(source.as_bytes());
             let output_hash = fs::read(output).ok().map(|bytes| xxh3_64(&bytes));
-            let dependency_hashes = match dependency_hashes_for_script(root, input, constants) {
-                Ok(hashes) => hashes,
-                Err(failure) => {
-                    return Ok(PlanResult::Failure {
-                        relative_path,
-                        failure,
-                    });
-                }
-            };
+
+            // Fast path: if source_hash + output_hash match stored values, the
+            // file isn't dirty, and all stored dependency files are still
+            // unchanged, skip include-parsing entirely.
+            if !force_compile
+                && let Some(entry) = state.entries.get(&relative_path)
+                && entry.status != FileStatus::Dirty
+                && entry.source_hash == source_hash
+                && entry.output_hash == output_hash.unwrap_or(0)
+                && entry
+                    .dependency_hashes
+                    .iter()
+                    .all(|(dep_path, &stored_hash)| {
+                        fs::read(root.join(dep_path))
+                            .map(|bytes| xxh3_64(&bytes) == stored_hash)
+                            .unwrap_or(false)
+                    })
+            {
+                progress.inc(1);
+                return Ok(WorkerResult::Skip {
+                    relative_path,
+                    source_hash,
+                    dependency_hashes: entry.dependency_hashes.clone(),
+                });
+            }
+
+            let file_name = input
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            progress.set_message(format!("Resolving {file_name}"));
+            let (dependency_hashes, loaded_constants) =
+                match dependency_hashes_for_script(root, input, constants) {
+                    Ok(result) => result,
+                    Err(failure) => {
+                        progress.inc(1);
+                        return Ok(WorkerResult::Failure {
+                            relative_path,
+                            failure,
+                        });
+                    }
+                };
 
             if !force_compile
                 && !state.file_is_stale(
@@ -143,90 +205,106 @@ pub fn compile_project(
                     &dependency_hashes,
                 )
             {
-                return Ok(PlanResult::Skip { relative_path });
+                progress.inc(1);
+                return Ok(WorkerResult::Skip {
+                    relative_path,
+                    source_hash,
+                    dependency_hashes,
+                });
             }
 
-            Ok(PlanResult::Compile {
-                input: input.clone(),
-                output: output.clone(),
-                relative_path,
-                source_hash,
-                dependency_hashes,
-            })
+            progress.set_message(format!("Compiling {file_name}"));
+            // Use the already-loaded per-file constants to avoid a second clone_for_script.
+            let constants_for_compile = loaded_constants.as_ref().unwrap_or(constants);
+            let compile_result = crate::compile_file_internal_with_source(
+                input,
+                output,
+                db,
+                constants_for_compile,
+                false,
+                &source,
+            );
+            progress.inc(1);
+
+            match compile_result {
+                Ok(result) => Ok(WorkerResult::Success {
+                    relative_path,
+                    source_hash,
+                    dependency_hashes,
+                    result,
+                }),
+                Err(crate::CompileFileError::IoError(error)) => Ok(WorkerResult::Failure {
+                    relative_path,
+                    failure: CompileFailure {
+                        path: input.clone(),
+                        error,
+                        source: String::new(),
+                    },
+                }),
+                Err(crate::CompileFileError::CompileError { error, source }) => {
+                    Ok(WorkerResult::Failure {
+                        relative_path,
+                        failure: CompileFailure {
+                            path: input.clone(),
+                            error,
+                            source,
+                        },
+                    })
+                }
+            }
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let mut stale = Vec::new();
+    progress.finish_with_message("Done");
+
+    let mut successes = Vec::new();
     let mut failures = Vec::new();
     let mut current_paths = Vec::with_capacity(work.len());
 
-    for plan in planned {
-        match plan {
-            PlanResult::Skip { relative_path } => {
-                current_paths.push(relative_path);
+    for worker_result in results {
+        match worker_result {
+            WorkerResult::Skip {
+                relative_path,
+                source_hash,
+                dependency_hashes,
+            } => {
+                current_paths.push(relative_path.clone());
+                // Preserve the existing output_hash so the file isn't
+                // spuriously marked stale on the next run.
+                let existing = session
+                    .state
+                    .entries
+                    .get(&relative_path)
+                    .map_or(0, |e| e.output_hash);
+                let file_state = FileState::compiled(source_hash, existing, dependency_hashes);
+                session.state.entries.insert(relative_path, file_state);
             }
-            PlanResult::Failure {
+            WorkerResult::Success {
+                relative_path,
+                source_hash,
+                dependency_hashes,
+                result,
+            } => {
+                current_paths.push(relative_path.clone());
+                let output_hash = fs::read(&result.output).ok().map(|bytes| xxh3_64(&bytes));
+                let file_state =
+                    FileState::compiled(source_hash, output_hash.unwrap_or(0), dependency_hashes);
+                session.state.entries.insert(relative_path, file_state);
+                successes.push(result);
+            }
+            WorkerResult::Failure {
                 relative_path,
                 failure,
             } => {
                 current_paths.push(relative_path.clone());
-                session
-                    .state
-                    .entries
-                    .insert(relative_path, FileState::dirty(0, 0, HashMap::new()));
+                let output_hash = fs::read(&failure.path).ok().map(|bytes| xxh3_64(&bytes));
+                session.state.entries.insert(
+                    relative_path,
+                    FileState::dirty(0, output_hash.unwrap_or(0), HashMap::new()),
+                );
                 failures.push(failure);
             }
-            PlanResult::Compile {
-                input,
-                output,
-                relative_path,
-                source_hash,
-                dependency_hashes,
-            } => {
-                current_paths.push(relative_path.clone());
-                stale.push((input, output, relative_path, source_hash, dependency_hashes));
-            }
         }
-    }
-
-    // Compile stale files in parallel using the shared batch function.
-    // Each worker clones constants internally for its own script.
-    let work_items: Vec<_> = stale
-        .iter()
-        .map(|(input, output, _, _, _)| (input.clone(), output.clone()))
-        .collect();
-
-    let batch_result = compile_batch(&work_items, &session.db, &session.constants, true);
-
-    // Fold results back into compile state
-    let successes = batch_result.successes;
-    failures.extend(batch_result.failures.into_iter().map(|f| {
-        // Mark dirty in state for failures
-        if let Ok(relative) = relative_project_path(root, &f.path) {
-            let output_hash = fs::read(&f.path).map_or(0, |bytes| xxh3_64(&bytes));
-            session
-                .state
-                .entries
-                .insert(relative, FileState::dirty(0, output_hash, HashMap::new()));
-        }
-        f
-    }));
-
-    for (input, output, relative_path, source_hash, dependency_hashes) in stale {
-        let output_hash = fs::read(&output).ok().map(|bytes| xxh3_64(&bytes));
-        let extension = input
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let was_transpiled = extension == "s" || extension == "script";
-
-        let file_state = if was_transpiled {
-            FileState::transpiled(source_hash, output_hash.unwrap_or(0), dependency_hashes)
-        } else {
-            FileState::compiled(source_hash, output_hash.unwrap_or(0), dependency_hashes)
-        };
-        session.state.entries.insert(relative_path, file_state);
     }
 
     finish_compile_session(&mut session, current_paths)?;
@@ -237,24 +315,25 @@ pub fn compile_project(
     })
 }
 
-/// Discover dependency file hashes for a script without keeping a cloned `ConstantDb`.
-/// The clone is temporary: dropped immediately after dependency paths are collected.
+/// Clone the constant database for a script file, discover its include-file
+/// dependencies, and return both the loaded `ConstantDb` and the dependency
+/// hashes so the caller can reuse the clone for compilation without a second
+/// include-parse.  Returns `None` for the `ConstantDb` on non-script files.
 fn dependency_hashes_for_script(
     root: &Path,
     input: &Path,
     constants: &ConstantDb,
-) -> std::result::Result<HashMap<String, u64>, CompileFailure> {
+) -> std::result::Result<(HashMap<String, u64>, Option<ConstantDb>), CompileFailure> {
     let extension = input
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     if extension != "s" && extension != "rotom" {
-        return Ok(HashMap::new());
+        return Ok((HashMap::new(), None));
     }
 
-    // Temporary clone — dropped when this function returns.
-    let temp = constants
+    let loaded = constants
         .clone_for_script(input)
         .map_err(|error| CompileFailure {
             path: input.to_path_buf(),
@@ -265,7 +344,7 @@ fn dependency_hashes_for_script(
     let canonical_input = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
     let mut dependency_hashes = HashMap::new();
 
-    for path in temp.loaded_script_file_paths() {
+    for path in loaded.loaded_script_file_paths() {
         if path == canonical_input {
             continue;
         }
@@ -299,7 +378,7 @@ fn dependency_hashes_for_script(
         }
     }
 
-    Ok(dependency_hashes)
+    Ok((dependency_hashes, Some(loaded)))
 }
 
 /// Decompile every project binary into its configured source tree and record the
@@ -427,7 +506,7 @@ fn update_decompile_state(
                 source,
             })?;
         let mut file_state = FileState::decompiled(source_hash, output_hash);
-        file_state.quirks = success.quirks.clone();
+        file_state.quirks.clone_from(&success.quirks);
         state.entries.insert(relative_path, file_state);
     }
 

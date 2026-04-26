@@ -119,19 +119,7 @@ fn checkout_or_die(path: &Path, commit: &str) {
 /// Return a persistent temp directory for project lifecycle tests.
 /// These are NOT auto-deleted so you can inspect uxie/rotom artifacts.
 pub fn persistent_test_dir(name: &str) -> PathBuf {
-    let base = std::env::temp_dir().join("rotom_lifecycle_tests");
-    // Use a counter file to avoid collisions across test runs
-    let counter_path = base.join(".counter");
-    let counter: u64 = std::fs::read_to_string(&counter_path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
-        + 1;
-    std::fs::create_dir_all(&base).ok();
-    std::fs::write(&counter_path, counter.to_string()).ok();
-
-    let dir = base.join(format!("{}_{}", name, counter));
-    // Clean up any previous run with the same counter
+    let dir = std::env::temp_dir().join("rotom_lifecycle_tests").join(name);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).ok();
     }

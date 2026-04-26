@@ -7,6 +7,7 @@
 use rayon::prelude::{ParallelIterator, IntoParallelRefIterator};
 
 use crate::database::ConstantDb;
+use crate::progress::CompileProgress;
 use crate::{CompileFailure, CompileResult, DatabaseV2};
 
 /// Compile a list of (`input_path`, `output_path`) pairs in parallel.
@@ -19,11 +20,12 @@ pub fn compile_batch(
     db: &DatabaseV2,
     constants: &ConstantDb,
     load_file_constants: bool,
+    progress: Option<&CompileProgress>,
 ) -> crate::BatchCompileResult {
     let results: Vec<std::result::Result<CompileResult, CompileFailure>> = work
         .par_iter()
         .map(|(input, output)| {
-            crate::compile_file_internal(input, output, db, constants, load_file_constants).map_err(
+            let result = crate::compile_file_internal(input, output, db, constants, load_file_constants).map_err(
                 |e| match e {
                     crate::CompileFileError::IoError(error) => CompileFailure {
                         path: input.clone(),
@@ -36,7 +38,12 @@ pub fn compile_batch(
                         source,
                     },
                 },
-            )
+            );
+            match &result {
+                Ok(_) => { if let Some(p) = progress { p.inc_completed(); } }
+                Err(_) => { if let Some(p) = progress { p.inc_failed(); } }
+            }
+            result
         })
         .collect();
 
