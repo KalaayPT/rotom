@@ -1037,9 +1037,8 @@ impl ConstantDb {
             2566 => Some(("LOCATION_", None)),
             55533 => Some(("TRAINER_", Some(3))),
             64556 => Some(("TRAINER_CLASS_", None)),
-            63689 => Some(("MOVE_", None)),
-            // HGSS all-caps move names (e.g. EXTREMESPEED) — already in constant case.
-            22192 => Some(("MOVE_", None)),
+            // Platinum move names (e.g. Tackle) and HGSS all-caps move names (e.g. EXTREMESPEED).
+            63689 | 22192 => Some(("MOVE_", None)),
             _ => None,
         }
     }
@@ -1126,28 +1125,20 @@ impl DatabaseV2 {
             if cache.join(".extracted").exists() {
                 return cache;
             }
-            Self::download_and_extract_test_dbs(&cache);
+            Self::extract_embedded_test_dbs(&cache);
             cache
         })
         .clone()
     }
 
-    fn download_and_extract_test_dbs(cache: &Path) {
+    fn extract_embedded_test_dbs(cache: &Path) {
         let _ = std::fs::remove_dir_all(cache);
         std::fs::create_dir_all(cache).unwrap();
 
-        let url = crate::project::init::LATEST_COMMAND_DATABASE_URL;
-        let response = minreq::get(url)
-            .with_header("User-Agent", "rotom/test")
-            .with_timeout(30)
-            .send()
-            .expect("failed to download test database");
-
-        let zip_path = cache.join("db-latest.zip");
-        std::fs::write(&zip_path, response.into_bytes()).unwrap();
-
-        let file = std::fs::File::open(&zip_path).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+            crate::project::init::EMBEDDED_COMMAND_DATABASE_ZIP,
+        ))
+        .unwrap();
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).unwrap();
             let Some(name) = entry.enclosed_name() else {
@@ -1165,7 +1156,6 @@ impl DatabaseV2 {
             std::io::copy(&mut entry, &mut out_file).unwrap();
         }
 
-        let _ = std::fs::remove_file(&zip_path);
         std::fs::write(cache.join(".extracted"), "").unwrap();
     }
 }

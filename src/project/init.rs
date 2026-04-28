@@ -17,7 +17,7 @@ const ROTOM_DIR: &str = ".rotom";
 const COMMAND_DATABASE_DIR: &str = ".rotom/command_database";
 const CACHE_DIR: &str = ".rotom/cache";
 const STATUS_DIR: &str = ".rotom/status";
-const EMBEDDED_COMMAND_DATABASE_ZIP: &[u8] =
+pub(crate) const EMBEDDED_COMMAND_DATABASE_ZIP: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/embedded-command-database.zip"));
 
 #[derive(Debug, Clone)]
