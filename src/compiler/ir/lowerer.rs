@@ -1336,10 +1336,8 @@ mod tests {
     use crate::database::{CommandType, ConstantDb, DatabaseMeta, DatabaseV2, ParamType, Variant};
     use std::collections::HashMap;
 
-    fn create_test_db() -> DatabaseV2 {
-        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).expect(
-            "Test database not found at src/db/platinum_v2.json - tests require the database file",
-        )
+    fn create_test_db() -> &'static DatabaseV2 {
+        DatabaseV2::test_platinum()
     }
 
     fn create_view_rankings_shape_db() -> DatabaseV2 {
@@ -1423,9 +1421,9 @@ mod tests {
 
         let mut constants = ConstantDb::new();
         let db = create_test_db();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         analyzer.analyze(&script_file).unwrap();
 
         (script_file, analyzer.symbols)
@@ -1452,7 +1450,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         let functions: Vec<_> = items
@@ -1481,7 +1479,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1565,7 +1563,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1592,7 +1590,7 @@ action TestAction
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         let actions: Vec<_> = items
@@ -1615,7 +1613,7 @@ action TestAction
         let source = "";
         let (_script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let lowerer = Lowerer::new(&symbols, &db);
+        let lowerer = Lowerer::new(&symbols, db);
 
         let expr = Expression {
             node: ExpressionKind::Number(42),
@@ -1630,7 +1628,7 @@ action TestAction
         let source = "";
         let (_script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let lowerer = Lowerer::new(&symbols, &db);
+        let lowerer = Lowerer::new(&symbols, db);
 
         let expr = Expression {
             node: ExpressionKind::Number(0x42),
@@ -1651,7 +1649,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1685,7 +1683,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1721,7 +1719,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1767,7 +1765,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1804,7 +1802,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1845,7 +1843,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1899,7 +1897,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -1950,9 +1948,9 @@ function TestFunc #1:
 
         let mut constants = ConstantDb::new();
         let db = create_test_db();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
 
         assert!(
@@ -1977,7 +1975,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2014,7 +2012,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2054,7 +2052,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2097,7 +2095,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2143,7 +2141,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2187,7 +2185,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2220,7 +2218,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2257,7 +2255,7 @@ function TestFunc #1:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2304,7 +2302,7 @@ func_c:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2384,7 +2382,7 @@ label_c:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2462,7 +2460,7 @@ func_b:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2512,7 +2510,7 @@ some_label:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2554,7 +2552,7 @@ label6:
 ";
         let (script_file, symbols) = parse_and_analyze(source);
         let db = create_test_db();
-        let mut lowerer = Lowerer::new(&symbols, &db);
+        let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2584,7 +2582,7 @@ label6:
     fn test_macro_condition_with_constants() {
         let db = create_test_db();
         let mut constants = crate::database::ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let source = r"
 function Test #1:
@@ -2592,7 +2590,7 @@ function Test #1:
     End
 ";
         let (script_file, symbols) = parse_and_analyze(source);
-        let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+        let mut lowerer = Lowerer::with_constants(&symbols, db, &constants);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2614,7 +2612,7 @@ function Test #1:
     fn test_macro_condition_with_var_reference() {
         let db = create_test_db();
         let mut constants = crate::database::ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let source = r"
 function Test #1:
@@ -2622,7 +2620,7 @@ function Test #1:
     End
 ";
         let (script_file, symbols) = parse_and_analyze(source);
-        let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+        let mut lowerer = Lowerer::with_constants(&symbols, db, &constants);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
@@ -2644,7 +2642,7 @@ function Test #1:
     fn test_nested_macro_expansion_gotoifge() {
         let db = create_test_db();
         let mut constants = crate::database::ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let source = r"
 function Test #1:
@@ -2653,7 +2651,7 @@ TestLabel:
     End
 ";
         let (script_file, symbols) = parse_and_analyze(source);
-        let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+        let mut lowerer = Lowerer::with_constants(&symbols, db, &constants);
 
         let result = lowerer.lower_script_file(&script_file);
         assert!(
@@ -2682,7 +2680,7 @@ TestLabel:
     fn test_nested_macro_expansion_gotoifinrange_with_incrementing_expression() {
         let db = create_test_db();
         let mut constants = crate::database::ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let source = r"
 function Test #1:
@@ -2691,7 +2689,7 @@ TestLabel:
     End
 ";
         let (script_file, symbols) = parse_and_analyze(source);
-        let mut lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+        let mut lowerer = Lowerer::with_constants(&symbols, db, &constants);
 
         let result = lowerer.lower_script_file(&script_file);
         assert!(
@@ -2739,7 +2737,7 @@ function Test #1:
     End
 ",
         );
-        let lowerer = Lowerer::with_constants(&symbols, &db, &constants);
+        let lowerer = Lowerer::with_constants(&symbols, db, &constants);
 
         let expr = Expression {
             span: 0..0,
@@ -2764,9 +2762,9 @@ function Test #1:
     fn test_nested_macro_with_named_constant() {
         use std::path::Path;
 
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = crate::database::DatabaseV2::test_platinum();
         let mut constants = crate::database::ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let decomp_root = Path::new("C:/dev/pokeplatinum");
         if !decomp_root.exists() {
@@ -2792,10 +2790,10 @@ TestLabel:
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, &db);
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, db);
         analyzer.analyze(&script_file).unwrap();
 
-        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, &constants);
 
         let result = lowerer.lower_script_file(&script_file);
         assert!(
@@ -2809,9 +2807,9 @@ TestLabel:
     fn test_nested_macro_with_var_constant() {
         use std::path::Path;
 
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = crate::database::DatabaseV2::test_platinum();
         let mut constants = crate::database::ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let decomp_root = Path::new("C:/dev/pokeplatinum");
         if !decomp_root.exists() {
@@ -2839,10 +2837,10 @@ TestLabel:
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, &db);
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, db);
         analyzer.analyze(&script_file).unwrap();
 
-        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, &constants);
 
         let result = lowerer.lower_script_file(&script_file);
         assert!(
@@ -2856,9 +2854,9 @@ TestLabel:
     fn test_compile_scripts_common() {
         use std::path::Path;
 
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = crate::database::DatabaseV2::test_platinum();
         let mut constants = crate::database::ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let decomp_root = Path::new("C:/dev/pokeplatinum");
         if !decomp_root.exists() {
@@ -2872,7 +2870,7 @@ TestLabel:
         }
 
         let source = std::fs::read_to_string(&script_path).unwrap();
-        let transpiled = crate::transpiler::decomp::transpile(&source, Some(&db))
+        let transpiled = crate::transpiler::decomp::transpile(&source, Some(db))
             .expect("decomp transpile should succeed");
 
         let lexer = crate::compiler::Lexer::new(&transpiled.source);
@@ -2882,12 +2880,12 @@ TestLabel:
             Err(e) => panic!("Parse error: {:?}", e),
         };
 
-        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, &db);
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, db);
         if let Err(e) = analyzer.analyze(&script_file) {
             panic!("Analysis error: {:?}", e);
         }
 
-        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, &constants);
         let result = lowerer.lower_script_file(&script_file);
         assert!(
             result.is_ok(),
@@ -2900,9 +2898,9 @@ TestLabel:
     fn test_callif_macro_with_named_constant() {
         use std::path::Path;
 
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = crate::database::DatabaseV2::test_platinum();
         let mut constants = crate::database::ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let decomp_root = Path::new("C:/dev/pokeplatinum");
         if !decomp_root.exists() {
@@ -2930,10 +2928,10 @@ TestLabel:
         let mut parser = crate::compiler::Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, &db);
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, db);
         analyzer.analyze(&script_file).unwrap();
 
-        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, &db, &constants);
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, &constants);
 
         let result = lowerer.lower_script_file(&script_file);
         assert!(

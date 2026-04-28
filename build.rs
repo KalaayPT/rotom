@@ -1,48 +1,23 @@
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use zip::write::FileOptions;
+use std::path::PathBuf;
 
 fn main() -> io::Result<()> {
-    println!("cargo:rerun-if-changed=src/db");
+    println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR should be set"));
     let zip_path = out_dir.join("embedded-command-database.zip");
-    let file = File::create(zip_path)?;
-    let mut zip = zip::ZipWriter::new(file);
 
-    let source_root = Path::new("src/db");
-    add_dir_to_zip(&mut zip, source_root, source_root)?;
-    zip.finish()?;
-    Ok(())
-}
+    // Download the latest command database release and embed it.
+    let url = "https://github.com/DS-Pokemon-Rom-Editor/scrcmd-database/releases/latest/download/db-latest.zip";
+    let response = minreq::get(url)
+        .with_header("User-Agent", format!("rotom/{} build", env!("CARGO_PKG_VERSION")))
+        .with_timeout(30)
+        .send()
+        .map_err(|e| io::Error::other(format!("download failed: {e}")))?;
 
-fn add_dir_to_zip<W: Write + io::Seek>(
-    zip: &mut zip::ZipWriter<W>,
-    root: &Path,
-    dir: &Path,
-) -> io::Result<()> {
-    let options: FileOptions<'_, ()> = FileOptions::default();
-
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            add_dir_to_zip(zip, root, &path)?;
-            continue;
-        }
-
-        let relative = path
-            .strip_prefix(root)
-            .expect("file should stay under src/db")
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-        zip.start_file(relative, options)?;
-        let bytes = fs::read(&path)?;
-        zip.write_all(&bytes)?;
-    }
+    let mut file = File::create(&zip_path)?;
+    file.write_all(&response.into_bytes())?;
 
     Ok(())
 }

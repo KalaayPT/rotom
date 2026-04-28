@@ -124,10 +124,8 @@ mod tests {
     use crate::compiler::ast::FunctionHeader;
     use crate::compiler::ir::IrFunction;
 
-    fn create_test_db() -> DatabaseV2 {
-        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).expect(
-            "Test database not found at src/db/platinum_v2.json - tests require the database file",
-        )
+    fn create_test_db() -> &'static DatabaseV2 {
+        DatabaseV2::test_platinum()
     }
 
     #[test]
@@ -157,7 +155,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, &db);
+        let source = ir_to_source(&output, db);
 
         assert!(
             source.contains("GoToIf EQUAL, some_label"),
@@ -209,7 +207,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, &db);
+        let source = ir_to_source(&output, db);
 
         assert!(source.contains("GoToIf LESS, label0"), "Missing LESS");
         assert!(source.contains("GoToIf EQUAL, label1"), "Missing EQUAL");
@@ -249,7 +247,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, &db);
+        let source = ir_to_source(&output, db);
 
         assert!(
             source.contains("CallIf EQUAL, some_func"),

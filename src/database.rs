@@ -727,7 +727,7 @@ impl ConstantDb {
         root: P,
         mut symbols: SymbolTable,
     ) -> usize {
-        Self::add_dspre_species_aliases(&mut symbols);
+        symbols.add_dspre_aliases();
         let count = symbols.get_all_defines().len();
         self.uxie_project_root = Some(root.as_ref().to_path_buf());
         self.uxie_base_symbols = Some(Arc::new(symbols.clone()));
@@ -824,7 +824,7 @@ impl ConstantDb {
             return Ok(0);
         }
 
-        Self::add_dspre_species_aliases(&mut symbols);
+        symbols.add_dspre_aliases();
 
         if let Some(existing) = &mut self.uxie_symbols {
             existing.extend(symbols);
@@ -1030,21 +1030,6 @@ impl ConstantDb {
         Ok(false)
     }
 
-    fn add_dspre_species_aliases(symbols: &mut SymbolTable) {
-        for (alias, canonical) in [
-            ("SPECIES_NIDORANF", "SPECIES_NIDORAN_F"),
-            ("SPECIES_NIDORANM", "SPECIES_NIDORAN_M"),
-        ] {
-            if symbols.resolve_constant(alias).is_some() {
-                continue;
-            }
-
-            if let Some(value) = symbols.resolve_constant(canonical) {
-                symbols.insert_define(alias.to_string(), value);
-            }
-        }
-    }
-
     fn dspre_text_archive_constant_format(key: u16) -> Option<(&'static str, Option<usize>)> {
         match key {
             51885 => Some(("ITEM_", None)),
@@ -1053,6 +1038,8 @@ impl ConstantDb {
             55533 => Some(("TRAINER_", Some(3))),
             64556 => Some(("TRAINER_CLASS_", None)),
             63689 => Some(("MOVE_", None)),
+            // HGSS all-caps move names (e.g. EXTREMESPEED) — already in constant case.
+            22192 => Some(("MOVE_", None)),
             _ => None,
         }
     }
@@ -1103,6 +1090,83 @@ impl ConstantDb {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+impl DatabaseV2 {
+    /// Load or download a cached platinum database for tests.
+    pub fn test_platinum() -> &'static Self {
+        static DB: std::sync::OnceLock<DatabaseV2> = std::sync::OnceLock::new();
+        DB.get_or_init(|| {
+            Self::load(Self::test_platinum_path()).expect("failed to load platinum test db")
+        })
+    }
+
+    /// Path to the cached platinum database (downloads if necessary).
+    pub fn test_platinum_path() -> PathBuf {
+        Self::test_db_root().join("platinum_v2.json")
+    }
+
+    /// Load or download a cached HGSS database for tests.
+    pub fn test_hgss() -> &'static Self {
+        static DB: std::sync::OnceLock<DatabaseV2> = std::sync::OnceLock::new();
+        DB.get_or_init(|| Self::load(Self::test_hgss_path()).expect("failed to load hgss test db"))
+    }
+
+    /// Path to the cached HGSS database (downloads if necessary).
+    pub fn test_hgss_path() -> PathBuf {
+        Self::test_db_root().join("hgss_v2.json")
+    }
+
+    /// Root directory containing all test databases.
+    pub fn test_db_root() -> PathBuf {
+        static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        ROOT.get_or_init(|| {
+            let cache = std::env::temp_dir().join("rotom_test_databases");
+            if cache.join(".extracted").exists() {
+                return cache;
+            }
+            Self::download_and_extract_test_dbs(&cache);
+            cache
+        })
+        .clone()
+    }
+
+    fn download_and_extract_test_dbs(cache: &Path) {
+        let _ = std::fs::remove_dir_all(cache);
+        std::fs::create_dir_all(cache).unwrap();
+
+        let url = crate::project::init::LATEST_COMMAND_DATABASE_URL;
+        let response = minreq::get(url)
+            .with_header("User-Agent", "rotom/test")
+            .with_timeout(30)
+            .send()
+            .expect("failed to download test database");
+
+        let zip_path = cache.join("db-latest.zip");
+        std::fs::write(&zip_path, response.into_bytes()).unwrap();
+
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let Some(name) = entry.enclosed_name() else {
+                continue;
+            };
+            let out_path = cache.join(name);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out_path).unwrap();
+                continue;
+            }
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            let mut out_file = std::fs::File::create(&out_path).unwrap();
+            std::io::copy(&mut entry, &mut out_file).unwrap();
+        }
+
+        let _ = std::fs::remove_file(&zip_path);
+        std::fs::write(cache.join(".extracted"), "").unwrap();
     }
 }
 

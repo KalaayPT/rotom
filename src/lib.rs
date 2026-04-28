@@ -766,9 +766,8 @@ mod tests {
         std::env::temp_dir().join(format!("rotom_{}_{}_{}", name, std::process::id(), now))
     }
 
-    fn load_test_db() -> DatabaseV2 {
-        DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
-            .expect("Test database not found at src/db/platinum_v2.json")
+    fn load_test_db() -> &'static DatabaseV2 {
+        DatabaseV2::test_platinum()
     }
 
     fn minimal_script_source() -> &'static str {
@@ -870,7 +869,7 @@ mod tests {
         let db = load_test_db();
         let constants = ConstantDb::new();
 
-        let result = compile_path(&input_path, &output_path, &db, &constants)
+        let result = compile_path(&input_path, &output_path, db, &constants)
             .expect("compile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 
@@ -893,7 +892,7 @@ mod tests {
         let db = load_test_db();
         let constants = ConstantDb::new();
 
-        let result = compile_path(&input_dir, &output_file, &db, &constants);
+        let result = compile_path(&input_dir, &output_file, db, &constants);
         fs::remove_dir_all(&temp_dir).ok();
 
         assert!(
@@ -915,14 +914,14 @@ mod tests {
 
         let db = load_test_db();
         let constants = ConstantDb::new();
-        let bytes = compile_to_bytes(minimal_script_source(), &db, &constants)
+        let bytes = compile_to_bytes(minimal_script_source(), db, &constants)
             .expect("failed to compile seed script");
 
         let input_path = temp_dir.join("input.bin");
         let output_path = temp_dir.join("custom_out.rotom");
         fs::write(&input_path, bytes).expect("failed to write input binary");
 
-        let result = decompile_path(&input_path, &output_path, &db)
+        let result = decompile_path(&input_path, &output_path, db)
             .expect("decompile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 
@@ -940,12 +939,12 @@ mod tests {
 
         let db = load_test_db();
         let constants = ConstantDb::new();
-        let bytes = compile_to_bytes(minimal_script_source(), &db, &constants)
+        let bytes = compile_to_bytes(minimal_script_source(), db, &constants)
             .expect("failed to compile seed script");
 
         fs::write(input_dir.join("0000"), bytes).expect("failed to write extensionless binary");
 
-        let result = decompile_path(&input_dir, &output_dir, &db)
+        let result = decompile_path(&input_dir, &output_dir, db)
             .expect("decompile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 
@@ -984,14 +983,14 @@ function Main #1:
             .load_decomp_project(&temp_dir)
             .expect("failed to load test decomp project");
 
-        let result = compile_path(&input_path, &output_path, &db, &constants)
+        let result = compile_path(&input_path, &output_path, db, &constants)
             .expect("compile_path should return a batch result");
         assert!(result.is_success(), "compile_path should succeed");
 
         let compiled = fs::read(&output_path).expect("failed to read compiled output");
         let expected = compile_to_bytes(
             "function Main #1:\n    Message 7\n    Message 7\n    End\n",
-            &db,
+            db,
             &ConstantDb::new(),
         )
         .expect("expected source should compile");
@@ -1013,14 +1012,14 @@ function Main #1:
     Message BAR
     End
 ",
-            &db,
+            db,
             &constants,
         )
         .expect("symbolic alias chain should compile");
 
         let expected = compile_to_bytes(
             "function Main #1:\n    Message 7\n    End\n",
-            &db,
+            db,
             &ConstantDb::new(),
         )
         .expect("expected source should compile");
@@ -1042,14 +1041,14 @@ function Main #2:
     Message SHARED
     End
 ",
-            &db,
+            db,
             &constants,
         )
         .expect("alias from earlier function body should compile");
 
         let expected = compile_to_bytes(
             "function DefineAlias #1:\n    End\n\nfunction Main #2:\n    Message 7\n    End\n",
-            &db,
+            db,
             &ConstantDb::new(),
         )
         .expect("expected source should compile");
@@ -1073,14 +1072,14 @@ function Second #2:
     Message VALUE
     End
 ",
-            &db,
+            db,
             &constants,
         )
         .expect("top-level alias redefinition should compile");
 
         let expected = compile_to_bytes(
             "function First #1:\n    Message 7\n    End\n\nfunction Second #2:\n    Message 9\n    End\n",
-            &db,
+            db,
             &ConstantDb::new(),
         )
         .expect("expected source should compile");
@@ -1100,7 +1099,7 @@ function Second #2:
 
 alias 7 as SHARED
 ",
-            &db,
+            db,
             &constants,
         );
 
@@ -1137,14 +1136,14 @@ function Main #1:
             .load_decomp_project(&temp_dir)
             .expect("failed to load test decomp project");
 
-        let result = compile_path(&input_path, &output_path, &db, &constants)
+        let result = compile_path(&input_path, &output_path, db, &constants)
             .expect("compile_path should return a batch result");
         assert!(result.is_success(), "compile_path should succeed");
 
         let compiled = fs::read(&output_path).expect("failed to read compiled output");
         let expected = compile_to_bytes(
             "function Main #1:\n    Message 7\n    End\n",
-            &db,
+            db,
             &ConstantDb::new(),
         )
         .expect("expected source should compile");
@@ -1175,7 +1174,7 @@ function Main #1:
             .load_decomp_project(&temp_dir)
             .expect("failed to load test decomp project");
 
-        let result = compile_path(&input_path, &output_path, &db, &constants)
+        let result = compile_path(&input_path, &output_path, db, &constants)
             .expect("compile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 

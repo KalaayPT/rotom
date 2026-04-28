@@ -582,11 +582,9 @@ FrameTable:
 
     #[test]
     fn test_parse_script_id_supports_additive_constant_expression() {
-        let db =
-            crate::database::DatabaseV2::load(std::path::Path::new("src/db/hgss/hgss_v2.json"))
-                .expect("failed to load hgss database");
+        let db = crate::database::DatabaseV2::test_hgss();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
         constants
             .load_directory("src/db")
             .expect("failed to load constants directory");

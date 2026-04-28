@@ -329,16 +329,14 @@ mod tests {
     use crate::database::DatabaseV2;
 
     /// Helper function to create a test database
-    fn create_test_db() -> DatabaseV2 {
-        DatabaseV2::load(std::path::Path::new("src/db/platinum_v2.json")).expect(
-            "Test database not found at src/db/platinum_v2.json - tests require the database file",
-        )
+    fn create_test_db() -> &'static DatabaseV2 {
+        DatabaseV2::test_platinum()
     }
 
     #[test]
     fn test_emit_u8() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         emitter.emit_u8(0x42);
 
@@ -349,7 +347,7 @@ mod tests {
     #[test]
     fn test_emit_u16() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         emitter.emit_u16(0x1234);
 
@@ -360,7 +358,7 @@ mod tests {
     #[test]
     fn test_emit_u32() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         emitter.emit_u32(0x1234_5678);
 
@@ -371,7 +369,7 @@ mod tests {
     #[test]
     fn test_emit_simple_movement() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Emit a simple movement: FaceNorth (opcode 0) with param 1
         emitter.emit_u16(0); // opcode for FaceNorth
@@ -384,7 +382,7 @@ mod tests {
     #[test]
     fn test_emit_movement_with_custom_param() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Emit a movement with custom parameter: Delay8 (opcode 63) with param 5
         emitter.emit_u16(63); // opcode for Delay8
@@ -397,7 +395,7 @@ mod tests {
     #[test]
     fn test_emit_end_movement() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Emit EndMovement (opcode 0xFE) with param 0
         emitter.emit_u16(0xFE);
@@ -410,7 +408,7 @@ mod tests {
     #[test]
     fn test_emit_sequence() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Emit a sequence of movements
         emitter.emit_u16(0); // FaceNorth
@@ -427,7 +425,7 @@ mod tests {
     #[test]
     fn test_emit_ir_movement() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create a simple IR movement action
         let ir_action = IrAction {
@@ -461,7 +459,7 @@ mod tests {
     #[test]
     fn test_emit_ir_function_with_movements() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create a simple IR function with movements using real movement names
         let ir_func = IrFunction {
@@ -495,7 +493,7 @@ mod tests {
     #[test]
     fn test_emit_multiple_functions() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create multiple IR functions using real movement names
         let func1_instructions = vec![
@@ -534,7 +532,7 @@ mod tests {
     #[test]
     fn test_pc_increments_correctly() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         assert_eq!(emitter.pc, 0);
 
@@ -554,7 +552,7 @@ mod tests {
     #[test]
     fn test_output_accumulation() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         emitter.emit_u8(0xAA);
         emitter.emit_u8(0xBB);
@@ -566,7 +564,7 @@ mod tests {
     #[test]
     fn test_empty_action() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create an empty IR action
         let ir_action = IrAction {
@@ -586,7 +584,7 @@ mod tests {
     #[test]
     fn test_action_with_many_movements() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create an action with many movements using real movement names
         let instructions = vec![
@@ -648,7 +646,7 @@ mod tests {
     #[test]
     fn test_emit_script_command() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Test emitting a simple script command: End (opcode 0x02, no params)
         let end_cmd = db
@@ -664,7 +662,7 @@ mod tests {
     #[test]
     fn test_emit_script_command_with_params() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Test emitting Message command (opcode 44 with 1 u8 parameter)
         let message_cmd = db
@@ -692,7 +690,7 @@ mod tests {
         use crate::compiler::parser::JUMP_TABLE_END_MARKER;
 
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create a script with two public functions
         let items = vec![
@@ -737,7 +735,7 @@ mod tests {
     #[test]
     fn test_emit_script_file_label_relocation() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create a function with a jump to a label
         let items = vec![TopLevelItem::Function(IrFunction {
@@ -779,7 +777,7 @@ mod tests {
     #[test]
     fn test_emit_script_file_action_alignment() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create a function followed by an action
         // The action should be 4-byte aligned
@@ -834,7 +832,7 @@ mod tests {
     #[test]
     fn test_emit_stacked_headers_jump_table() {
         let db = create_test_db();
-        let mut emitter = Emitter::new(&db);
+        let mut emitter = Emitter::new(db);
 
         // Create an IR function with two headers
         let ir_func = IrFunction {

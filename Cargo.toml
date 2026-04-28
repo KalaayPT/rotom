@@ -32,6 +32,7 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 indicatif = { version = "0.18.4", features = ["rayon"] }
 
 [build-dependencies]
+minreq = { version = "2.14.1", features = ["https-rustls"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

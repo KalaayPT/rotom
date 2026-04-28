@@ -1,7 +1,6 @@
 /target
 flamegraph.svg
 .idea/
-/src/db/
 /tests/fixtures/*.bin
 *.bin
 *.rotom

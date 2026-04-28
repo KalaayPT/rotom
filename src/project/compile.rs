@@ -776,6 +776,7 @@ mod tests {
         DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
         WorkspaceConfig,
     };
+    use crate::DatabaseV2;
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
@@ -799,11 +800,7 @@ mod tests {
                 binary_roots: vec!["build/scripts".to_string()],
             },
             database: Some(DatabaseConfig {
-                default_file: std::env::current_dir()
-                    .unwrap()
-                    .join("src/db/platinum_v2.json")
-                    .display()
-                    .to_string(),
+                default_file: DatabaseV2::test_platinum_path().display().to_string(),
             }),
         }
     }
@@ -831,11 +828,7 @@ mod tests {
                 binary_roots: vec!["res/field/scripts".to_string()],
             },
             database: Some(DatabaseConfig {
-                default_file: std::env::current_dir()
-                    .unwrap()
-                    .join("src/db/platinum_v2.json")
-                    .display()
-                    .to_string(),
+                default_file: DatabaseV2::test_platinum_path().display().to_string(),
             }),
         }
     }
@@ -1243,9 +1236,7 @@ mod tests {
         fs::create_dir_all(root.join("res/field/scripts")).unwrap();
         fs::create_dir_all(root.join(".rotom/command_database")).unwrap();
         fs::copy(
-            std::env::current_dir()
-                .unwrap()
-                .join("src/db/platinum_v2.json"),
+            DatabaseV2::test_platinum_path(),
             root.join(".rotom/command_database/platinum_v2.json"),
         )
         .unwrap();

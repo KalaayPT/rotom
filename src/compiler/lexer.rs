@@ -458,7 +458,7 @@ mod tests {
         let mut tokens = Vec::new();
         loop {
             let token = lexer.next_token();
-            if let TokenType::EOF = token.kind {
+            if token.kind == TokenType::EOF {
                 break;
             }
             tokens.push(token.kind);
@@ -520,7 +520,7 @@ mod tests {
         let mut tokens = Vec::new();
         loop {
             let token = lexer.next_token();
-            if let TokenType::EOF = token.kind {
+            if token.kind == TokenType::EOF {
                 break;
             }
             tokens.push(token.kind);

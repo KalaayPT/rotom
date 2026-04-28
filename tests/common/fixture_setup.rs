@@ -46,36 +46,20 @@ pub fn ensure_decomp_fixtures() {
     }
 }
 
-/// Verify DSPRE fixtures exist. Panics with instructions if not.
-pub fn ensure_dspre_fixtures() {
+/// Return a DSPRE fixture root when the local fixture tree is present.
+pub fn dspre_fixture_root(game: &str) -> Option<PathBuf> {
     let root = fixture_root();
-    let mut missing = Vec::new();
+    let dspre = root.join("dspre").join(format!("{}_DSPRE_contents", game));
+    let required = [
+        "expanded/scripts",
+        "expanded/textArchives",
+        "unpacked/scripts",
+    ];
 
-    for (game, name) in [("pt", "Platinum"), ("hg", "HeartGold")] {
-        let dspre = root.join("dspre").join(format!("{}_DSPRE_contents", game));
-        let required = [
-            "expanded/scripts",
-            "expanded/textArchives",
-            "unpacked/scripts",
-        ];
-        for sub in required {
-            let path = dspre.join(sub);
-            if !path.exists() {
-                missing.push(format!(
-                    "  DSPRE {}: {} (copy your DSPRE output to {})",
-                    name,
-                    path.display(),
-                    dspre.display()
-                ));
-            }
-        }
-    }
-
-    if !missing.is_empty() {
-        panic!(
-            "Missing DSPRE fixtures. See CONTRIBUTING.md for setup instructions.\n\n{}",
-            missing.join("\n")
-        );
+    if required.iter().all(|sub| dspre.join(sub).exists()) {
+        Some(dspre)
+    } else {
+        None
     }
 }
 
@@ -101,9 +85,7 @@ fn clone_or_die(url: &str, dest: &Path) {
         .arg(dest)
         .status()
         .unwrap_or_else(|e| panic!("Failed to run `git clone`. Is git installed?\nError: {}", e));
-    if !status.success() {
-        panic!("git clone failed for {}", url);
-    }
+    assert!(status.success(), "git clone failed for {}", url)
 }
 
 fn checkout_or_die(path: &Path, commit: &str) {
@@ -114,9 +96,7 @@ fn checkout_or_die(path: &Path, commit: &str) {
         .arg(commit)
         .status()
         .expect("git checkout failed");
-    if !status.success() {
-        panic!("git checkout {} failed in {}", commit, path.display());
-    }
+    assert!(status.success(), "git checkout {} failed in {}", commit, path.display())
 }
 
 /// Return a persistent temp directory for project lifecycle tests.

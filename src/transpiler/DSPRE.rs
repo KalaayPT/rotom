@@ -308,7 +308,6 @@ fn strip_block_comments(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn test_script_header() {
@@ -508,8 +507,7 @@ End
 
     #[test]
     fn test_dspre_transpile_applies_explicit_legacy_sound_overrides() {
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
-            .expect("test database should load");
+        let db = crate::database::DatabaseV2::test_platinum();
         let input = r"Script 1:
     PlayFanfare 1500
     StopFanfare 1500
@@ -517,7 +515,7 @@ End
     PlaySound 1501
     WaitSound 1501
 End";
-        let output = transpile(input, Some(&db));
+        let output = transpile(input, Some(db));
 
         assert!(output.contains("PlaySE 1500"));
         assert!(output.contains("StopSE 1500"));
@@ -528,23 +526,20 @@ End";
 
     #[test]
     fn test_dspre_transpile_applies_family_specific_wild_battle_overrides() {
-        let platinum = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
-            .expect("test database should load");
-        let hgss = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
-            .expect("test database should load");
+        let platinum = crate::database::DatabaseV2::test_platinum();
+        let hgss = crate::database::DatabaseV2::test_hgss();
 
         let input = "Script 1:\n    WildBattle 1 2 3\nEnd";
 
-        assert!(transpile(input, Some(&platinum)).contains("StartWildBattle 1, 2, 3"));
-        assert!(transpile(input, Some(&hgss)).contains("RocketTrapBattle 1, 2, 3"));
+        assert!(transpile(input, Some(platinum)).contains("StartWildBattle 1, 2, 3"));
+        assert!(transpile(input, Some(hgss)).contains("RocketTrapBattle 1, 2, 3"));
     }
 
     #[test]
     fn test_dspre_transpile_maps_hgss_wild_battle_sp_to_canonical_name() {
-        let hgss = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
-            .expect("test database should load");
+        let hgss = crate::database::DatabaseV2::test_hgss();
         let input = "Script 1:\n    WildBattleSp 1 2 3 4\nEnd";
 
-        assert!(transpile(input, Some(&hgss)).contains("WildBattle 1, 2, 3, 4"));
+        assert!(transpile(input, Some(hgss)).contains("WildBattle 1, 2, 3, 4"));
     }
 }

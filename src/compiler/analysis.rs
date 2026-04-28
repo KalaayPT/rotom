@@ -1307,9 +1307,9 @@ function Test #1:
 
     #[test]
     fn test_break_inside_while_is_valid() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1328,9 +1328,9 @@ function TestFunc #1:
 
     #[test]
     fn test_break_outside_while_is_error() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1349,9 +1349,9 @@ function TestFunc #1:
 
     #[test]
     fn test_break_after_while_is_error() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1370,9 +1370,9 @@ function TestFunc #1:
 
     #[test]
     fn test_break_in_if_inside_while_is_valid() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1393,9 +1393,9 @@ function TestFunc #1:
 
     #[test]
     fn test_match_with_variable_is_valid() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1417,9 +1417,9 @@ function TestFunc #1:
 
     #[test]
     fn test_match_with_literal_value_is_error() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1444,9 +1444,9 @@ function TestFunc #1:
 
     #[test]
     fn test_autovar_call_in_condition_valid() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1469,9 +1469,9 @@ function TestFunc #1:
 
     #[test]
     fn test_autovar_call_in_match_valid() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1497,9 +1497,9 @@ function TestFunc #1:
 
     #[test]
     fn test_non_autovar_call_in_condition_error() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1523,9 +1523,9 @@ function TestFunc #1:
 
     #[test]
     fn test_autovar_call_with_comparison() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -1700,16 +1700,15 @@ action BadAction
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function TestFunc #1:
 function TestFunc #2:
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
@@ -1729,22 +1728,21 @@ function TestFunc #2:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     LockAll
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_ok(),
@@ -1758,22 +1756,21 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     SetFlag 100
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_ok(),
@@ -1787,22 +1784,21 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     RegValueSet 999, 1
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_err(),
@@ -1844,22 +1840,21 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     SetFlag 100, 200, 300
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_err(),
@@ -1878,22 +1873,21 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     SetFlag
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_err(),
@@ -1912,22 +1906,21 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     SetFlag 65535
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_ok(),
@@ -1940,22 +1933,21 @@ function Test #1:
     fn test_command_u16_range_overflow() {
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
-        use std::path::Path;
 
         let source = r"
 function TestFunc #1:
     SetFlag 65536
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_err(),
@@ -1973,21 +1965,20 @@ function TestFunc #1:
     fn test_macro_param_count_validation() {
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     GoToIfNotEnoughMoney 100000
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
 
         assert!(
@@ -2006,7 +1997,6 @@ function Test #1:
     fn test_macro_does_not_validate_param_types() {
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
-        use std::path::Path;
 
         // GoToIfNotEnoughMoney declares value as u16, but should accept u32 values
         // since it expands to CheckMoney which takes u32
@@ -2016,14 +2006,14 @@ function Test #1:
 TestLabel:
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
 
         assert!(
@@ -2038,22 +2028,21 @@ TestLabel:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     PlayCry 440
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_ok(),
@@ -2067,22 +2056,21 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     PokeMartCommon
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_ok(),
@@ -2096,22 +2084,21 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     CallTVBroadcast 0, 0x800C
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_ok(),
@@ -2176,22 +2163,21 @@ function Test #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 function Test #1:
     StartTrainerBattle 913
     End
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_ok(),
@@ -2294,9 +2280,9 @@ CaseDefault:
 
     #[test]
     fn test_autovar_call_rejects_explicit_result_argument() {
-        let db = DatabaseV2::load("src/db/platinum_v2.json").unwrap();
+        let db = DatabaseV2::test_platinum();
         let constants = ConstantDb::new();
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
 function TestFunc #1:
@@ -2323,7 +2309,6 @@ function TestFunc #1:
         use crate::compiler::lexer::Lexer;
         use crate::compiler::parser::Parser;
         use crate::database::DatabaseV2;
-        use std::path::Path;
 
         let source = r"
 alias 0x8000 as VAR_TEST
@@ -2334,15 +2319,15 @@ function Test #1:
             End
     endmatch
 ";
-        let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json")).unwrap();
+        let db = DatabaseV2::test_platinum();
         let mut constants = ConstantDb::new();
-        constants.load_from_db(&db);
+        constants.load_from_db(db);
 
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        let mut analyzer = Analyzer::with_database(&constants, &db);
+        let mut analyzer = Analyzer::with_database(&constants, db);
         let result = analyzer.analyze(&script_file);
         assert!(
             result.is_ok(),

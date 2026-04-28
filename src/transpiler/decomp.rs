@@ -815,7 +815,6 @@ fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn test_collect_prepass_data_keeps_duplicate_function_slots() {
@@ -1001,8 +1000,7 @@ Helper:
 
     #[test]
     fn test_resolve_script_command_name_maps_scrcmd_opcode() {
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
-            .expect("test database should load");
+        let db = crate::database::DatabaseV2::test_platinum();
         let end_id = db
             .get_command("End")
             .expect("End command should exist")
@@ -1011,52 +1009,49 @@ Helper:
         let opcode_name = format!("ScrCmd_{:04X}", end_id);
 
         assert_eq!(
-            resolve_script_command_name(&opcode_name, Some(&db)).as_ref(),
+            resolve_script_command_name(&opcode_name, Some(db)).as_ref(),
             "End"
         );
         assert_eq!(
-            resolve_script_command_name("NotAnOpcodeAlias", Some(&db)).as_ref(),
+            resolve_script_command_name("NotAnOpcodeAlias", Some(db)).as_ref(),
             "NotAnOpcodeAlias"
         );
     }
 
     #[test]
     fn test_resolve_script_command_name_maps_hgss_decimal_scrcmd_opcode() {
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
-            .expect("test database should load");
+        let db = crate::database::DatabaseV2::test_hgss();
         let command = db
             .get_script_cmd_by_id(28)
             .expect("database should contain GoToIf at opcode 28");
         let opcode_name = format!("ScrCmd_{}", command.1.id.expect("opcode should exist"));
 
         assert_eq!(
-            resolve_script_command_name(&opcode_name, Some(&db)).as_ref(),
+            resolve_script_command_name(&opcode_name, Some(db)).as_ref(),
             command.0.as_str()
         );
     }
 
     #[test]
     fn test_resolve_script_command_name_ignores_noncanonical_hgss_scrcmd_spelling() {
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
-            .expect("test database should load");
+        let db = crate::database::DatabaseV2::test_hgss();
 
         assert_eq!(
-            resolve_script_command_name("scrcmd_28", Some(&db)).as_ref(),
+            resolve_script_command_name("scrcmd_28", Some(db)).as_ref(),
             "scrcmd_28"
         );
         assert_eq!(
-            resolve_script_command_name("ScrCmd_001C", Some(&db)).as_ref(),
+            resolve_script_command_name("ScrCmd_001C", Some(db)).as_ref(),
             "ScrCmd_001C"
         );
     }
 
     #[test]
     fn test_resolve_script_command_name_keeps_exact_scrcmd_key() {
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
-            .expect("test database should load");
+        let db = crate::database::DatabaseV2::test_hgss();
 
         assert_eq!(
-            resolve_script_command_name("ScrCmd_055", Some(&db)).as_ref(),
+            resolve_script_command_name("ScrCmd_055", Some(db)).as_ref(),
             "ScrCmd_055"
         );
     }
@@ -1472,8 +1467,7 @@ AcuityLakefront_SetWarpsLakeAcuityNormal:
 
     #[test]
     fn test_custom_message_word_preserves_explicit_result_var_order() {
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
-            .expect("test database should load");
+        let db = crate::database::DatabaseV2::test_platinum();
 
         let input = r"
     ScriptEntry Test
@@ -1483,7 +1477,7 @@ Test:
     ChooseCustomMessageWord 0, VAR_RESULT, VAR_0x8004
     End
 ";
-        let output = transpile(input, Some(&db)).expect("transpile should succeed");
+        let output = transpile(input, Some(db)).expect("transpile should succeed");
         assert!(
             output
                 .source
@@ -1494,8 +1488,7 @@ Test:
 
     #[test]
     fn test_two_custom_message_words_preserve_explicit_result_var_order() {
-        let db = crate::database::DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
-            .expect("test database should load");
+        let db = crate::database::DatabaseV2::test_platinum();
 
         let input = r"
     ScriptEntry Test
@@ -1505,7 +1498,7 @@ Test:
     ChooseTwoCustomMessageWords 0, VAR_RESULT, VAR_0x8000, VAR_0x8001
     End
 ";
-        let output = transpile(input, Some(&db)).expect("transpile should succeed");
+        let output = transpile(input, Some(db)).expect("transpile should succeed");
         assert!(
             output
                 .source

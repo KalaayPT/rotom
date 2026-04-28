@@ -1,14 +1,16 @@
 //! Project lifecycle tests: init → compile → decompile round-trip through the CLI.
 //!
 //! These tests shell out to the rotom binary to exercise the actual user-facing path.
-//! Temp directories are persistent (under /tmp/rotom_lifecycle_tests/) so you
+//! Temp directories are persistent (under `/tmp/rotom_lifecycle_tests/`) so you
 //! can inspect rotom/uxie artifacts after a run.
 
 use std::path::PathBuf;
 use std::process::Command;
 
 mod common;
-use common::fixture_setup::{ensure_decomp_fixtures, fixture_root, persistent_test_dir};
+use common::fixture_setup::{
+    dspre_fixture_root, ensure_decomp_fixtures, fixture_root, persistent_test_dir,
+};
 
 fn rotom_bin() -> Command {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -55,6 +57,26 @@ fn copy_decomp(decomp_root: &std::path::Path, project: &std::path::Path) {
         .status()
         .expect("cp -r failed — is this a Unix system?");
     assert!(status.success(), "cp -r exited with failure");
+}
+
+fn copy_fixture(fixture: &std::path::Path, project: &std::path::Path) {
+    // Use system cp -r for speed. Pure Rust recursive copy is too slow for large fixture trees.
+    let status = Command::new("cp")
+        .arg("-r")
+        .arg(format!("{}/.", fixture.display()))
+        .arg(project)
+        .status()
+        .expect("cp -r failed — is this a Unix system?");
+    assert!(status.success(), "cp -r exited with failure");
+}
+
+fn remove_files_with_extension(dir: &std::path::Path, extension: &str) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == extension) {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
 }
 
 #[test]
@@ -110,15 +132,7 @@ fn test_project_lifecycle_platinum() {
     let out = run_rotom(&["decompile"], &project).unwrap();
     println!("{}", out);
 
-    for entry in std::fs::read_dir(project.join("res/field/scripts"))
-        .unwrap()
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().map(|e| e == "s").unwrap_or(false) {
-            std::fs::remove_file(&path).unwrap();
-        }
-    }
+    remove_files_with_extension(&project.join("res/field/scripts"), "s");
 
     // Second compile (should skip unchanged files)
     let out = run_rotom(&["compile"], &project).unwrap();
@@ -151,15 +165,55 @@ fn test_project_lifecycle_heartgold() {
     println!("{}", out);
 
     // Remove stale .s files after decompile to avoid output collisions
-    for entry in std::fs::read_dir(project.join("files/fielddata/script/scr_seq"))
-        .unwrap()
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().map(|e| e == "s").unwrap_or(false) {
-            std::fs::remove_file(&path).unwrap();
-        }
-    }
+    remove_files_with_extension(&project.join("files/fielddata/script/scr_seq"), "s");
+
+    run_rotom(&["compile"], &project).unwrap();
+
+    assert!(project.join(".rotom/status/compile-state.json").exists());
+    println!("Lifecycle at {}", project.display());
+}
+
+#[test]
+fn test_project_lifecycle_dspre_platinum() {
+    let Some(dspre) = dspre_fixture_root("pt") else {
+        eprintln!("Skipping DSPRE Platinum lifecycle test: fixture tree is missing");
+        return;
+    };
+
+    let project = persistent_test_dir("dspre_platinum_lifecycle");
+    copy_fixture(&dspre, &project);
+
+    run_rotom(&["init", "--non-interactive"], &project).unwrap();
+    run_rotom(&["compile"], &project).unwrap();
+
+    let out = run_rotom(&["decompile"], &project).unwrap();
+    println!("{}", out);
+
+    remove_files_with_extension(&project.join("expanded/scripts"), "script");
+
+    run_rotom(&["compile"], &project).unwrap();
+
+    assert!(project.join(".rotom/status/compile-state.json").exists());
+    println!("Lifecycle at {}", project.display());
+}
+
+#[test]
+fn test_project_lifecycle_dspre_heartgold() {
+    let Some(dspre) = dspre_fixture_root("hg") else {
+        eprintln!("Skipping DSPRE HeartGold lifecycle test: fixture tree is missing");
+        return;
+    };
+
+    let project = persistent_test_dir("dspre_heartgold_lifecycle");
+    copy_fixture(&dspre, &project);
+
+    run_rotom(&["init", "--non-interactive"], &project).unwrap();
+    run_rotom(&["compile"], &project).unwrap();
+
+    let out = run_rotom(&["decompile"], &project).unwrap();
+    println!("{}", out);
+
+    remove_files_with_extension(&project.join("expanded/scripts"), "script");
 
     run_rotom(&["compile"], &project).unwrap();
 

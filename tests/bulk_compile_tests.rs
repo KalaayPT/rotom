@@ -217,8 +217,8 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 fn load_test_db_and_constants() -> (DatabaseV2, ConstantDb) {
-    let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
-        .expect("Failed to load test database");
+    let db =
+        DatabaseV2::load(DatabaseV2::test_platinum_path()).expect("Failed to load test database");
 
     let mut constants = ConstantDb::new();
     constants.load_from_db(&db);
@@ -246,23 +246,23 @@ fn load_test_db_and_constants() -> (DatabaseV2, ConstantDb) {
 }
 
 fn load_platinum_db_and_constants() -> (DatabaseV2, ConstantDb) {
-    let db = DatabaseV2::load(Path::new("src/db/platinum_v2.json"))
+    let db = DatabaseV2::load(DatabaseV2::test_platinum_path())
         .expect("Failed to load Platinum database");
     let mut constants = ConstantDb::new();
     constants.load_from_db(&db);
     constants
-        .load_directory("src/db")
+        .load_directory(DatabaseV2::test_db_root())
         .expect("Failed to load Platinum constants directory");
     (db, constants)
 }
 
 fn load_heartgold_db_and_constants() -> (DatabaseV2, ConstantDb) {
-    let db = DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
-        .expect("Failed to load HeartGold database");
+    let db =
+        DatabaseV2::load(DatabaseV2::test_hgss_path()).expect("Failed to load HeartGold database");
     let mut constants = ConstantDb::new();
     constants.load_from_db(&db);
     constants
-        .load_directory("src/db/hgss")
+        .load_directory(DatabaseV2::test_db_root().join("hgss"))
         .expect("Failed to load HeartGold constants directory");
     (db, constants)
 }
@@ -1023,8 +1023,8 @@ fn test_dspre_heartgold_compile_verbose() {
 // === HEARTGOLD DECOMP COMPILE TESTS ===
 
 fn load_heartgold_decomp_db_and_constants() -> (DatabaseV2, ConstantDb) {
-    let db = DatabaseV2::load(Path::new("src/db/hgss/hgss_v2.json"))
-        .expect("Failed to load HeartGold database");
+    let db =
+        DatabaseV2::load(DatabaseV2::test_hgss_path()).expect("Failed to load HeartGold database");
 
     let mut constants = ConstantDb::new();
     constants.load_from_db(&db);
