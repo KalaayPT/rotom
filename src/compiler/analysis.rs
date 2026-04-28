@@ -9,7 +9,7 @@ use crate::database::{
 
 use super::{
     ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind},
-    parse_error::{CompileError, ParseResult, analysis_error},
+    diagnostic::{CompileError, CompileWarning, ParseResult, analysis_error},
 };
 
 /// Macro/variant arg-count condition matcher: `1 arg`, `2 args`, `3 arg(s)`, etc.
@@ -132,9 +132,17 @@ impl SymbolTable {
 
 pub struct Analyzer<'a> {
     pub symbols: SymbolTable,
+    pub warnings: Vec<CompileWarning>,
     constants: Option<&'a ConstantDb>,
     database: Option<&'a DatabaseV2>,
     loop_depth: u32,
+    alias_definitions: Vec<AliasDefinition>,
+}
+
+struct AliasDefinition {
+    name: String,
+    span: Range<usize>,
+    referenced: bool,
 }
 
 impl Default for Analyzer<'_> {
@@ -147,9 +155,11 @@ impl<'a> Analyzer<'a> {
     pub fn new() -> Analyzer<'a> {
         Analyzer {
             symbols: SymbolTable::new(),
+            warnings: Vec::new(),
             constants: None,
             database: None,
             loop_depth: 0,
+            alias_definitions: Vec::new(),
         }
     }
 
@@ -157,9 +167,11 @@ impl<'a> Analyzer<'a> {
     pub fn with_constants(constants: &'a ConstantDb) -> Analyzer<'a> {
         Analyzer {
             symbols: SymbolTable::new(),
+            warnings: Vec::new(),
             constants: Some(constants),
             database: None,
             loop_depth: 0,
+            alias_definitions: Vec::new(),
         }
     }
 
@@ -167,13 +179,18 @@ impl<'a> Analyzer<'a> {
     pub fn with_database(constants: &'a ConstantDb, database: &'a DatabaseV2) -> Analyzer<'a> {
         Analyzer {
             symbols: SymbolTable::new(),
+            warnings: Vec::new(),
             constants: Some(constants),
             database: Some(database),
             loop_depth: 0,
+            alias_definitions: Vec::new(),
         }
     }
 
     pub fn analyze(&mut self, file: &ScriptFile) -> ParseResult<()> {
+        self.warnings.clear();
+        self.alias_definitions.clear();
+
         for item in &file.items {
             match &item.node {
                 StatementKind::Function { .. } => {
@@ -199,15 +216,143 @@ impl<'a> Analyzer<'a> {
                 _ => {}
             }
         }
+        self.collect_alias_references(file);
+        self.warn_unused_aliases();
         Ok(())
     }
     fn register_alias(&mut self, stmt: &Statement) -> ParseResult<()> {
         if let StatementKind::AliasStatement { name, value, .. } = &stmt.node {
             let id = self.resolve_expression_to_int(value)?;
+            if let Some(previous) = self
+                .alias_definitions
+                .iter()
+                .rev()
+                .find(|definition| definition.name == *name)
+            {
+                self.warnings.push(CompileWarning::ShadowedAlias {
+                    name: name.clone(),
+                    span: stmt.span.clone(),
+                    previous_span: previous.span.clone(),
+                });
+            }
+            self.alias_definitions.push(AliasDefinition {
+                name: name.clone(),
+                span: stmt.span.clone(),
+                referenced: false,
+            });
             self.symbols
                 .define_alias(name.clone(), id, stmt.span.clone())?;
         }
         Ok(())
+    }
+
+    fn collect_alias_references(&mut self, file: &ScriptFile) {
+        for definition in &mut self.alias_definitions {
+            definition.referenced = false;
+        }
+        for item in &file.items {
+            self.collect_alias_references_in_statement(item);
+        }
+    }
+
+    fn collect_alias_references_in_statement(&mut self, stmt: &Statement) {
+        match &stmt.node {
+            StatementKind::AliasStatement { value, .. } => {
+                self.collect_alias_references_in_expression(value);
+            }
+            StatementKind::Function { body, .. } | StatementKind::Action { body, .. } => {
+                for stmt in body {
+                    self.collect_alias_references_in_statement(stmt);
+                }
+            }
+            StatementKind::IfStatement {
+                condition,
+                body,
+                elseblock,
+            } => {
+                self.collect_alias_references_in_expression(condition);
+                for stmt in body {
+                    self.collect_alias_references_in_statement(stmt);
+                }
+                if let Some(elseblock) = elseblock {
+                    for stmt in elseblock {
+                        self.collect_alias_references_in_statement(stmt);
+                    }
+                }
+            }
+            StatementKind::WhileStatement { condition, body } => {
+                self.collect_alias_references_in_expression(condition);
+                for stmt in body {
+                    self.collect_alias_references_in_statement(stmt);
+                }
+            }
+            StatementKind::MatchStatement {
+                subject,
+                cases,
+                default,
+            } => {
+                self.collect_alias_references_in_expression(subject);
+                for case in cases {
+                    for value in &case.values {
+                        self.collect_alias_references_in_expression(value);
+                    }
+                    for stmt in &case.body {
+                        self.collect_alias_references_in_statement(stmt);
+                    }
+                }
+                if let Some(default) = default {
+                    for stmt in default {
+                        self.collect_alias_references_in_statement(stmt);
+                    }
+                }
+            }
+            StatementKind::ScriptCommand { args, .. } => {
+                for arg in args {
+                    self.collect_alias_references_in_expression(arg);
+                }
+            }
+            StatementKind::Jump(expr) => self.collect_alias_references_in_expression(expr),
+            StatementKind::Label(_)
+            | StatementKind::Break
+            | StatementKind::Return
+            | StatementKind::End
+            | StatementKind::EndMovement => {}
+        }
+    }
+
+    fn collect_alias_references_in_expression(&mut self, expr: &Expression) {
+        match &expr.node {
+            ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => {
+                for definition in &mut self.alias_definitions {
+                    if definition.name == *name {
+                        definition.referenced = true;
+                    }
+                }
+            }
+            ExpressionKind::Prefix { id, .. } => self.collect_alias_references_in_expression(id),
+            ExpressionKind::Infix { left, right, .. } => {
+                self.collect_alias_references_in_expression(left);
+                self.collect_alias_references_in_expression(right);
+            }
+            ExpressionKind::Call { function, args } => {
+                self.collect_alias_references_in_expression(function);
+                for arg in args {
+                    self.collect_alias_references_in_expression(arg);
+                }
+            }
+            ExpressionKind::Number(_) => {}
+        }
+    }
+
+    fn warn_unused_aliases(&mut self) {
+        for definition in &self.alias_definitions {
+            if !definition.referenced {
+                self.warnings.push(CompileWarning::UnusedAlias {
+                    name: definition.name.clone(),
+                    span: definition.span.clone(),
+                });
+            }
+        }
     }
     fn register_function_names(&mut self, func: &Statement) -> ParseResult<()> {
         if let StatementKind::Function { headers, .. } = &func.node {
@@ -1093,6 +1238,71 @@ function Test #1:
         let mut analyzer = Analyzer::new();
         let result = analyzer.analyze(&script_file);
         assert!(result.is_err(), "forward alias reference should fail");
+    }
+
+    #[test]
+    fn test_analyzer_warns_for_unused_alias() {
+        let source = r"
+alias 1 as foo
+
+function Test #1:
+    End
+";
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        analyzer.analyze(&script_file).unwrap();
+
+        assert!(matches!(
+            analyzer.warnings.as_slice(),
+            [CompileWarning::UnusedAlias { name, .. }] if name == "foo"
+        ));
+    }
+
+    #[test]
+    fn test_analyzer_does_not_warn_for_used_alias() {
+        let source = r"
+alias 1 as foo
+
+function Test #1:
+    if foo == 1 then
+    endif
+    End
+";
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        analyzer.analyze(&script_file).unwrap();
+
+        assert!(analyzer.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_analyzer_warns_for_shadowed_alias() {
+        let source = r"
+alias 1 as foo
+alias 2 as foo
+
+function Test #1:
+    if foo == 2 then
+    endif
+    End
+";
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        analyzer.analyze(&script_file).unwrap();
+
+        assert!(matches!(
+            analyzer.warnings.as_slice(),
+            [CompileWarning::ShadowedAlias { name, .. }] if name == "foo"
+        ));
     }
 
     #[test]

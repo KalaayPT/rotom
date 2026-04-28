@@ -4,11 +4,11 @@
 //! It takes explicit (input, output) pairs so callers can decide their own
 //! path mapping (directory extension-swap, project config, etc.).
 
-use rayon::prelude::{ParallelIterator, IntoParallelRefIterator};
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::database::ConstantDb;
 use crate::progress::CompileProgress;
-use crate::{CompileFailure, CompileResult, DatabaseV2};
+use crate::{CompileFailure, CompiledFile, DatabaseV2};
 
 /// Compile a list of (`input_path`, `output_path`) pairs in parallel.
 ///
@@ -22,26 +22,34 @@ pub fn compile_batch(
     load_file_constants: bool,
     progress: Option<&CompileProgress>,
 ) -> crate::BatchCompileResult {
-    let results: Vec<std::result::Result<CompileResult, CompileFailure>> = work
+    let results: Vec<std::result::Result<CompiledFile, CompileFailure>> = work
         .par_iter()
         .map(|(input, output)| {
-            let result = crate::compile_file_internal(input, output, db, constants, load_file_constants).map_err(
-                |e| match e {
-                    crate::CompileFileError::IoError(error) => CompileFailure {
-                        path: input.clone(),
-                        error,
-                        source: String::new(),
-                    },
-                    crate::CompileFileError::CompileError { error, source } => CompileFailure {
-                        path: input.clone(),
-                        error,
-                        source,
-                    },
-                },
-            );
+            let result =
+                crate::compile_file_internal(input, output, db, constants, load_file_constants)
+                    .map_err(|e| match e {
+                        crate::CompileFileError::IoError(error) => CompileFailure {
+                            path: input.clone(),
+                            error,
+                            source: String::new(),
+                        },
+                        crate::CompileFileError::CompileError { error, source } => CompileFailure {
+                            path: input.clone(),
+                            error,
+                            source,
+                        },
+                    });
             match &result {
-                Ok(_) => { if let Some(p) = progress { p.inc_completed(); } }
-                Err(_) => { if let Some(p) = progress { p.inc_failed(); } }
+                Ok(_) => {
+                    if let Some(p) = progress {
+                        p.inc_completed();
+                    }
+                }
+                Err(_) => {
+                    if let Some(p) = progress {
+                        p.inc_failed();
+                    }
+                }
             }
             result
         })

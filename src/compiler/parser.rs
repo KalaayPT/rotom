@@ -3,8 +3,8 @@ use super::{
         Expression, ExpressionKind, FunctionHeader, MatchCase, Precedence, ScriptFile, Spanned,
         Statement, StatementKind,
     },
+    diagnostic::{ParseResult, parse_error},
     lexer::Lexer,
-    parse_error::{ParseResult, parse_error},
     token::{Token, TokenType},
 };
 

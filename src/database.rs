@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::compiler::ParseResult;
-use crate::compiler::parse_error::{CompileError, database_error};
+use crate::compiler::diagnostic::{CompileError, database_error};
 pub use uxie::GameFamily;
 use uxie::SymbolTable;
 use uxie::c_parser::defines::eval_expr_with_parent;
@@ -890,12 +890,7 @@ impl ConstantDb {
                 return Ok(true);
             }
 
-            if SymbolTable::try_load_gmm_fallback(
-                table,
-                parent_dir,
-                include_dirs,
-                include_path,
-            )? {
+            if SymbolTable::try_load_gmm_fallback(table, parent_dir, include_dirs, include_path)? {
                 return Ok(true);
             }
 

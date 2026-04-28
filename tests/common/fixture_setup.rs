@@ -35,7 +35,11 @@ pub fn ensure_decomp_fixtures() {
             }
         }
 
-        println!("[fixtures] Cloning {} into {}", pin.repo_url, dest.display());
+        println!(
+            "[fixtures] Cloning {} into {}",
+            pin.repo_url,
+            dest.display()
+        );
         clone_or_die(pin.repo_url, &dest);
         checkout_or_die(&dest, pin.commit);
         println!("[fixtures] {} ready at {}", pin.name, pin.commit);
@@ -49,7 +53,11 @@ pub fn ensure_dspre_fixtures() {
 
     for (game, name) in [("pt", "Platinum"), ("hg", "HeartGold")] {
         let dspre = root.join("dspre").join(format!("{}_DSPRE_contents", game));
-        let required = ["expanded/scripts", "expanded/textArchives", "unpacked/scripts"];
+        let required = [
+            "expanded/scripts",
+            "expanded/textArchives",
+            "unpacked/scripts",
+        ];
         for sub in required {
             let path = dspre.join(sub);
             if !path.exists() {
@@ -92,12 +100,7 @@ fn clone_or_die(url: &str, dest: &Path) {
         .arg(url)
         .arg(dest)
         .status()
-        .unwrap_or_else(|e| {
-            panic!(
-                "Failed to run `git clone`. Is git installed?\nError: {}",
-                e
-            )
-        });
+        .unwrap_or_else(|e| panic!("Failed to run `git clone`. Is git installed?\nError: {}", e));
     if !status.success() {
         panic!("git clone failed for {}", url);
     }
@@ -119,7 +122,9 @@ fn checkout_or_die(path: &Path, commit: &str) {
 /// Return a persistent temp directory for project lifecycle tests.
 /// These are NOT auto-deleted so you can inspect uxie/rotom artifacts.
 pub fn persistent_test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("rotom_lifecycle_tests").join(name);
+    let dir = std::env::temp_dir()
+        .join("rotom_lifecycle_tests")
+        .join(name);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).ok();
     }

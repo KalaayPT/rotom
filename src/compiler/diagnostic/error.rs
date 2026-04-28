@@ -1,31 +1,10 @@
 use std::fmt;
 use std::ops::Range;
 
-use codespan_reporting::{
-    diagnostic::{Diagnostic, Label},
-    files::SimpleFiles,
-    term::{
-        self,
-        termcolor::{ColorChoice, StandardStream},
-    },
-};
-use serde::{Serialize, Serializer};
+use codespan_reporting::diagnostic::Severity;
+use serde::Serialize;
 
-fn serialize_range<S>(range: &Range<usize>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    #[derive(Serialize)]
-    struct RangeHelper {
-        start: usize,
-        end: usize,
-    }
-    RangeHelper {
-        start: range.start,
-        end: range.end,
-    }
-    .serialize(serializer)
-}
+use super::{render_diagnostic, serialize_range};
 
 /// Unified error type for the compiler
 #[derive(Debug, Serialize)]
@@ -93,8 +72,6 @@ impl From<serde_json::Error> for CompileError {
     }
 }
 
-// Legacy type alias for backwards compatibility during migration
-pub type ParseError = CompileError;
 pub type ParseResult<T> = Result<T, CompileError>;
 
 /// Helper to create a parse error
@@ -150,19 +127,14 @@ pub fn print_error(filename: &str, source: &str, error: &CompileError) {
     };
 
     if let Some(span) = span {
-        let mut files = SimpleFiles::new();
-        let file_id = files.add(filename, source);
-        let diagnostic = Diagnostic::error()
-            .with_message(error_type)
-            .with_labels(vec![Label::primary(file_id, span).with_message(message)]);
-        let writer = StandardStream::stderr(ColorChoice::Always);
-        let config = term::Config::default();
-        if let Err(e) = term::emit_to_io_write(&mut writer.lock(), &config, &files, &diagnostic) {
-            eprintln!(
-                "Internal Compiler Error: Could not print diagnostics: {}",
-                e
-            );
-        }
+        render_diagnostic(
+            filename,
+            source,
+            Severity::Error,
+            error_type,
+            span,
+            message.to_string(),
+        );
     } else {
         eprintln!("{}: {}: {}", filename, error_type, message);
     }

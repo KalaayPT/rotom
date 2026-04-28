@@ -153,7 +153,10 @@ mod tests {
         };
 
         let items = vec![TopLevelItem::Function(func)];
-        let output = ScriptOutput::Normal { items, jump_table_end_marker_count: 1 };
+        let output = ScriptOutput::Normal {
+            items,
+            jump_table_end_marker_count: 1,
+        };
         let source = ir_to_source(&output, &db);
 
         assert!(
@@ -202,7 +205,10 @@ mod tests {
         };
 
         let items = vec![TopLevelItem::Function(func)];
-        let output = ScriptOutput::Normal { items, jump_table_end_marker_count: 1 };
+        let output = ScriptOutput::Normal {
+            items,
+            jump_table_end_marker_count: 1,
+        };
         let source = ir_to_source(&output, &db);
 
         assert!(source.contains("GoToIf LESS, label0"), "Missing LESS");
@@ -239,7 +245,10 @@ mod tests {
         };
 
         let items = vec![TopLevelItem::Function(func)];
-        let output = ScriptOutput::Normal { items, jump_table_end_marker_count: 1 };
+        let output = ScriptOutput::Normal {
+            items,
+            jump_table_end_marker_count: 1,
+        };
         let source = ir_to_source(&output, &db);
 
         assert!(

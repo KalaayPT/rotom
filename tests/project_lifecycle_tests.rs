@@ -26,9 +26,15 @@ fn run_rotom(args: &[&str], cwd: &std::path::Path) -> Result<String, String> {
     let cache_dir = cwd
         .file_name()
         .map(|n| std::env::temp_dir().join("rotom_test_cache").join(n))
-        .unwrap_or_else(|| std::env::temp_dir().join("rotom_test_cache").join("default"));
+        .unwrap_or_else(|| {
+            std::env::temp_dir()
+                .join("rotom_test_cache")
+                .join("default")
+        });
     cmd.env("XDG_DATA_HOME", &cache_dir);
-    let output = cmd.output().map_err(|e| format!("Failed to run rotom: {}", e))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run rotom: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if !output.status.success() {
@@ -104,7 +110,10 @@ fn test_project_lifecycle_platinum() {
     let out = run_rotom(&["decompile"], &project).unwrap();
     println!("{}", out);
 
-    for entry in std::fs::read_dir(project.join("res/field/scripts")).unwrap().flatten() {
+    for entry in std::fs::read_dir(project.join("res/field/scripts"))
+        .unwrap()
+        .flatten()
+    {
         let path = entry.path();
         if path.extension().map(|e| e == "s").unwrap_or(false) {
             std::fs::remove_file(&path).unwrap();
@@ -116,7 +125,8 @@ fn test_project_lifecycle_platinum() {
     println!("{}", out);
 
     // Verify state
-    let state_raw = std::fs::read_to_string(project.join(".rotom/status/compile-state.json")).unwrap();
+    let state_raw =
+        std::fs::read_to_string(project.join(".rotom/status/compile-state.json")).unwrap();
     let state: rotom::compile_state::CompileState = serde_json::from_str(&state_raw).unwrap();
     assert!(!state.entries.is_empty());
 
@@ -141,7 +151,10 @@ fn test_project_lifecycle_heartgold() {
     println!("{}", out);
 
     // Remove stale .s files after decompile to avoid output collisions
-    for entry in std::fs::read_dir(project.join("files/fielddata/script/scr_seq")).unwrap().flatten() {
+    for entry in std::fs::read_dir(project.join("files/fielddata/script/scr_seq"))
+        .unwrap()
+        .flatten()
+    {
         let path = entry.path();
         if path.extension().map(|e| e == "s").unwrap_or(false) {
             std::fs::remove_file(&path).unwrap();

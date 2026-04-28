@@ -27,7 +27,7 @@ pub use compiler::batch_compile::compile_batch;
 pub use compiler::codegen::Emitter;
 pub use compiler::{
     Analyzer, Lexer, Lowerer, Parser,
-    parse_error::{CompileError, print_error},
+    diagnostic::{CompileError, CompileWarning, print_error},
 };
 pub use database::{ConstantDb, DatabaseV2, GameFamily, GameFamilyExt, game_family_from_hint};
 pub use decompiler::{
@@ -40,10 +40,15 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize)]
-pub struct CompileResult {
+pub struct CompiledFile {
     pub input: PathBuf,
     pub output: PathBuf,
     pub size: usize,
+    /// The source code (transpiled if applicable) for codespan-reporting.
+    /// Skipped in JSON output to avoid bloating machine-readable responses.
+    #[serde(skip)]
+    pub source: String,
+    pub warnings: Vec<CompileWarning>,
 }
 
 /// A compilation failure with enough context for rich error display
@@ -60,7 +65,7 @@ pub struct CompileFailure {
 /// Result of compiling a path (file or directory)
 #[derive(Debug, Serialize)]
 pub struct BatchCompileResult {
-    pub successes: Vec<CompileResult>,
+    pub successes: Vec<CompiledFile>,
     pub failures: Vec<CompileFailure>,
 }
 
@@ -114,12 +119,35 @@ pub fn compile_to_bytes(
     compile_to_bytes_with_options(source, db, constants, 1)
 }
 
+pub struct CompiledBytes {
+    pub bytes: Vec<u8>,
+    pub warnings: Vec<CompileWarning>,
+}
+
+pub fn compile_to_compiled_bytes(
+    source: &str,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+) -> Result<CompiledBytes, CompileError> {
+    compile_to_compiled_bytes_with_options(source, db, constants, 1)
+}
+
 pub fn compile_to_bytes_with_options(
     source: &str,
     db: &DatabaseV2,
     constants: &ConstantDb,
     jump_table_end_marker_count: u8,
 ) -> Result<Vec<u8>, CompileError> {
+    compile_to_compiled_bytes_with_options(source, db, constants, jump_table_end_marker_count)
+        .map(|output| output.bytes)
+}
+
+pub fn compile_to_compiled_bytes_with_options(
+    source: &str,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+    jump_table_end_marker_count: u8,
+) -> Result<CompiledBytes, CompileError> {
     let cleaned_source = compiler::preprocessor::preprocess(source).cleaned_source;
     let lexer = Lexer::new(&cleaned_source);
     let mut parser = Parser::new(lexer);
@@ -132,7 +160,11 @@ pub fn compile_to_bytes_with_options(
     let items = lowerer.lower_script_file(&file)?;
 
     let mut emitter = Emitter::new(db);
-    emitter.emit_script_file(&items, jump_table_end_marker_count)
+    let bytes = emitter.emit_script_file(&items, jump_table_end_marker_count)?;
+    Ok(CompiledBytes {
+        bytes,
+        warnings: analyzer.warnings,
+    })
 }
 
 pub fn compile_levelscript_to_bytes(
@@ -187,7 +219,7 @@ pub(crate) fn compile_file_internal(
     db: &DatabaseV2,
     constants: &ConstantDb,
     load_file_constants: bool,
-) -> Result<CompileResult, CompileFileError> {
+) -> Result<CompiledFile, CompileFileError> {
     let source = std::fs::read_to_string(input).map_err(|e| {
         CompileFileError::IoError(CompileError::Io {
             message: format!("Failed to read input file '{}': {}", input.display(), e),
@@ -203,7 +235,7 @@ pub(crate) fn compile_file_internal_with_source(
     constants: &ConstantDb,
     load_file_constants: bool,
     source: &str,
-) -> Result<CompileResult, CompileFileError> {
+) -> Result<CompiledFile, CompileFileError> {
     let extension = input
         .extension()
         .and_then(|e| e.to_str())
@@ -224,18 +256,28 @@ pub(crate) fn compile_file_internal_with_source(
     let is_levelscript = is_levelscript_path(input)
         || (extension == "s" && transpiler::is_levelscript_source(source));
 
-    let bytes = if extension == "json" {
-        compile_levelscript_json_to_bytes(source).map_err(|e| CompileFileError::CompileError {
-            error: e,
-            source: source.to_string(),
-        })?
+    let (bytes, warnings, warning_source) = if extension == "json" {
+        (
+            compile_levelscript_json_to_bytes(source).map_err(|e| {
+                CompileFileError::CompileError {
+                    error: e,
+                    source: source.to_string(),
+                }
+            })?,
+            Vec::new(),
+            source.to_string(),
+        )
     } else if is_levelscript && extension == "s" {
-        compile_levelscript_to_bytes(source, constants).map_err(|e| {
-            CompileFileError::CompileError {
-                error: e,
-                source: source.to_string(),
-            }
-        })?
+        (
+            compile_levelscript_to_bytes(source, constants).map_err(|e| {
+                CompileFileError::CompileError {
+                    error: e,
+                    source: source.to_string(),
+                }
+            })?,
+            Vec::new(),
+            source.to_string(),
+        )
     } else {
         let (rotom_source, jump_table_end_marker_count) = match extension.as_str() {
             "rotom" => (source.to_string(), 1),
@@ -258,12 +300,17 @@ pub(crate) fn compile_file_internal_with_source(
             }
         };
 
-        compile_to_bytes_with_options(&rotom_source, db, constants, jump_table_end_marker_count).map_err(
-            |e| CompileFileError::CompileError {
-                error: e,
-                source: rotom_source.clone(),
-            },
-        )?
+        let output = compile_to_compiled_bytes_with_options(
+            &rotom_source,
+            db,
+            constants,
+            jump_table_end_marker_count,
+        )
+        .map_err(|e| CompileFileError::CompileError {
+            error: e,
+            source: rotom_source.clone(),
+        })?;
+        (output.bytes, output.warnings, rotom_source)
     };
     let size = bytes.len();
 
@@ -285,10 +332,12 @@ pub(crate) fn compile_file_internal_with_source(
         })
     })?;
 
-    Ok(CompileResult {
+    Ok(CompiledFile {
         input: input.to_path_buf(),
         output: output.to_path_buf(),
         size,
+        source: warning_source,
+        warnings,
     })
 }
 
@@ -309,7 +358,7 @@ pub fn compile_file(
     output: &Path,
     db: &DatabaseV2,
     constants: &ConstantDb,
-) -> Result<CompileResult, CompileError> {
+) -> Result<CompiledFile, CompileError> {
     compile_file_internal(input, output, db, constants, true).map_err(|e| match e {
         CompileFileError::IoError(err) => err,
         CompileFileError::CompileError { error, .. } => error,
@@ -384,8 +433,8 @@ pub fn compile_path(
         };
 
         match compile_file_internal(input, &output_path, db, constants, true) {
-            Ok(result) => Ok(BatchCompileResult {
-                successes: vec![result],
+            Ok(success) => Ok(BatchCompileResult {
+                successes: vec![success],
                 failures: vec![],
             }),
             Err(CompileFileError::IoError(e)) => Ok(BatchCompileResult {
@@ -514,8 +563,13 @@ fn decompile_file_internal(
     })?;
 
     let quirks = match &script_output {
-        ScriptOutput::Normal { jump_table_end_marker_count, .. } if *jump_table_end_marker_count != 1 => {
-            vec![crate::compile_state::BinaryQuirk::JumpTableEndMarkerCount(*jump_table_end_marker_count)]
+        ScriptOutput::Normal {
+            jump_table_end_marker_count,
+            ..
+        } if *jump_table_end_marker_count != 1 => {
+            vec![crate::compile_state::BinaryQuirk::JumpTableEndMarkerCount(
+                *jump_table_end_marker_count,
+            )]
         }
         _ => Vec::new(),
     };
@@ -661,6 +715,36 @@ pub fn decompile_path(
         Err(DecompileError::Io {
             message: format!("Input path does not exist: {}", input.display()),
         })
+    }
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    #[test]
+    fn batch_compile_result_serializes_warnings() {
+        let warning = CompileWarning::UnusedAlias {
+            name: "foo".to_string(),
+            span: 0..14,
+        };
+        let result = BatchCompileResult {
+            successes: vec![CompiledFile {
+                input: PathBuf::from("script.rotom"),
+                output: PathBuf::from("script.bin"),
+                size: 0,
+                source: "alias 1 as foo".to_string(),
+                warnings: vec![warning],
+            }],
+            failures: Vec::new(),
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+
+        assert!(json.contains("\"warnings\""));
+        assert!(json.contains("UnusedAlias"));
+        assert!(json.contains("foo"));
+        assert!(!json.contains("alias 1 as foo"));
     }
 }
 

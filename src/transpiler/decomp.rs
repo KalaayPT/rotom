@@ -649,7 +649,10 @@ fn parse_script_entry_directive(trimmed: &str) -> ScriptEntryDirective<'_> {
         return ScriptEntryDirective::End;
     }
 
-    let Some(rest) = trimmed.strip_prefix("ScriptEntry").or_else(|| trimmed.strip_prefix("ScrDef")) else {
+    let Some(rest) = trimmed
+        .strip_prefix("ScriptEntry")
+        .or_else(|| trimmed.strip_prefix("ScrDef"))
+    else {
         return ScriptEntryDirective::Other;
     };
 

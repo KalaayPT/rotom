@@ -14,21 +14,19 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 
 ### Core Features
 - **High-level syntax** with control flow (`if/else`, `while`, `Jump`)
-- **Three-way compilation**: `.rotom` → `.bin`, `.script` (DSPRE) → `.bin`, `.s` (decomp asm) → `.bin`
-- **Levelscript support** - Full compilation and decompilation of levelscripts (map init scripts)
-- **Semantic preserving** - Compiles back to byte-matching binaries matching the original game scripts
-- **Decomp integration** - Automatically loads constants from your pokeplatinum/pokediamond build
-- **Fall-through semantics** - Preserves the original game's code organization where functions flow into each other
-- **Parallel batch compilation** - Compile entire directories at once with `rayon`
+- **Full legacy tool support:** DSPRE `.script` and Decomp `.s` translation layer
+- **JSON Levelscripts:** levelscripts now exist in declarative JSON format
+- **Byte-Matching Compilation:** de- and compilation preserve all semantics and oddities from original script files.
+- **Decomp integration** - Automatically loads constants from your pokeplatinum/pokediamond headers/jsons
+- **Fall-through semantics** - Preserves the game engine's organization where functions flow into each other
 - **Decompiler** - Disassemble binary scripts back to source (normal scripts to `.rotom`, levelscripts to JSON)
 
 ### Language Features
-- **Public Functions** with explicit jump table slots: `function Main #1:`
-- **Private labels** for internal code organization: `HelperCode:`
+- **Public Functions** with explicit jump table slots, callable from events/levelscripts: `function Main #1:`
+- **Private labels** for internal code organization (these were called functions in DSPRE): `HelperCode:`
 - **Aliases** for constants: `alias 0x800C as VAR_RESULT`
 - **Actions** for movement data: `action WalkPattern ... EndMovement`
-- **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, `match/endmatch`, `break`, local jumps, `Call`/`Return`
-- **Inline labels**: `.local_label:` for local jumps within functions
+- **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, `match/endmatch`, `break`
 - **Autovar**: Commands that return results can be used directly in conditions (e.g., `if CheckPlayerOnBike() then`), inspired by the feature of the same name from PoryScript
 
 ---
@@ -37,27 +35,30 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 
 ### Completed
 - Full compiler pipeline from source to binary
-- DSPRE script format transpiler (legacy tool compatibility)
+- DSPRE script format transpiler
 - Decomp assembly (`*.s`) transpiler for seamless integration
 - Levelscript transpiler (decomp `InitScriptEntry_*` macros → binary)
 - Levelscript decompiler (binary → JSON)
 - Normal script decompiler (binary → `.rotom` source)
 - Bytecode emission with jump table ordering (sorted by slot ID)
 - Movement command semantics (default parameters, interleaving with functions)
-- Fall-through code generation matching decomp style
+- Fall-through code generation matching decomp style and engine functionality
 - Multi-format batch compilation with parallel processing
 - Rich error reporting with source locations
-- Constant loading from database and decomp projects
+- Constant loading from database, text banks (DSPRE) and decomp projects' JSON and header files
 - Test infrastructure with fixtures from pokeplatinum
-- 100% byte-matching verification against pokeplatinum scripts (1124/1124)
+- 100% byte-matching verification against decomp scripts
 
 ### Roadmap
-- Register allocation for automatic variable assignment
+- Graph colouring for variable liveness analysis
+- "Register allocation" for automatic variable assignment
 - Constant folding for compile-time arithmetic
 - Complex expressions in conditions (`if x + 1 == 5`)
 - Optimization passes
 - Decompiler pattern matching for `match`/`while`/`if` reconstruction
-- More comprehensive test coverage
+- Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT`
+- Fully-featured for loops, will need graph colouring for counting
+
 
 ---
 
@@ -68,43 +69,18 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 cargo build --release
 ```
 
-### Compile a script
+### Compile a single script
 ```bash
-# Single file
 rotom compile -d database.json -i script.rotom -o script.bin
-
-# Directory (parallel compilation)
-rotom compile -d database.json -i scripts/ -o output/
-
-# Use decomp constants
-rotom compile -d database.json -i script.rotom --decomp-root C:/dev/pokeplatinum
 ```
 
-### Decompile a binary
-> [!WARNING] **Not yet implemented** - Coming soon!
-
+### Decompile a single binary
 ```bash
-# Normal script → .rotom source
 rotom decompile -d database.json -i script.bin -o script.rotom
-
-# Levelscript → JSON (automatically detected)
-rotom decompile -d database.json -i init_script.bin -o init_script.json
-
-# Directory (parallel decompilation)
-rotom decompile -d database.json -i binaries/ -o output/
 ```
 
-### Run tests
-```bash
-cargo test
-```
-
-### Code Quality
-```bash
-cargo clippy
-```
-
-The project uses `clippy.toml` for code quality configuration. Pedantic and nursery lints are enabled by default in `Cargo.toml`.
+> [!IMPORTANT]
+> These commands also accept entire folders
 
 ---
 
@@ -129,7 +105,7 @@ function Main #1:
 TalkToNPC:
     FacePlayer
     Message 2
-    WaitAButton
+    WaitButton
     Return
 
 // === Movement action ===
@@ -143,6 +119,11 @@ EndMovement
 ### Match Statements
 
 Use `match` to dispatch based on a variable's value:
+
+> [!IMPORTANT]
+> The branches are exclusive and have no fall-through semantics. 
+> Bare `Call` statements get optimized into `CallIf`s and any other statement creates exclusive `Jump` branching.
+> If you really need fall-through semantics, that effect can be achieved with labels. 
 
 ```rotom
 function HandleChoice #1:
@@ -178,7 +159,7 @@ function BikeCheck #1:
     // In match statements
     match ShowYesNoMenu() where
         case 0:
-            Call HandleNo
+            Call HandleNo // note: these get optimized into CallIf instructions
         case 1:
             Call HandleYes
     endmatch
@@ -212,65 +193,32 @@ function SearchLoop #1:
     endwhile
     End
 ```
-
----
-
-## Project Structure
-
-```
-src/
-├── compiler/          # Core compilation pipeline
-│   ├── lexer.rs       # Tokenization
-│   ├── parser.rs      # AST generation
-│   ├── analysis.rs    # Semantic analysis
-│   ├── ir/            # Intermediate representation
-│   └── codegen.rs     # Binary emission
-├── decompiler/        # Disassembly and decompilation
-│   ├── disassembler.rs # Binary → IR conversion
-│   ├── ir_to_source.rs # IR → source text
-│   └── levelscript.rs  # Levelscript types and binary parsing
-├── database.rs        # Command/constant database
-├── transpiler/        # Format converters
-│   ├── DSPRE.rs       # DSPRE .script format
-│   ├── decomp.rs      # Decomp .s assembly format
-│   └── levelscript_decomp.rs # Decomp levelscript macros
-├── lib.rs             # Library API
-└── main.rs            # CLI entry point
-
-tests/fixtures/        # Test scripts and expected binaries
-```
-
 ---
 
 ## Design Philosophy
 
 Rotom is built with three core principles:
 
-1. **Fidelity to source**: Compile back to byte-matching binaries that match the decompiled game scripts
+1. **Fidelity to source**: Compile back to byte-matching binaries that match the original game scripts for smaller patch sizes and decomp compatibility.
 2. **Developer experience**: Clean syntax, rich error messages, seamless decomp integration
-3. **Parallel-first**: Built with `rayon` for fast batch compilation of entire projects
 
 ---
 
 ## Contributing
 
-This is an active development project. The codebase is structured, well-tested, and follows modern Rust practices (2024 edition).
-
-1. Tests are in `tests/` with fixtures
-2. The compiler uses a database-driven approach (JSON command definitions)
-3. Error handling uses rich diagnostics via `codespan-reporting`
+see [CONTRIBUTING.MD](CONTRIBUTING.md) for details.
 
 ---
 
 ## License
 
-See LICENSE file for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
 ## Related Projects
 
-- [uxie](https://github.com/KalaayPT/uxie) - Data fetching library for Gen 4 romhacking
+- [uxie](https://github.com/KalaayPT/uxie) - Data fetching library for Gen 4 romhacking. Used heavily by Rotom.
 - [chatot](https://github.com/YakoSWG/chatot) - Text processing library for Gen 4 romhacking
 - [poryscript](https://github.com/huderlem/poryscript) - High-level scripting for Gen 3 (inspiration)
 - [pokeplatinum](https://github.com/pret/pokeplatinum) - Pokemon Platinum decompilation

@@ -103,8 +103,7 @@ pub fn run_init_with_options(root: Option<PathBuf>, options: InitOptions) -> Res
     let user_db_dir = user_db_dir_override
         .or_else(user_database_cache_dir)
         .unwrap_or_else(|| std::env::temp_dir().join("rotom").join("databases"));
-    let used_embedded_database =
-        refresh_user_db_cache(&user_db_dir).unwrap_or(true);
+    let used_embedded_database = refresh_user_db_cache(&user_db_dir).unwrap_or(true);
 
     // Detect workspace before copying the DB so we know which family file to
     // copy.
@@ -114,11 +113,8 @@ pub fn run_init_with_options(root: Option<PathBuf>, options: InitOptions) -> Res
         .or_else(|| game_hint.as_ref().and_then(game_family_from_hint));
 
     let command_database_dir = root.join(COMMAND_DATABASE_DIR);
-    let project_db_populated = ensure_project_database(
-        &command_database_dir,
-        &user_db_dir,
-        preferred_family,
-    )?;
+    let project_db_populated =
+        ensure_project_database(&command_database_dir, &user_db_dir, preferred_family)?;
 
     // Only surface "used embedded" when we actually bootstrapped the project DB
     // from the embedded fallback; an already-populated project DB is not affected.
@@ -171,8 +167,7 @@ pub fn run_init_with_options(root: Option<PathBuf>, options: InitOptions) -> Res
 fn user_database_cache_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var_os("LOCALAPPDATA")
-            .map(|p| PathBuf::from(p).join("rotom").join("databases"))
+        std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("rotom").join("databases"))
     }
     #[cfg(target_os = "macos")]
     {
@@ -189,8 +184,7 @@ fn user_database_cache_dir() -> Option<PathBuf> {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| PathBuf::from(h).join(".local").join("share"))
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
             })
             .map(|base| base.join("rotom").join("databases"))
     }
@@ -302,9 +296,10 @@ fn find_family_file(files: &[PathBuf], family: GameFamily) -> Option<PathBuf> {
         }
     }
     // Fall back to filename matching.
-    files.iter().find(|f| {
-        game_family_from_hint(f.to_string_lossy()) == Some(family)
-    }).cloned()
+    files
+        .iter()
+        .find(|f| game_family_from_hint(f.to_string_lossy()) == Some(family))
+        .cloned()
 }
 
 fn copy_db_file(src: &Path, dest_dir: &Path) -> Result<()> {
@@ -519,9 +514,7 @@ fn find_default_database_file(
     if let Some(preferred_family) = preferred_family
         && let Some(file) = find_family_file(&files, preferred_family)
     {
-        return Ok(Some(
-            file.strip_prefix(root).unwrap_or(&file).to_path_buf(),
-        ));
+        return Ok(Some(file.strip_prefix(root).unwrap_or(&file).to_path_buf()));
     }
 
     Ok((files.len() == 1).then(|| {

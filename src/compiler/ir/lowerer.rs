@@ -15,7 +15,7 @@ use std::sync::LazyLock;
 use crate::autovar::{VAR_RESULT, autovar_param_index};
 use crate::compiler::analysis::{SymbolTable, SymbolType};
 use crate::compiler::ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind};
-use crate::compiler::parse_error::{ParseResult, lowering_error};
+use crate::compiler::diagnostic::{ParseResult, lowering_error};
 use crate::compiler::token::TokenType;
 use crate::compiler::{Lexer, Parser};
 use crate::database::{Command, ComparisonOperator, DatabaseV2, ParamDef, ResolvedCommandShape};

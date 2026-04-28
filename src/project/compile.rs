@@ -1,5 +1,5 @@
 use crate::{
-    BatchCompileResult, BatchDecompileResult, CompileError, CompileFailure, CompileResult,
+    BatchCompileResult, BatchDecompileResult, CompileError, CompileFailure, CompiledFile,
     ConstantDb, DatabaseV2, DecompileFailure, decompile_file_for_batch,
 };
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
@@ -27,7 +27,7 @@ enum WorkerResult {
         relative_path: String,
         source_hash: u64,
         dependency_hashes: HashMap<String, u64>,
-        result: CompileResult,
+        result: CompiledFile,
     },
 }
 

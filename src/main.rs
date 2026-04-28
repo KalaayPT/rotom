@@ -4,7 +4,7 @@ use clap::{Parser as ClapParser, Subcommand};
 
 // Use the library crate
 use rotom::compile_path;
-use rotom::compiler::parse_error::{CompileError, print_error};
+use rotom::compiler::diagnostic::{CompileError, print_error, print_warning};
 use rotom::database::{ConstantDb, DatabaseV2, GameFamilyExt, game_family_from_hint};
 use rotom::decompile_path;
 use rotom::project::command::{
@@ -141,7 +141,8 @@ fn handle_compile_command(
             Err(ProjectError::UnsupportedProjectCompileArgs)
         } else {
             compile_project_mode(force).and_then(|result| {
-                report_compile_result(&result, json, verbose, Some(start.elapsed())).map_err(ProjectError::from)?;
+                report_compile_result(&result, json, verbose, Some(start.elapsed()))
+                    .map_err(ProjectError::from)?;
                 if result.is_success() {
                     Ok(())
                 } else {
@@ -154,7 +155,8 @@ fn handle_compile_command(
         let input = input.ok_or(ProjectError::MissingCompileArgs);
         match (database, input) {
             (Ok(database), Ok(input)) => {
-                compile(database, input, output, decomp_root, json, Some(start)).map_err(ProjectError::from)
+                compile(database, input, output, decomp_root, json, Some(start))
+                    .map_err(ProjectError::from)
             }
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
@@ -423,6 +425,21 @@ fn report_compile_result(
                 success.output.display(),
                 success.size
             );
+        }
+    }
+
+    for success in &result.successes {
+        let filename = success
+            .input
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        for warning in &success.warnings {
+            if success.source.is_empty() {
+                eprintln!("  ⚠ {}: {}", filename, warning.message());
+            } else {
+                print_warning(&filename, &success.source, warning);
+            }
         }
     }
 

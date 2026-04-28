@@ -32,7 +32,6 @@ use sha2::{Digest, Sha256};
 
 use rotom::compile_levelscript_json_to_bytes;
 use rotom::compile_levelscript_to_bytes;
-use rotom::{compile_to_bytes, compile_to_bytes_with_options};
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::decompiler::disassembler::ScriptOutput;
 use rotom::decompiler::ir_to_source;
@@ -40,6 +39,7 @@ use rotom::is_levelscript_path;
 use rotom::transpiler::decomp::transpile as transpile_decomp;
 use rotom::transpiler::is_levelscript_source;
 use rotom::transpiler::transpile_dspre;
+use rotom::{compile_to_bytes, compile_to_bytes_with_options};
 
 /// Result category for a single script compilation attempt
 #[derive(Debug, Clone)]
@@ -83,7 +83,10 @@ fn fixture_root() -> PathBuf {
 }
 
 fn get_pokeplatinum_root() -> PathBuf {
-    std::env::var("POKEPLATINUM_ROOT").map_or_else(|_| fixture_root().join("decomp/pokeplatinum"), PathBuf::from)
+    std::env::var("POKEPLATINUM_ROOT").map_or_else(
+        |_| fixture_root().join("decomp/pokeplatinum"),
+        PathBuf::from,
+    )
 }
 
 fn get_scripts_dir() -> PathBuf {
@@ -114,9 +117,7 @@ fn find_normal_scripts() -> Vec<PathBuf> {
         .unwrap_or_else(|_| fixture_panic(&scripts_dir, "decomp scripts"))
         .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension().is_some_and(|e| e == "s") && !is_levelscript_path(path)
-        })
+        .filter(|path| path.extension().is_some_and(|e| e == "s") && !is_levelscript_path(path))
         .collect();
     scripts.sort();
     scripts
@@ -128,24 +129,31 @@ fn find_levelscripts() -> Vec<PathBuf> {
         .unwrap_or_else(|_| fixture_panic(&scripts_dir, "decomp scripts"))
         .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension().is_some_and(|e| e == "s") && is_levelscript_path(path)
-        })
+        .filter(|path| path.extension().is_some_and(|e| e == "s") && is_levelscript_path(path))
         .collect();
     scripts.sort();
     scripts
 }
 
 fn get_pokeheartgold_root() -> PathBuf {
-    std::env::var("POKEHEARTGOLD_ROOT").map_or_else(|_| fixture_root().join("decomp/pokeheartgold"), PathBuf::from)
+    std::env::var("POKEHEARTGOLD_ROOT").map_or_else(
+        |_| fixture_root().join("decomp/pokeheartgold"),
+        PathBuf::from,
+    )
 }
 
 fn get_dspre_platinum_root() -> PathBuf {
-    std::env::var("DSPRE_PLATINUM_ROOT").map_or_else(|_| fixture_root().join("dspre/pt_DSPRE_contents"), PathBuf::from)
+    std::env::var("DSPRE_PLATINUM_ROOT").map_or_else(
+        |_| fixture_root().join("dspre/pt_DSPRE_contents"),
+        PathBuf::from,
+    )
 }
 
 fn get_dspre_heartgold_root() -> PathBuf {
-    std::env::var("DSPRE_HEARTGOLD_ROOT").map_or_else(|_| fixture_root().join("dspre/hg_DSPRE_contents"), PathBuf::from)
+    std::env::var("DSPRE_HEARTGOLD_ROOT").map_or_else(
+        |_| fixture_root().join("dspre/hg_DSPRE_contents"),
+        PathBuf::from,
+    )
 }
 
 fn get_dspre_platinum_scripts_dir() -> PathBuf {
@@ -356,7 +364,10 @@ fn round_trip_single_binary(
                 ));
             }
         },
-        ScriptOutput::Normal { jump_table_end_marker_count, .. } => {
+        ScriptOutput::Normal {
+            jump_table_end_marker_count,
+            ..
+        } => {
             // Round-trip through an actual file to ensure source text round-trips
             let temp_path = std::env::temp_dir().join(format!(
                 "rotom_roundtrip_{}.rotom",
@@ -721,18 +732,20 @@ fn classify_compile_error(msg: &str) -> String {
 
 fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_scripts_dir();
-    assert!(scripts_dir.exists(),
-            "Bulk test failed: scripts directory not found at {}. \
+    assert!(
+        scripts_dir.exists(),
+        "Bulk test failed: scripts directory not found at {}. \
              Set POKEPLATINUM_ROOT environment variable to run this test.",
-            scripts_dir.display()
-        );
+        scripts_dir.display()
+    );
 
     let binaries_dir = get_binaries_dir();
-    assert!(binaries_dir.exists(),
-            "Bulk test failed: binaries directory not found at {}. \
+    assert!(
+        binaries_dir.exists(),
+        "Bulk test failed: binaries directory not found at {}. \
              Make sure you've built the pokeplatinum project first.",
-            binaries_dir.display()
-        );
+        binaries_dir.display()
+    );
 
     let (db, constants) = load_test_db_and_constants();
 
@@ -749,18 +762,20 @@ fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
 
 fn run_levelscripts_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_scripts_dir();
-    assert!(scripts_dir.exists(),
-            "Bulk test failed: scripts directory not found at {}. \
+    assert!(
+        scripts_dir.exists(),
+        "Bulk test failed: scripts directory not found at {}. \
              Set POKEPLATINUM_ROOT environment variable to run this test.",
-            scripts_dir.display()
-        );
+        scripts_dir.display()
+    );
 
     let binaries_dir = get_binaries_dir();
-    assert!(binaries_dir.exists(),
-            "Bulk test failed: binaries directory not found at {}. \
+    assert!(
+        binaries_dir.exists(),
+        "Bulk test failed: binaries directory not found at {}. \
              Make sure you've built the pokeplatinum project first.",
-            binaries_dir.display()
-        );
+        binaries_dir.display()
+    );
 
     let (db, constants) = load_test_db_and_constants();
 
@@ -835,7 +850,11 @@ fn test_bulk_compile_levelscripts_verbose() {
 
 fn run_dspre_platinum_round_trip_test(verbose: bool) -> BulkCompileResult {
     let binaries_dir = get_dspre_platinum_binaries_dir();
-    assert!(binaries_dir.exists(), "DSPRE Platinum binaries not found at {}", binaries_dir.display());
+    assert!(
+        binaries_dir.exists(),
+        "DSPRE Platinum binaries not found at {}",
+        binaries_dir.display()
+    );
 
     let (db, constants) = load_platinum_db_and_constants();
     let binaries = find_dspre_binary_files(&binaries_dir);
@@ -872,7 +891,11 @@ fn test_dspre_platinum_round_trip_verbose() {
 
 fn run_dspre_platinum_compile_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_dspre_platinum_scripts_dir();
-    assert!(scripts_dir.exists(), "DSPRE Platinum scripts not found at {}", scripts_dir.display());
+    assert!(
+        scripts_dir.exists(),
+        "DSPRE Platinum scripts not found at {}",
+        scripts_dir.display()
+    );
 
     let (db, constants) = load_platinum_db_and_constants();
     let scripts = find_dspre_script_files(&scripts_dir);
@@ -914,7 +937,11 @@ fn test_dspre_platinum_compile_verbose() {
 
 fn run_dspre_heartgold_round_trip_test(verbose: bool) -> BulkCompileResult {
     let binaries_dir = get_dspre_heartgold_binaries_dir();
-    assert!(binaries_dir.exists(), "DSPRE HeartGold binaries not found at {}", binaries_dir.display());
+    assert!(
+        binaries_dir.exists(),
+        "DSPRE HeartGold binaries not found at {}",
+        binaries_dir.display()
+    );
 
     let (db, constants) = load_heartgold_db_and_constants();
     let binaries = find_dspre_binary_files(&binaries_dir);
@@ -951,7 +978,11 @@ fn test_dspre_heartgold_round_trip_verbose() {
 
 fn run_dspre_heartgold_compile_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_dspre_heartgold_scripts_dir();
-    assert!(scripts_dir.exists(), "DSPRE HeartGold scripts not found at {}", scripts_dir.display());
+    assert!(
+        scripts_dir.exists(),
+        "DSPRE HeartGold scripts not found at {}",
+        scripts_dir.display()
+    );
 
     let (db, constants) = load_heartgold_db_and_constants();
     let scripts = find_dspre_script_files(&scripts_dir);
@@ -1133,10 +1164,11 @@ fn bulk_compile_heartgold_scripts(
 
 fn run_heartgold_scripts_test(verbose: bool) -> BulkCompileResult {
     let scripts_dir = get_pokeheartgold_scripts_dir();
-    assert!(scripts_dir.exists(),
-            "HeartGold scripts directory not found at {}. Set POKEHEARTGOLD_ROOT env var.",
-            scripts_dir.display()
-        );
+    assert!(
+        scripts_dir.exists(),
+        "HeartGold scripts directory not found at {}. Set POKEHEARTGOLD_ROOT env var.",
+        scripts_dir.display()
+    );
 
     let (db, constants) = load_heartgold_decomp_db_and_constants();
     let scripts = find_heartgold_scripts();

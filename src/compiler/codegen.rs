@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use crate::{
     compiler::{
         ParseResult,
+        diagnostic::codegen_error,
         ir::{Arg, IrOpcode, TopLevelItem},
-        parse_error::codegen_error,
         parser::JUMP_TABLE_END_MARKER,
     },
     database::{Command, DatabaseV2, ParamType},
@@ -85,8 +85,7 @@ impl<'a> Emitter<'a> {
                 TopLevelItem::Function(ir_func) => {
                     // All stacked headers share the same body offset.
                     for header in &ir_func.headers {
-                        self.function_offsets
-                            .insert(header.name.clone(), self.pc);
+                        self.function_offsets.insert(header.name.clone(), self.pc);
                     }
                     for ir_op in &ir_func.instructions {
                         self.emit_ir_opcode(ir_op)?;
