@@ -356,12 +356,12 @@ impl<'a> Analyzer<'a> {
     }
     fn register_function_names(&mut self, func: &Statement) -> ParseResult<()> {
         if let StatementKind::Function { headers, .. } = &func.node {
-            // Track which function names we've already registered
+            // Track which script names we've already registered
             let mut registered_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
 
             for header in headers {
-                // Only define the function name once (even if it has multiple headers)
+                // Only define the script name once (even if it has multiple headers)
                 if !registered_names.contains(&header.name) {
                     registered_names.insert(header.name.clone());
                     self.symbols.define_global(
@@ -430,7 +430,7 @@ impl<'a> Analyzer<'a> {
                         )?;
                     }
                 }
-                // recursively find labels inside if and while blocks and add to function scope
+                // recursively find labels inside if and while blocks and add to script scope
                 StatementKind::IfStatement {
                     body, elseblock, ..
                 } => {
@@ -604,7 +604,7 @@ impl<'a> Analyzer<'a> {
         let ExpressionKind::Identifier(name) = &function.node else {
             return Err(analysis_error(
                 span.clone(),
-                "Function calls in conditions must use a command name".to_string(),
+                "Command calls in conditions must use a command name".to_string(),
             ));
         };
 
@@ -859,7 +859,7 @@ impl<'a> Analyzer<'a> {
                 let ExpressionKind::Identifier(name) = &function.node else {
                     return Err(analysis_error(
                         expr.span.clone(),
-                        "Function-like constant expressions must use a simple name".to_string(),
+                        "Call-like constant expressions must use a simple name".to_string(),
                     ));
                 };
 
@@ -946,7 +946,7 @@ impl<'a> Analyzer<'a> {
                 let ExpressionKind::Identifier(name) = &function.node else {
                     return Err(analysis_error(
                         expr.span.clone(),
-                        "Function-like constant expressions must use a simple name".to_string(),
+                        "Call-like constant expressions must use a simple name".to_string(),
                     ));
                 };
 
@@ -1204,7 +1204,7 @@ mod tests {
 alias 1 as foo
 alias foo as bar
 
-function Test #1:
+script Test #1:
     End
 ";
         let lexer = crate::compiler::Lexer::new(source);
@@ -1228,7 +1228,7 @@ function Test #1:
 alias foo as bar
 alias 1 as foo
 
-function Test #1:
+script Test #1:
     End
 ";
         let lexer = crate::compiler::Lexer::new(source);
@@ -1245,7 +1245,7 @@ function Test #1:
         let source = r"
 alias 1 as foo
 
-function Test #1:
+script Test #1:
     End
 ";
         let lexer = crate::compiler::Lexer::new(source);
@@ -1266,7 +1266,7 @@ function Test #1:
         let source = r"
 alias 1 as foo
 
-function Test #1:
+script Test #1:
     if foo == 1 then
     endif
     End
@@ -1287,7 +1287,7 @@ function Test #1:
 alias 1 as foo
 alias 2 as foo
 
-function Test #1:
+script Test #1:
     if foo == 2 then
     endif
     End
@@ -1312,7 +1312,7 @@ function Test #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     while 0x8000 != 0 do
         break
     endwhile
@@ -1333,7 +1333,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     break
     End
 ";
@@ -1354,7 +1354,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     while 0x8000 != 0 do
         End
     endwhile
@@ -1375,7 +1375,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     while 0x8000 != 0 do
         if 0x8000 == 5 then
             break
@@ -1398,7 +1398,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Message 1
@@ -1422,7 +1422,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 5 with
         case 0:
             Message 1
@@ -1449,7 +1449,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if CheckPlayerOnBike() then
         Message 1
     endif
@@ -1474,7 +1474,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match ShowYesNoMenu() with
         case 0:
             Message 1
@@ -1502,7 +1502,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if Message() then
         End
     endif
@@ -1528,7 +1528,7 @@ function TestFunc #1:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if ShowYesNoMenu() == 1 then
         Message 1
     endif
@@ -1573,7 +1573,7 @@ function TestFunc #1:
         };
         analyzer
             .register_function_names(&func_stmt)
-            .expect("Failed to register function name");
+            .expect("Failed to register script name");
         match analyzer.symbols.resolve("my_function") {
             Some(SymbolType::Function(id)) => assert_eq!(*id, Some(42)),
             _ => panic!("Function name not found in symbol table"),
@@ -1614,7 +1614,7 @@ function TestFunc #1:
         let source = r"
 alias 0x800C as VAR_RESULT
 
-function MainFunc #0:
+script MainFunc #0:
     SetVar VAR_RESULT, 5
     if VAR_RESULT == 5 then
         Message 1
@@ -1654,7 +1654,7 @@ action TestMovement
 alias 0x8000 as VAR_X
 alias 0x8001 as VAR_X
 
-function Dummy #0:
+script Dummy #0:
     End
 ";
         let lexer = Lexer::new(source);
@@ -1677,7 +1677,7 @@ function Dummy #0:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function Dummy #0:
+script Dummy #0:
     End
 
 action BadAction
@@ -1702,8 +1702,8 @@ action BadAction
         use crate::database::DatabaseV2;
 
         let source = r"
-function TestFunc #1:
-function TestFunc #2:
+script TestFunc #1:
+script TestFunc #2:
     End
 ";
         let db = DatabaseV2::test_platinum();
@@ -1730,7 +1730,7 @@ function TestFunc #2:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     LockAll
     End
 ";
@@ -1758,7 +1758,7 @@ function Test #1:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     SetFlag 100
     End
 ";
@@ -1786,7 +1786,7 @@ function Test #1:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     RegValueSet 999, 1
     End
 ";
@@ -1818,7 +1818,7 @@ function Test #1:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function Test #1:
+script Test #1:
     SomeUnknownCommand 1, 2, 3, 4, 5
     End
 ";
@@ -1842,7 +1842,7 @@ function Test #1:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     SetFlag 100, 200, 300
     End
 ";
@@ -1875,7 +1875,7 @@ function Test #1:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     SetFlag
     End
 ";
@@ -1908,7 +1908,7 @@ function Test #1:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     SetFlag 65535
     End
 ";
@@ -1935,7 +1935,7 @@ function Test #1:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     SetFlag 65536
     End
 ";
@@ -1967,7 +1967,7 @@ function TestFunc #1:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function Test #1:
+script Test #1:
     GoToIfNotEnoughMoney 100000
     End
 ";
@@ -2001,7 +2001,7 @@ function Test #1:
         // GoToIfNotEnoughMoney declares value as u16, but should accept u32 values
         // since it expands to CheckMoney which takes u32
         let source = r"
-function Test #1:
+script Test #1:
     GoToIfNotEnoughMoney 100000, TestLabel
 TestLabel:
     End
@@ -2030,7 +2030,7 @@ TestLabel:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     PlayCry 440
     End
 ";
@@ -2058,7 +2058,7 @@ function Test #1:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     PokeMartCommon
     End
 ";
@@ -2086,7 +2086,7 @@ function Test #1:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     CallTVBroadcast 0, 0x800C
     End
 ";
@@ -2113,7 +2113,7 @@ function Test #1:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function Test #1:
+script Test #1:
     ViewRankings 1, 2, 0x800C
     End
 ";
@@ -2139,7 +2139,7 @@ function Test #1:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function Test #1:
+script Test #1:
     ViewRankings 1, 2, 3, 0x800C
     End
 ";
@@ -2165,7 +2165,7 @@ function Test #1:
         use crate::database::DatabaseV2;
 
         let source = r"
-function Test #1:
+script Test #1:
     StartTrainerBattle 913
     End
 ";
@@ -2192,7 +2192,7 @@ function Test #1:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function Test #1:
+script Test #1:
     if 0x8000 == 1 then
         Jump IfBranch
     else
@@ -2224,7 +2224,7 @@ ElseBranch:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function Test #1:
+script Test #1:
     while 0x8000 != 0 do
         Jump LoopExit
     endwhile
@@ -2251,7 +2251,7 @@ LoopExit:
         use crate::compiler::parser::Parser;
 
         let source = r"
-function Test #1:
+script Test #1:
     match 0x8000 with
         case 0:
             Jump CaseZero
@@ -2285,7 +2285,7 @@ CaseDefault:
         let mut analyzer = Analyzer::with_database(&constants, db);
 
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if ShowYesNoMenu(0x800C) then
         Message 1
     endif
@@ -2313,7 +2313,7 @@ function TestFunc #1:
         let source = r"
 alias 0x8000 as VAR_TEST
 
-function Test #1:
+script Test #1:
     match VAR_TEST with
         case 0:
             End

@@ -21,7 +21,7 @@
 //!
 //! ## Rotoscript Output:
 //! ```text
-//! function FunctionName #0:
+//! script FunctionName #0:
 //!     LockAll
 //!     Message 0
 //!     End
@@ -219,9 +219,9 @@ fn render_label_line(
     }
 
     if let Some(slots) = prepass.function_to_slots.get(label_name) {
-        // Public function (in jump table): emit header for each slot.
+        // Public script (in jump table): emit header for each slot.
         for slot in slots {
-            let _ = write!(output, "function {} #{}", label_name, slot);
+            let _ = write!(output, "script {} #{}", label_name, slot);
             append_inline_comment(output, inline_comment);
             output.push_str(":\n");
         }
@@ -604,7 +604,7 @@ fn collect_jump_table_and_movement_labels(
 }
 
 fn build_function_slot_map(jump_table: &[String]) -> HashMap<String, Vec<usize>> {
-    // A function can appear multiple times in ScriptEntry; preserve all slots.
+    // A script can appear multiple times in ScriptEntry; preserve all slots.
     let mut function_to_slots: HashMap<String, Vec<usize>> = HashMap::new();
     for (slot_idx, name) in jump_table.iter().enumerate() {
         function_to_slots
@@ -1113,8 +1113,8 @@ Function2:
     End
 ";
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(output.source.contains("function Function1 #0:"));
-        assert!(output.source.contains("function Function2 #1:"));
+        assert!(output.source.contains("script Function1 #0:"));
+        assert!(output.source.contains("script Function2 #1:"));
     }
 
     #[test]
@@ -1131,9 +1131,9 @@ HelperLabel:
     Return
 ";
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(output.source.contains("function MainFunc #0:"));
+        assert!(output.source.contains("script MainFunc #0:"));
         assert!(output.source.contains("HelperLabel:"));
-        assert!(!output.source.contains("function HelperLabel"));
+        assert!(!output.source.contains("script HelperLabel"));
     }
 
     #[test]
@@ -1152,7 +1152,7 @@ TestMovement:
     EndMovement
 ";
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(output.source.contains("function MainFunc #0:"));
+        assert!(output.source.contains("script MainFunc #0:"));
         assert!(output.source.contains("action TestMovement"));
         assert!(output.source.contains("    WalkNorth"));
         assert!(output.source.contains("    EndMovement"));
@@ -1173,7 +1173,7 @@ TestMovement:
     EndMovement
 ";
         let output = transpile(input, None).expect("transpile should succeed");
-        assert!(output.source.contains("function MainFunc #0:"));
+        assert!(output.source.contains("script MainFunc #0:"));
         assert!(output.source.contains("action TestMovement"));
         assert!(output.source.contains("    WalkNorth"));
         assert!(output.source.contains("    EndMovement"));
@@ -1193,7 +1193,7 @@ Test:
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(output.source.contains("#include \"macros/scrcmd.inc\""));
         assert!(output.source.contains("#include \"constants/map.h\""));
-        assert!(output.source.contains("function Test #0:"));
+        assert!(output.source.contains("script Test #0:"));
     }
 
     #[test]
@@ -1268,7 +1268,7 @@ Test:
 
         let output = transpile(input, None).expect("transpile should succeed");
         assert!(!output.source.contains("#pragma"));
-        assert!(output.source.contains("function Test #0:"));
+        assert!(output.source.contains("script Test #0:"));
     }
 
     #[test]
@@ -1454,8 +1454,8 @@ AcuityLakefront_SetWarpsLakeAcuityNormal:
 ";
 
         let output = transpile(content, None).expect("transpile should succeed");
-        assert!(output.source.contains("function _0012 #1:"));
-        assert!(output.source.contains("function _004E #0:"));
+        assert!(output.source.contains("script _0012 #1:"));
+        assert!(output.source.contains("script _004E #0:"));
         assert!(output.source.contains("action _00E8"));
         assert!(
             output

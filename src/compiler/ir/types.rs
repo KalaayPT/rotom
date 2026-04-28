@@ -57,7 +57,7 @@ impl Arg {
     }
 }
 
-/// A function in the IR, with one or more headers (for stacked entry points)
+/// A script in the IR, with one or more headers (for stacked entry points)
 #[derive(Debug, Clone)]
 pub struct IrFunction {
     pub headers: Vec<FunctionHeader>,

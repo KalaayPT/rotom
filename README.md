@@ -22,7 +22,7 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - **Decompiler** - Disassemble binary scripts back to source (normal scripts to `.rotom`, levelscripts to JSON)
 
 ### Language Features
-- **Public Functions** with explicit jump table slots, callable from events/levelscripts: `function Main #1:`
+- **Scripts** with explicit jump table slots, callable from events/levelscripts: `script Main #1:`
 - **Private labels** for internal code organization (these were called functions in DSPRE): `HelperCode:`
 - **Aliases** for constants: `alias 0x800C as VAR_RESULT`
 - **Actions** for movement data: `action WalkPattern ... EndMovement`
@@ -91,8 +91,8 @@ rotom decompile -d database.json -i script.bin -o script.rotom
 alias 0x800C as VAR_RESULT
 alias 0x800D as VAR_LASTTALKED
 
-// === Public function (in jump table) ===
-function Main #1:
+// === Public script (in jump table) ===
+script Main #1:
     // If it's an NPC
     if VAR_LASTTALKED != 0 then
         Call TalkToNPC
@@ -101,7 +101,7 @@ function Main #1:
     endif
     End
 
-// === Private label (helper function) ===
+// === Private label (helper code) ===
 TalkToNPC:
     FacePlayer
     Message 2
@@ -126,7 +126,7 @@ Use `match` to dispatch based on a variable's value:
 > If you really need fall-through semantics, that effect can be achieved with labels. 
 
 ```rotom
-function HandleChoice #1:
+script HandleChoice #1:
     match VAR_RESULT where
         case 0:
             Message 1
@@ -145,7 +145,7 @@ Commands that return a result (those with a `destVar`/`destVarID` parameter defa
 2. Compares the result appropriately
 
 ```rotom
-function BikeCheck #1:
+script BikeCheck #1:
     // Bare call - equivalent to: CheckPlayerOnBike VAR_RESULT; if VAR_RESULT == 1
     if CheckPlayerOnBike() then
         Message 1
@@ -169,7 +169,7 @@ function BikeCheck #1:
 Commands with additional parameters work too:
 
 ```rotom
-function ItemCheck #1:
+script ItemCheck #1:
     // AddItem(item, amount) - destVarID is automatically VAR_RESULT
     if AddItem(ITEM_POTION, 5) then
         Message 1  // Success
@@ -184,7 +184,7 @@ function ItemCheck #1:
 Use `break` to exit a `while` loop early:
 
 ```rotom
-function SearchLoop #1:
+script SearchLoop #1:
     while VAR_COUNTER < 10 do
         if VAR_RESULT == TARGET_VALUE then
             break

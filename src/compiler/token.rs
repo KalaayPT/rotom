@@ -3,7 +3,7 @@ use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenType {
-    Function, // "function"
+    Script,   // "script"
     Public,   // "public"
     Action,   // "action"
     Alias,    // "alias"
@@ -63,7 +63,7 @@ pub enum TokenType {
 
 pub fn normalize_control_keyword(raw: &str) -> Option<TokenType> {
     match raw.to_ascii_lowercase().as_str() {
-        "function" => Some(TokenType::Function),
+        "script" => Some(TokenType::Script),
         "public" => Some(TokenType::Public),
         "action" => Some(TokenType::Action),
         "alias" => Some(TokenType::Alias),
@@ -98,7 +98,7 @@ impl fmt::Display for TokenType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // --- Keywords ---
-            TokenType::Function => write!(f, "keyword 'function'"),
+            TokenType::Script => write!(f, "keyword 'script'"),
             TokenType::Public => write!(f, "keyword 'public'"),
             TokenType::Action => write!(f, "keyword 'action'"),
             TokenType::Alias => write!(f, "keyword 'alias'"),

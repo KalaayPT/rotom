@@ -19,7 +19,7 @@ pub struct ScriptFile {
     /// Defaults to 1. Set to 0 for scripts without `ScriptEntryEnd` directive.
     pub jump_table_end_marker_count: u8,
 }
-// helper struct to hold the metadata for ONE alias of a function (to support multiple jumptable
+// helper struct to hold the metadata for ONE alias of a script (to support multiple jumptable
 // entries for one function)
 #[derive(Debug, Clone)]
 pub struct FunctionHeader {

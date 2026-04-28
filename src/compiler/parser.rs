@@ -33,7 +33,7 @@ impl<'a> Parser<'a> {
     pub fn current_token_is_keyword(&self) -> bool {
         let kind = self.current_token.kind.clone();
         match kind {
-            TokenType::Function
+            TokenType::Script
             | TokenType::Action
             | TokenType::Alias
             | TokenType::True
@@ -59,10 +59,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Check if we're at a top-level delimiter (next function, label, action, or EOF)
+    /// Check if we're at a top-level delimiter (next script, label, action, or EOF)
     fn at_top_level_boundary(&self) -> bool {
         match &self.current_token.kind {
-            TokenType::Function | TokenType::Action | TokenType::EOF => true,
+            TokenType::Script | TokenType::Action | TokenType::EOF => true,
             // Label: Identifier followed by Colon
             TokenType::Identifier(_) if self.peek_token.kind == TokenType::Colon => true,
             _ => false,
@@ -86,7 +86,7 @@ impl<'a> Parser<'a> {
     pub fn parse_script_file(&mut self) -> ParseResult<ScriptFile> {
         let mut aliases = Vec::new();
         let mut items: Vec<Statement> = Vec::new();
-        let mut function_headers_by_name: std::collections::HashSet<String> =
+        let mut script_headers_by_name: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
         while !self.current_token_is(&TokenType::EOF) {
@@ -97,20 +97,20 @@ impl<'a> Parser<'a> {
             let stmt = self.parse_top_level_stmt()?;
             match &stmt.node {
                 StatementKind::Function { headers, .. } => {
-                    // Check if we already have a function with the same name
+                    // Check if we already have a script with the same name
                     if let Some(first_header) = headers.first() {
-                        if function_headers_by_name.contains(&first_header.name) {
+                        if script_headers_by_name.contains(&first_header.name) {
                             // Already exists - this is a duplicate body definition
                             return Err(parse_error(
                                 stmt.span.clone(),
                                 format!(
-                                    "Duplicate definition for function '{}'. All headers for a function must be stacked together before the body.",
+                                    "Duplicate definition for script '{}'. All headers for a script must be stacked together before the body.",
                                     first_header.name
                                 ),
                             ));
                         }
-                        // New function - add it
-                        function_headers_by_name.insert(first_header.name.clone());
+                        // New script - add it
+                        script_headers_by_name.insert(first_header.name.clone());
                         items.push(stmt);
                     } else {
                         items.push(stmt);
@@ -177,7 +177,7 @@ impl<'a> Parser<'a> {
                 return Err(parse_error(
                     self.current_token.span.clone(),
                     format!(
-                        "unexpected statement inside function: {}",
+                        "unexpected statement inside script/function: {}",
                         self.current_token.kind
                     ),
                 ));
@@ -187,10 +187,10 @@ impl<'a> Parser<'a> {
     }
     pub fn parse_top_level_stmt(&mut self) -> ParseResult<Statement> {
         match &self.current_token.kind {
-            TokenType::Function => self.parse_function(),
+            TokenType::Script => self.parse_function(),
             TokenType::Action => self.parse_action(),
             TokenType::Alias => self.parse_alias(),
-            // Bare label: `LabelName:` at top level becomes a private function
+            // Bare label: `LabelName:` at top level becomes a private helper
             TokenType::Identifier(_) if self.peek_token.kind == TokenType::Colon => {
                 self.parse_bare_label()
             }
@@ -199,7 +199,7 @@ impl<'a> Parser<'a> {
                 Err(parse_error(
                     token.span,
                     format!(
-                        "Expected top-level definition (function, label, action, or alias), found {}",
+                        "Expected top-level definition (script, label, action, or alias), found {}",
                         token.kind
                     ),
                 ))
@@ -208,7 +208,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a bare label at top level: `LabelName:` followed by body
-    /// This becomes a private function (no jump table entry)
+    /// This becomes a private helper (no jump table entry)
     fn parse_bare_label(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
         let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
@@ -234,19 +234,19 @@ impl<'a> Parser<'a> {
         let start = self.current_token.span.start;
         let mut headers = Vec::new();
 
-        // Consume all stacked `function name #N:` headers
+        // Consume all stacked `script name #N:` headers
         loop {
-            if !self.current_token_is(&TokenType::Function) {
+            if !self.current_token_is(&TokenType::Script) {
                 break;
             }
 
-            self.expect_advance(&TokenType::Function)?;
+            self.expect_advance(&TokenType::Script)?;
             let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
             let TokenType::Identifier(name) = name_token.kind else {
                 unreachable!()
             };
 
-            // Require #N for function (public) declarations
+            // Require #N for script declarations
             self.expect_advance(&TokenType::Hash)?;
             let id_token = self.expect_advance(&TokenType::Num(0))?;
             let TokenType::Num(num) = id_token.kind else {
@@ -271,7 +271,7 @@ impl<'a> Parser<'a> {
         if headers.is_empty() {
             return Err(parse_error(
                 self.current_token.span.clone(),
-                "Expected function definition with `function name #N:`",
+                "Expected script definition with `script name #N:`",
             ));
         }
 
@@ -285,12 +285,12 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse function body until we hit the next function, label, action, or EOF
+    /// Parse script/helper body until we hit the next script, label, action, or EOF
     fn parse_function_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut body = Vec::new();
 
         while !self.current_token_is(&TokenType::EOF) {
-            // Check for top-level boundary (next function, label, action)
+            // Check for top-level boundary (next script, label, action)
             if self.at_top_level_boundary() {
                 break;
             }
@@ -695,10 +695,10 @@ mod tests {
 
     #[test]
     fn test_parser_initialization() {
-        let source = "function TestFunc #1:\nEnd";
+        let source = "script TestFunc #1:\nEnd";
         let lexer = Lexer::new(source);
         let parser = Parser::new(lexer);
-        assert_eq!(parser.current_token.kind, TokenType::Function);
+        assert_eq!(parser.current_token.kind, TokenType::Script);
         assert_eq!(
             parser.peek_token.kind,
             TokenType::Identifier("TestFunc".to_string())
@@ -707,7 +707,7 @@ mod tests {
 
     #[test]
     fn test_parser_advance() {
-        let source = "function TestFunc #1:\nEnd";
+        let source = "script TestFunc #1:\nEnd";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         parser.advance();
@@ -720,11 +720,11 @@ mod tests {
 
     #[test]
     fn test_expect_advance_success() {
-        let source = "function TestFunc #1:\nEnd";
+        let source = "script TestFunc #1:\nEnd";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
-        let token = parser.expect_advance(&TokenType::Function).unwrap();
-        assert_eq!(token.kind, TokenType::Function);
+        let token = parser.expect_advance(&TokenType::Script).unwrap();
+        assert_eq!(token.kind, TokenType::Script);
         assert_eq!(
             parser.current_token.kind,
             TokenType::Identifier("TestFunc".to_string())
@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_expect_advance_failure() {
-        let source = "function TestFunc #1:\nEnd";
+        let source = "script TestFunc #1:\nEnd";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let result = parser.expect_advance(&TokenType::If);
@@ -762,8 +762,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_simple_function() {
-        let source = "function TestFunc #1:\nEnd";
+    fn test_parse_simple_script() {
+        let source = "script TestFunc #1:\nEnd";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -773,8 +773,8 @@ mod tests {
             .filter(|s| matches!(s.node, StatementKind::Function { .. }))
             .collect();
         assert_eq!(functions.len(), 1);
-        let function = functions[0];
-        match &function.node {
+        let script = functions[0];
+        match &script.node {
             StatementKind::Function { headers, body } => {
                 assert_eq!(headers.len(), 1);
                 assert_eq!(headers[0].name, "TestFunc");
@@ -782,22 +782,22 @@ mod tests {
                 assert!(headers[0].is_public);
                 assert_eq!(body.len(), 1);
             }
-            _ => panic!("Expected function statement"),
+            _ => panic!("Expected script statement"),
         }
     }
 
     #[test]
-    fn test_parse_stacked_function_headers() {
+    fn test_parse_stacked_script_headers() {
         let source = r"
-function TestFunc #1:
-function TestFunc #2:
+script TestFunc #1:
+script TestFunc #2:
     End
 ";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
 
-        // Should be merged into ONE function item
+        // Should be merged into ONE script item
         let functions: Vec<_> = script_file
             .items
             .iter()
@@ -814,18 +814,18 @@ function TestFunc #2:
                 assert_eq!(headers[1].name, "TestFunc");
                 assert_eq!(body.len(), 1); // Just "End"
             }
-            _ => panic!("Expected function statement"),
+            _ => panic!("Expected script statement"),
         }
     }
 
     #[test]
     fn test_parse_duplicate_function_error() {
-        // Test that defining the same function name in separate blocks is an error
+        // Test that defining the same script name in separate blocks is an error
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     Message 1
 
-function TestFunc #2:
+script TestFunc #2:
     Message 2
     End
 ";
@@ -837,13 +837,13 @@ function TestFunc #2:
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Duplicate definition for function 'TestFunc'")
+                .contains("Duplicate definition for script 'TestFunc'")
         );
     }
 
     #[test]
     fn test_parse_function_with_return() {
-        let source = "function TestFunc #1:\nReturn";
+        let source = "script TestFunc #1:\nReturn";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -853,8 +853,8 @@ function TestFunc #2:
             .filter(|s| matches!(s.node, StatementKind::Function { .. }))
             .collect();
         assert_eq!(functions.len(), 1);
-        let function = functions[0];
-        match &function.node {
+        let script = functions[0];
+        match &script.node {
             StatementKind::Function { headers, body } => {
                 assert_eq!(headers.len(), 1);
                 assert_eq!(headers[0].name, "TestFunc");
@@ -864,7 +864,7 @@ function TestFunc #2:
                     _ => panic!("Expected return statement"),
                 }
             }
-            _ => panic!("Expected function statement"),
+            _ => panic!("Expected script statement"),
         }
     }
 
@@ -880,21 +880,21 @@ function TestFunc #2:
             .filter(|s| matches!(s.node, StatementKind::Function { .. }))
             .collect();
         assert_eq!(functions.len(), 1);
-        let function = functions[0];
-        match &function.node {
+        let script = functions[0];
+        match &script.node {
             StatementKind::Function { headers, .. } => {
                 assert_eq!(headers.len(), 1);
                 assert_eq!(headers[0].name, "MyLabel");
                 assert_eq!(headers[0].id, None);
                 assert!(!headers[0].is_public);
             }
-            _ => panic!("Expected function statement"),
+            _ => panic!("Expected script statement"),
         }
     }
 
     #[test]
     fn test_parse_function_then_label() {
-        let source = "function Main #1:\n    Message 1\n\nSecondLabel:\n    Message 2\nEnd";
+        let source = "script Main #1:\n    Message 1\n\nSecondLabel:\n    Message 2\nEnd";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -911,7 +911,7 @@ function TestFunc #2:
                 assert_eq!(headers[0].name, "Main");
                 assert!(headers[0].is_public);
             }
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
 
         // Second (bare label)
@@ -920,13 +920,13 @@ function TestFunc #2:
                 assert_eq!(headers[0].name, "SecondLabel");
                 assert!(!headers[0].is_public);
             }
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_parse_fallthrough() {
-        let source = "function Func1 #1:\n    Message 1\n\nFunc2Label:\n    Message 2\nEnd";
+        let source = "script Func1 #1:\n    Message 1\n\nFunc2Label:\n    Message 2\nEnd";
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
@@ -937,7 +937,7 @@ function TestFunc #2:
             .collect();
         assert_eq!(functions.len(), 2);
 
-        // First function has no End in its body
+        // First script has no End in its body
         match &functions[0].node {
             StatementKind::Function { body, .. } => {
                 // Should just have the Message command, no End
@@ -949,14 +949,14 @@ function TestFunc #2:
                     _ => panic!("Expected command"),
                 }
             }
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_parse_if_else() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if 0x8000 == 1 then
         Message 1
     else
@@ -1000,14 +1000,14 @@ function TestFunc #1:
                     _ => panic!("Expected if statement"),
                 }
             }
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_parse_while_loop() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     while 0x8000 != 0 do
         SubVar 0x8000, 1
     endwhile
@@ -1045,7 +1045,7 @@ function TestFunc #1:
                     _ => panic!("Expected while statement"),
                 }
             }
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
     }
 
@@ -1084,7 +1084,7 @@ alias 0x800C as VAR_RESULT
 alias 0x4000 as VAR_GLOBAL
 alias VAR_RESULT as VAR_CHAINED
 
-function TestFunc #1:
+script TestFunc #1:
     SetVar VAR_RESULT, 5
     End
 ";
@@ -1136,7 +1136,7 @@ function TestFunc #1:
     #[test]
     fn test_parse_match_statement() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Message 1
@@ -1179,14 +1179,14 @@ function TestFunc #1:
                     _ => panic!("Expected match statement"),
                 }
             }
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_parse_match_without_else() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Message 1
@@ -1213,14 +1213,14 @@ function TestFunc #1:
                 }
                 _ => panic!("Expected match statement"),
             },
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_parse_match_with_keyword() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Message 1
@@ -1247,14 +1247,14 @@ function TestFunc #1:
                 }
                 _ => panic!("Expected match statement"),
             },
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_parse_break_statement() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     while 0x8000 != 0 do
         if 0x8000 == 5 then
             break
@@ -1292,7 +1292,7 @@ function TestFunc #1:
                     _ => panic!("Expected while statement"),
                 }
             }
-            _ => panic!("Expected function"),
+            _ => panic!("Expected script"),
         }
     }
 }

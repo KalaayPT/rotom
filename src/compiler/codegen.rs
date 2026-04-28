@@ -20,7 +20,7 @@ pub struct Emitter<'a> {
     label_offsets: HashMap<String, usize>,
     action_offsets: HashMap<String, usize>,
 
-    // Jump table: (slot_id (meaning function ID), function_name)
+    // Jump table: (slot_id (meaning script ID), function_name)
     jump_table_slots: Vec<(u32, String)>,
 
     // Pending patches
@@ -67,7 +67,7 @@ impl<'a> Emitter<'a> {
         // Sort by slot ID to ensure correct ordering
         self.jump_table_slots.sort_by_key(|(slot_id, _)| *slot_id);
         for (_, func_name) in self.jump_table_slots.clone() {
-            // Placeholder for function offset
+            // Placeholder for script offset
             self.relocations.push(Relocation {
                 offset: self.pc,
                 target: func_name.clone(),
@@ -328,7 +328,7 @@ mod tests {
     use crate::compiler::ir::{IrAction, IrFunction, IrOpcode, TopLevelItem};
     use crate::database::DatabaseV2;
 
-    /// Helper function to create a test database
+    /// Helper script to create a test database
     fn create_test_db() -> &'static DatabaseV2 {
         DatabaseV2::test_platinum()
     }
@@ -461,7 +461,7 @@ mod tests {
         let db = create_test_db();
         let mut emitter = Emitter::new(db);
 
-        // Create a simple IR function with movements using real movement names
+        // Create a simple IR script with movements using real movement names
         let ir_func = IrFunction {
             headers: vec![FunctionHeader {
                 name: "TestFunc".to_string(),
@@ -525,7 +525,7 @@ mod tests {
             emitter.emit_movement(op).unwrap();
         }
 
-        // Each function should have 2 movements * 4 bytes = 8 bytes
+        // Each script should have 2 movements * 4 bytes = 8 bytes
         assert_eq!(emitter.output.len(), 16);
     }
 
@@ -737,7 +737,7 @@ mod tests {
         let db = create_test_db();
         let mut emitter = Emitter::new(db);
 
-        // Create a function with a jump to a label
+        // Create a script with a jump to a label
         let items = vec![TopLevelItem::Function(IrFunction {
             headers: vec![FunctionHeader {
                 name: "TestFunc".to_string(),
@@ -779,7 +779,7 @@ mod tests {
         let db = create_test_db();
         let mut emitter = Emitter::new(db);
 
-        // Create a function followed by an action
+        // Create a script followed by an action
         // The action should be 4-byte aligned
         let items = vec![
             TopLevelItem::Function(IrFunction {
@@ -814,15 +814,15 @@ mod tests {
         let output = emitter.emit_script_file(&items, 1).unwrap();
 
         // Jump table: 1 entry (4 bytes) + marker (2 bytes) = 6 bytes
-        // Function: End = 2 bytes, but at offset 6, so function starts at 6
+        // Function: End = 2 bytes, but at offset 6, so script starts at 6
         // After function: offset 8, which is already 4-byte aligned
-        // But if function body was 3 bytes, action would need padding
+        // But if script body was 3 bytes, action would need padding
 
         // The action offset should be in the action_offsets map and should be 4-byte aligned
         // We can verify output length is correct
         assert!(
             output.len() >= 14,
-            "Should have jump table + function + aligned action"
+            "Should have jump table + script + aligned action"
         );
 
         // Output length should be even (final alignment)
@@ -834,7 +834,7 @@ mod tests {
         let db = create_test_db();
         let mut emitter = Emitter::new(db);
 
-        // Create an IR function with two headers
+        // Create an IR script with two headers
         let ir_func = IrFunction {
             headers: vec![
                 FunctionHeader {

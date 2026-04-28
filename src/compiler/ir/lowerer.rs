@@ -830,7 +830,7 @@ impl<'a> Lowerer<'a> {
             ExpressionKind::Call { function, args } => {
                 let ExpressionKind::Identifier(name) = &function.node else {
                     return Err(lowering_error(
-                        "Function-like constant expressions must use a simple name".to_string(),
+                        "Call-like constant expressions must use a simple name".to_string(),
                     ));
                 };
 
@@ -906,7 +906,7 @@ impl<'a> Lowerer<'a> {
             ExpressionKind::Call { function, args } => {
                 let ExpressionKind::Identifier(name) = &function.node else {
                     return Err(lowering_error(
-                        "Function-like constant expressions must use a simple name".to_string(),
+                        "Call-like constant expressions must use a simple name".to_string(),
                     ));
                 };
 
@@ -1444,7 +1444,7 @@ mod tests {
     #[test]
     fn test_lower_simple_function() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     Message 1
     End
 ";
@@ -1466,14 +1466,14 @@ function TestFunc #1:
                 assert_eq!(ir_func.headers[0].id, Some(1));
                 assert!(ir_func.is_public());
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_simple_command() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     Message 42
     End
 ";
@@ -1494,14 +1494,14 @@ function TestFunc #1:
                     IrOpcode::Label(_) => panic!("Expected command"),
                 }
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_command_variant_emit_args_rewrites_to_canonical_args() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     ViewRankings 1, 2, 0x800C
     End
 ";
@@ -1520,14 +1520,14 @@ function TestFunc #1:
                 }
                 IrOpcode::Label(_) => panic!("Expected command"),
             },
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_command_variant_emit_args_preserves_canonical_shape() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     ViewRankings 5, 0x800C
     End
 ";
@@ -1546,14 +1546,14 @@ function TestFunc #1:
                 }
                 IrOpcode::Label(_) => panic!("Expected command"),
             },
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_label() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     Message 1
     Jump .skip
     Message 2
@@ -1577,7 +1577,7 @@ function TestFunc #1:
                     .count();
                 assert_eq!(label_count, 1);
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
@@ -1641,7 +1641,7 @@ action TestAction
     #[test]
     fn test_lower_if_statement() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if 0x8000 == 1 then
         Message 1
     endif
@@ -1668,14 +1668,14 @@ function TestFunc #1:
                 assert!(has_compare, "Should have CompareVarValue instruction");
                 assert!(has_jump_if, "Should have JumpIf instruction");
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_while_loop() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     while 0x8000 != 0 do
         SubVar 0x8000, 1
     endwhile
@@ -1702,14 +1702,14 @@ function TestFunc #1:
                 assert!(has_compare, "Should have CompareVarValue instruction");
                 assert!(has_jump_if, "Should have JumpIf instruction");
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_if_else() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if 0x8000 == 1 then
         Message 1
     else
@@ -1750,14 +1750,14 @@ function TestFunc #1:
                     "if/else should have Jump to skip else block"
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_condition_operand_swap() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if 5 == 0x8000 then
         Message 1
     endif
@@ -1789,14 +1789,14 @@ function TestFunc #1:
                     );
                 }
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_arithmetic_expression() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     Message 1 + 2 * 3
     End
 ";
@@ -1823,14 +1823,14 @@ function TestFunc #1:
                     );
                 }
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_match_statement() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Message 1
@@ -1879,14 +1879,14 @@ function TestFunc #1:
                     .count();
                 assert_eq!(message_count, 3, "Should have 3 Message commands");
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_break_statement() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     while 0x8000 != 0 do
         if 0x8000 == 5 then
             break
@@ -1931,14 +1931,14 @@ function TestFunc #1:
                     "Break should generate Jump to while_end label"
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_break_outside_loop_fails() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     break
     End
 ";
@@ -1967,7 +1967,7 @@ function TestFunc #1:
     #[test]
     fn test_lower_autovar_call_bare_condition() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if CheckPlayerOnBike() then
         Message 1
     endif
@@ -1997,14 +1997,14 @@ function TestFunc #1:
                     "Should emit CompareVarValue with VAR_RESULT and 1"
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_autovar_call_with_comparison() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if ShowYesNoMenu() == 0 then
         Message 1
     endif
@@ -2034,14 +2034,14 @@ function TestFunc #1:
                     "Should emit CompareVarValue with VAR_RESULT and 0"
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_autovar_in_match() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match ShowYesNoMenu() with
         case 0:
             Message 1
@@ -2075,14 +2075,14 @@ function TestFunc #1:
                     compare_count
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_autovar_in_match_emits_once() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match ShowYesNoMenu() with
         case 0:
             Message 1
@@ -2126,14 +2126,14 @@ function TestFunc #1:
                     compare_count
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_autovar_call_with_args() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if AddItem(1, 5) then
         Message 1
     endif
@@ -2170,14 +2170,14 @@ function TestFunc #1:
                     "Should emit CompareVarValue with VAR_RESULT and 1"
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_autovar_call_on_right_side() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     if 1 == CheckPlayerOnBike() then
         Message 1
     endif
@@ -2203,7 +2203,7 @@ function TestFunc #1:
                 });
                 assert!(has_compare, "Should emit CompareVarValue with VAR_RESULT");
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
@@ -2212,7 +2212,7 @@ function TestFunc #1:
         let source = r"
 alias 0x800C as VAR_RESULT
 
-function TestFunc #1:
+script TestFunc #1:
     ShowCurrentFloor 1, 2
     End
 ";
@@ -2237,14 +2237,14 @@ function TestFunc #1:
                     "ShowCurrentFloor should default both destVarID params to VAR_RESULT"
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_match_with_keyword() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Message 1
@@ -2273,14 +2273,14 @@ function TestFunc #1:
                     compare_count
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_optimized_match_single_calls() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Call func_a
@@ -2353,14 +2353,14 @@ func_c:
                     label_count
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_optimized_match_single_jumps() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Jump label_a
@@ -2433,14 +2433,14 @@ label_c:
                     label_count
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_mixed_match_per_case_optimization() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     match 0x8000 with
         case 0:
             Call func_a
@@ -2494,14 +2494,14 @@ func_b:
                     .count();
                 assert_eq!(message_count, 2, "Should have 2 Message commands");
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_condition_identifier() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     CompareVarValue 0x8000, 5
     JumpIf EQUAL, some_label
     End
@@ -2526,14 +2526,14 @@ some_label:
                     "JumpIf should have condition value 1 (EQUAL)"
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
     #[test]
     fn test_lower_all_condition_identifiers() {
         let source = r"
-function TestFunc #1:
+script TestFunc #1:
     CompareVarValue 0x8000, 5
     JumpIf LESS, label1
     JumpIf EQUAL, label2
@@ -2574,7 +2574,7 @@ label6:
 
                 assert_eq!(jumpif_conditions, vec![0, 1, 2, 3, 4, 5]);
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
@@ -2585,7 +2585,7 @@ label6:
         constants.load_from_db(db);
 
         let source = r"
-function Test #1:
+script Test #1:
     CompareVar 0x8000, 100
     End
 ";
@@ -2604,7 +2604,7 @@ function Test #1:
                     ir_func.instructions
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
@@ -2615,7 +2615,7 @@ function Test #1:
         constants.load_from_db(db);
 
         let source = r"
-function Test #1:
+script Test #1:
     CompareVar 0x8000, 0x8001
     End
 ";
@@ -2634,7 +2634,7 @@ function Test #1:
                     ir_func.instructions
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
@@ -2645,7 +2645,7 @@ function Test #1:
         constants.load_from_db(db);
 
         let source = r"
-function Test #1:
+script Test #1:
     GoToIfGe 0x8000, 100, TestLabel
 TestLabel:
     End
@@ -2672,7 +2672,7 @@ TestLabel:
                     ir_func.instructions
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
@@ -2683,7 +2683,7 @@ TestLabel:
         constants.load_from_db(db);
 
         let source = r"
-function Test #1:
+script Test #1:
     GoToIfInRange 0x8000, 80, 85, TestLabel
 TestLabel:
     End
@@ -2723,7 +2723,7 @@ TestLabel:
                     "GoToIfInRange should evaluate incremented macro arguments at compile time"
                 );
             }
-            TopLevelItem::Action(_) => panic!("Expected function"),
+            TopLevelItem::Action(_) => panic!("Expected script"),
         }
     }
 
@@ -2733,7 +2733,7 @@ TestLabel:
         let constants = crate::database::ConstantDb::new();
         let (_, symbols) = parse_and_analyze(
             r"
-function Test #1:
+script Test #1:
     End
 ",
         );
@@ -2781,7 +2781,7 @@ function Test #1:
         }
 
         let source = r"
-function Test #1:
+script Test #1:
     GoToIfGe 0x800C, TRAINER_CARD_LEVEL_GOLD, TestLabel
 TestLabel:
     End
@@ -2828,7 +2828,7 @@ TestLabel:
         // VAR_ELEVATOR_FLOORS_ABOVE = 16590 (0x40CE) which is >= VARS_START (0x4000)
         // So this should expand to CompareVarToVar
         let source = r"
-function Test #1:
+script Test #1:
     GoToIfEq VAR_ELEVATOR_FLOORS_ABOVE, 3, TestLabel
 TestLabel:
     End
@@ -2918,7 +2918,7 @@ TestLabel:
 
         // Test CallIfGe with TRAINER_CARD_LEVEL_GOLD (value 4, which is < VARS_START)
         let source = r"
-function Test #1:
+script Test #1:
     CallIfGe VAR_RESULT, TRAINER_CARD_LEVEL_GOLD, TestLabel
     CallIfLt VAR_RESULT, TRAINER_CARD_LEVEL_GOLD, TestLabel
 TestLabel:

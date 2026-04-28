@@ -21,7 +21,7 @@
 //!
 //! ## Rotoscript Output:
 //! ```text
-//! function script_1 #1:
+//! script script_1 #1:
 //!     PlayFanfare 1500
 //!     LockAll
 //! End
@@ -94,10 +94,10 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
             continue;
         }
 
-        // Check for Script N: header -> becomes `function script_N #N:`
+        // Check for Script N: header -> becomes `script script_N #N:`
         if let Some(caps) = RE_SCRIPT_HEADER.captures(trimmed) {
             let id: u32 = caps[1].parse().expect("regex guarantees digits");
-            let _ = writeln!(output, "function script_{} #{}:", id, id);
+            let _ = writeln!(output, "script script_{} #{}:", id, id);
             in_action = false;
             continue;
         }
@@ -313,7 +313,7 @@ mod tests {
     fn test_script_header() {
         let input = "Script 1:\n    LockAll\nEnd";
         let output = transpile(input, None);
-        assert!(output.contains("function script_1 #1:"));
+        assert!(output.contains("script script_1 #1:"));
     }
 
     #[test]
@@ -322,7 +322,7 @@ mod tests {
         let output = transpile(input, None);
         // DSPRE "Function" becomes a bare label in rotoscript
         assert!(output.contains("func_2:"));
-        assert!(!output.contains("function func_2"));
+        assert!(!output.contains("script func_2"));
     }
 
     #[test]
@@ -420,11 +420,11 @@ End
 ";
         let output = transpile(input, None);
 
-        assert!(output.contains("function script_1 #1:"));
-        assert!(output.contains("function script_2 #2:"));
-        assert!(output.contains("function script_3 #3:"));
+        assert!(output.contains("script script_1 #1:"));
+        assert!(output.contains("script script_2 #2:"));
+        assert!(output.contains("script script_3 #3:"));
         assert!(output.contains("func_2:"));
-        assert!(!output.contains("function func_2"));
+        assert!(!output.contains("script func_2"));
         assert!(output.contains("action action_1"));
         // End inside action should become EndMovement
         assert!(output.contains("EndMovement"));

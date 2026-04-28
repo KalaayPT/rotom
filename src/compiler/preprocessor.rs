@@ -67,7 +67,7 @@ mod tests {
     fn preprocess_removes_directives_but_preserves_line_numbers() {
         let source = r#"#include "constants/test.h"
 #define TEST_VALUE 7
-function Main #1:
+script Main #1:
     Message TEST_VALUE
 End
 "#;
@@ -83,7 +83,7 @@ End
         );
         assert_eq!(
             result.cleaned_source,
-            "\n\nfunction Main #1:\n    Message TEST_VALUE\nEnd\n"
+            "\n\nscript Main #1:\n    Message TEST_VALUE\nEnd\n"
         );
     }
 }

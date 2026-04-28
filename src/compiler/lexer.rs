@@ -279,10 +279,10 @@ mod tests {
 
     #[test]
     fn test_lexer_identifiers_and_numbers() {
-        let source = "function myFunc123 alias_var 0 42 0x1A3F";
+        let source = "script myFunc123 alias_var 0 42 0x1A3F";
         let mut lexer = Lexer::new(source);
         let expected_tokens = vec![
-            TokenType::Function,
+            TokenType::Script,
             TokenType::Identifier("myFunc123".to_string()),
             TokenType::Identifier("alias_var".to_string()),
             TokenType::Num(0),
@@ -329,11 +329,11 @@ mod tests {
 
     #[test]
     fn test_lexer_iterator() {
-        let source = "function test";
+        let source = "script test";
         let lexer = Lexer::new(source);
         let tokens: Vec<Token> = lexer.collect();
         assert_eq!(tokens.len(), 2);
-        assert_eq!(tokens[0].kind, TokenType::Function);
+        assert_eq!(tokens[0].kind, TokenType::Script);
         assert_eq!(tokens[1].kind, TokenType::Identifier("test".to_string()));
     }
 
@@ -445,9 +445,9 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_function() {
+    fn test_simple_script() {
         let source = "
-        function myFunc:
+        script myFunc:
             alias_var = 42
             if alias_var >= 10 then
                 Return
@@ -465,7 +465,7 @@ mod tests {
         }
         let expected_tokens = vec![
             TokenType::Newline,
-            TokenType::Function,
+            TokenType::Script,
             TokenType::Identifier("myFunc".to_string()),
             TokenType::Colon,
             TokenType::Newline,
@@ -492,8 +492,8 @@ mod tests {
     #[test]
     fn test_full_example_file() {
         let source = "
-        // Example function
-        function example
+        // Example script
+        script example
             /* Initialize variable */
             count = 0
             while count < 10 do
@@ -501,7 +501,7 @@ mod tests {
             endwhile
         End
 
-        public function anotherExample #1
+        script anotherExample #1
             alias 0xFF as maxCount
             if maxCount == 255 then
                 Jump .start
@@ -527,7 +527,7 @@ mod tests {
         }
         let expected_tokens = vec![
             TokenType::Newline,
-            TokenType::Function,
+            TokenType::Script,
             TokenType::Identifier("example".to_string()),
             TokenType::Newline,
             TokenType::Newline,
@@ -552,8 +552,7 @@ mod tests {
             TokenType::End,
             TokenType::Newline,
             TokenType::Newline,
-            TokenType::Public,
-            TokenType::Function,
+            TokenType::Script,
             TokenType::Identifier("anotherExample".to_string()),
             TokenType::Hash,
             TokenType::Num(1),

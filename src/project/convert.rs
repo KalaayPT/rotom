@@ -352,7 +352,7 @@ mod tests {
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(
             source_dir.join("keep.rotom"),
-            "function Main #1:\n    End\n",
+            "script Main #1:\n    End\n",
         )
         .unwrap();
         fs::write(source_dir.join("convert.script"), "=== script 1\nEnd\n").unwrap();

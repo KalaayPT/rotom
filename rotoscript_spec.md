@@ -30,13 +30,13 @@
 Labels define locations in code for jumps or pointers.
 * **Top-Level Labels:** Defined at the file level with `Name:` syntax. Create a new code block.
     * Syntax: `MyLabel:`
-* **Inline Labels:** Defined inside a function body. Start with a dot.
+* **Inline Labels:** Defined inside a script body. Start with a dot.
     * Syntax: `.loop_start:` or `.loop_start`
     * Note: The colon is optional for inline labels. Both forms are equivalent.
 
 ### 1.5 Keywords
 Reserved words that cannot be used as identifiers:
-* **Block Delimiters:** `function`, `action`, `End`, `Return`, `EndMovement`
+* **Block Delimiters:** `script`, `action`, `End`, `Return`, `EndMovement`
 * **Modifiers:** `alias`, `as`
 * **Control Flow:** `if`, `then`, `else`, `endif`, `while`, `do`, `endwhile`, `match`, `with`, `case`, `endmatch`, `Jump`
 * **Logical Operators:** `and`, `or`, `not`
@@ -59,8 +59,8 @@ Code blocks are delimited by the start of the next block, not by explicit termin
 alias 0x800C as VAR_RESULT
 alias 2550 as FLAG_Badge
 
-// 2. Public function (in jump table)
-function GymLeader #1:
+// 2. Public script (in jump table)
+script GymLeader #1:
     if FLAG_Badge == 1 then
         Jump .already_fought
     endif
@@ -79,24 +79,24 @@ action MovePlayer
 EndMovement
 ```
 
-### 2.1 Function Declarations
+### 2.1 Script Declarations
 
 Functions are public entry points that appear in the jump table. They require a slot number.
 
 ```rotom
-// Public function with jump-table slot #1
-function Main #1:
+// Public script with jump-table slot #1
+script Main #1:
     Message 1
     End
 
 // Stacked headers (multiple jump table entries pointing to same code)
-function TalkToNPC #5:
-function InteractWithSign #6:
+script TalkToNPC #5:
+script InteractWithSign #6:
     Message 10
     End
 ```
 
-* `function Name #N:` - Function with jump-table slot N (required)
+* `script Name #N:` - Script with jump-table slot N (required)
 * The colon after the header is required
 
 ### 2.2 Labels (Private Code Blocks)
@@ -125,12 +125,12 @@ Code blocks that don't end with `End` or `Return` fall through to the next block
 - Sequential code organization matching decomp style
 
 ```rotom
-function SlotMachine_9 #9:
+script SlotMachine_9 #9:
     SetVar LOCALID, 9
     GoTo SlotMachine_Common
     // No End - next block follows in binary
 
-function SlotMachine_10 #10:
+script SlotMachine_10 #10:
     SetVar LOCALID, 10
     GoTo SlotMachine_Common
 
@@ -150,7 +150,7 @@ Note: These are commands that emit bytecode, not structural delimiters.
 
 ## 3. Aliases & Variables
 
-The Gen 4 Pokemon games have many persistent variables, but only 14 of them are script-local and function like CPU registers:
+The Gen 4 Pokemon games have many persistent variables, but only 14 of them are script-local and script like CPU registers:
 * 0x8000-0x800B: 12 normal variables
 * 0x800C: used as "result" variable, but can be used freely
 * 0x800D: special: "last interacted" overworld, which triggered the script execution
@@ -275,15 +275,15 @@ endwhile
 ```
 
 ### 4.4 Jumps and Calls
-* `Jump LabelName` - Unconditional jump to a label or function
-* `Jump .local_label` - Jump to an inline label within the same function
-* `Call FunctionName` - Call a function, execution returns after `Return`
+* `Jump LabelName` - Unconditional jump to a label or script
+* `Jump .local_label` - Jump to an inline label within the same script
+* `Call ScriptName` - Call a script/helper, execution returns after `Return`
 
 Restriction: You cannot Jump to a variable alias. You can only jump to Labels or Functions.
 
 ### 4.5 Expressions in Conditions
 
-Conditions support function-call syntax for commands that return values:
+Conditions support call-expression syntax for commands that return values:
 ```rotom
 if GetPlayerX() == 10 then
     if GetPlayerY() == 20 then
@@ -308,7 +308,7 @@ Native hardware commands defined in the game database.
 * Argument Resolution:
     * If Arg is an Integer, it passes raw.
     * If Arg is a Variable Alias, it resolves to the ID (e.g., 0x4000).
-    * If Arg is a Label/Function name, it passes a reference to that location's offset.
+    * If Arg is a Label/Script name, it passes a reference to that location's offset.
 
 ### 5.1.1 Database-Defined Call Shapes
 
@@ -376,7 +376,7 @@ The compiler reports errors with source locations using the following categories
     * Duplicate definitions in the same scope
     * Invalid jump targets (jumping to a variable instead of a label)
     * Control flow inside Actions
-    * Missing slot number on function declarations
+    * Missing slot number on script declarations
 
 Example error output:
 ```
@@ -391,7 +391,7 @@ error: Undefined symbol: 'undefined_var'
 
 1. **Lexer:** Source → Tokens.
 2. **Parser:** Tokens → AST (Statement nodes).
-    * Functions end at next function/label/action/EOF
+    * Scripts end at next script/label/action/EOF
     * Actions are self-contained (end at EndMovement)
 3. **Semantic Analysis:**
     * Registers Symbols (functions, labels, actions, aliases).
@@ -416,10 +416,10 @@ error: Undefined symbol: 'undefined_var'
 ## 8. Binary Format (Reference)
 
 The compiled script binary consists of:
-1. **Jump Table:** Array of 4-byte offsets pointing to public function entry points
+1. **Jump Table:** Array of 4-byte offsets pointing to public script entry points
     * Sorted by slot number (not source order)
     * Terminated by `0xFD13` marker
-2. **Script Data:** Concatenated function and label bytecode
+2. **Script Data:** Concatenated script and label bytecode
     * Commands are 2-byte IDs followed by parameters
     * Parameters are 2 or 4 bytes depending on command definition
     * Code emitted in source order (fall-through preserved)
@@ -449,7 +449,7 @@ Rotom includes a transpiler for DSPRE script format:
 
 | DSPRE Syntax | Rotom Syntax |
 |--------------|--------------|
-| `Script N:` | `function script_N #N:` |
+| `Script N:` | `script script_N #N:` |
 | `Function N:` | `func_N:` (bare label) |
 | `Action N:` | `action action_N` |
 | `Script#N` | `script_N` |
@@ -466,7 +466,7 @@ Rotom includes a transpiler for DSPRE script format:
 - [x] DSPRE transpiler
 - [x] Jump table ordering (sorted by slot ID)
 - [x] Movement default parameters (1 when not specified)
-- [x] Action/function interleaving (preserves source order)
+- [x] Action/script interleaving (preserves source order)
 - [x] Parameter reordering for commands with different arg order in decomps
 - [x] Macro support
 - [x] Simple decompilation

@@ -56,9 +56,9 @@ fn normal_script_to_source(items: &[TopLevelItem], db: &DatabaseV2) -> String {
                 for header in &func.headers {
                     if header.is_public {
                         if let Some(id) = header.id {
-                            let _ = writeln!(output, "function {} #{}:", header.name, id);
+                            let _ = writeln!(output, "script {} #{}:", header.name, id);
                         } else {
-                            let _ = writeln!(output, "function {}:", header.name);
+                            let _ = writeln!(output, "script {}:", header.name);
                         }
                     } else {
                         let _ = writeln!(output, "{}:", header.name);

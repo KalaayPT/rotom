@@ -864,7 +864,7 @@ mod tests {
         let root = dir.path();
         let nested = root.join("scripts/test.rotom");
         fs::create_dir_all(nested.parent().unwrap()).unwrap();
-        fs::write(&nested, "function Main #1:\n    End\n").unwrap();
+        fs::write(&nested, "script Main #1:\n    End\n").unwrap();
 
         assert_eq!(
             relative_project_path(root, &nested).unwrap(),
@@ -1008,7 +1008,7 @@ mod tests {
         fs::create_dir_all(root.join("scripts")).unwrap();
         fs::write(
             root.join("scripts/0001.rotom"),
-            "function Main #1:\n    End\n",
+            "script Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1027,7 +1027,7 @@ mod tests {
         fs::create_dir_all(root.join("expanded/textArchives")).unwrap();
         fs::write(
             root.join("scripts/0001.rotom"),
-            "alias SPECIES_NIDORANF as MON\nfunction Main #1:\n    End\n",
+            "alias SPECIES_NIDORANF as MON\nscript Main #1:\n    End\n",
         )
         .unwrap();
         fs::write(
@@ -1059,7 +1059,7 @@ mod tests {
         fs::create_dir_all(root.join("scripts")).unwrap();
         fs::write(
             root.join("scripts/0001.rotom"),
-            "function Main #1:\n    End\n",
+            "script Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1080,7 +1080,7 @@ mod tests {
         fs::create_dir_all(root.join("scripts")).unwrap();
         fs::write(
             root.join("scripts/0001.rotom"),
-            "function Main #1:\n    End\n",
+            "script Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1115,7 +1115,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("res/field/scripts/test.rotom"),
-            "#include \"include/constants/test.h\"\nalias TEST_CONST as LOCAL\nfunction Main #1:\n    End\n",
+            "#include \"include/constants/test.h\"\nalias TEST_CONST as LOCAL\nscript Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1125,7 +1125,7 @@ mod tests {
         let second = compile_project(root, &config, false).unwrap();
         fs::write(
             root.join("res/field/scripts/test.rotom"),
-            "#include \"include/constants/test.h\"\nalias TEST_CONST as LOCAL\n\nfunction Main #1:\n    End\n",
+            "#include \"include/constants/test.h\"\nalias TEST_CONST as LOCAL\n\nscript Main #1:\n    End\n",
         )
         .unwrap();
         let third = compile_project(root, &config, false).unwrap();
@@ -1149,7 +1149,7 @@ mod tests {
         fs::write(&header, "#define TEST_CONST 1\n").unwrap();
         fs::write(
             source_root.join("test.rotom"),
-            "#include \"local_dep.h\"\nalias TEST_CONST as LOCAL\nfunction Main #1:\n    End\n",
+            "#include \"local_dep.h\"\nalias TEST_CONST as LOCAL\nscript Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1176,7 +1176,7 @@ mod tests {
         fs::write(&include_path, "#define TEST_CONST 1\n").unwrap();
         fs::write(
             source_root.join("test.rotom"),
-            "#include \"local_dep.inc\"\nalias TEST_CONST as LOCAL\nfunction Main #1:\n    End\n",
+            "#include \"local_dep.inc\"\nalias TEST_CONST as LOCAL\nscript Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1215,7 +1215,7 @@ mod tests {
         fs::create_dir_all(root.join("res/field/scripts")).unwrap();
         fs::write(
             root.join("res/field/scripts/test.rotom"),
-            "function Main #1:\n    End\n",
+            "script Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1242,7 +1242,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("res/field/scripts/test.rotom"),
-            "function Main #1:\n    End\n",
+            "script Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1275,7 +1275,7 @@ mod tests {
         fs::create_dir_all(root.join("res/field/scripts")).unwrap();
         fs::write(
             root.join("res/field/scripts/test.rotom"),
-            "function Main #1:\n    End\n",
+            "script Main #1:\n    End\n",
         )
         .unwrap();
 
@@ -1312,7 +1312,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("res/field/scripts/test.rotom"),
-            "alias TEST_CONST as LOCAL\nfunction Main #1:\n    End\n",
+            "alias TEST_CONST as LOCAL\nscript Main #1:\n    End\n",
         )
         .unwrap();
 

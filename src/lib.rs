@@ -771,7 +771,7 @@ mod tests {
     }
 
     fn minimal_script_source() -> &'static str {
-        "function Main #1:\nEnd\n"
+        "script Main #1:\nEnd\n"
     }
 
     #[test]
@@ -968,7 +968,7 @@ mod tests {
             &input_path,
             r#"#include "constants/test.h"
 #define LOCAL_MESSAGE 7
-function Main #1:
+script Main #1:
     Message LOCAL_MESSAGE
     Message TEST_MESSAGE
     End
@@ -989,7 +989,7 @@ function Main #1:
 
         let compiled = fs::read(&output_path).expect("failed to read compiled output");
         let expected = compile_to_bytes(
-            "function Main #1:\n    Message 7\n    Message 7\n    End\n",
+            "script Main #1:\n    Message 7\n    Message 7\n    End\n",
             db,
             &ConstantDb::new(),
         )
@@ -1008,7 +1008,7 @@ function Main #1:
             "alias 7 as FOO
 alias FOO as BAR
 
-function Main #1:
+script Main #1:
     Message BAR
     End
 ",
@@ -1018,7 +1018,7 @@ function Main #1:
         .expect("symbolic alias chain should compile");
 
         let expected = compile_to_bytes(
-            "function Main #1:\n    Message 7\n    End\n",
+            "script Main #1:\n    Message 7\n    End\n",
             db,
             &ConstantDb::new(),
         )
@@ -1033,21 +1033,21 @@ function Main #1:
         let constants = ConstantDb::new();
 
         let compiled = compile_to_bytes(
-            "function DefineAlias #1:
+            "script DefineAlias #1:
     alias 7 as SHARED
     End
 
-function Main #2:
+script Main #2:
     Message SHARED
     End
 ",
             db,
             &constants,
         )
-        .expect("alias from earlier function body should compile");
+        .expect("alias from earlier script body should compile");
 
         let expected = compile_to_bytes(
-            "function DefineAlias #1:\n    End\n\nfunction Main #2:\n    Message 7\n    End\n",
+            "script DefineAlias #1:\n    End\n\nscript Main #2:\n    Message 7\n    End\n",
             db,
             &ConstantDb::new(),
         )
@@ -1063,12 +1063,12 @@ function Main #2:
 
         let compiled = compile_to_bytes(
             "alias 7 as VALUE
-function First #1:
+script First #1:
     Message VALUE
     End
 
 alias 9 as VALUE
-function Second #2:
+script Second #2:
     Message VALUE
     End
 ",
@@ -1078,7 +1078,7 @@ function Second #2:
         .expect("top-level alias redefinition should compile");
 
         let expected = compile_to_bytes(
-            "function First #1:\n    Message 7\n    End\n\nfunction Second #2:\n    Message 9\n    End\n",
+            "script First #1:\n    Message 7\n    End\n\nscript Second #2:\n    Message 9\n    End\n",
             db,
             &ConstantDb::new(),
         )
@@ -1093,7 +1093,7 @@ function Second #2:
         let constants = ConstantDb::new();
 
         let result = compile_to_bytes(
-            "function Main #1:
+            "script Main #1:
     Message SHARED
     End
 
@@ -1122,7 +1122,7 @@ alias 7 as SHARED
             &input_path,
             r#"#include "constants/test.h"
 alias TEST_MESSAGE as LOCAL_MESSAGE
-function Main #1:
+script Main #1:
     Message LOCAL_MESSAGE
     End
 "#,
@@ -1142,7 +1142,7 @@ function Main #1:
 
         let compiled = fs::read(&output_path).expect("failed to read compiled output");
         let expected = compile_to_bytes(
-            "function Main #1:\n    Message 7\n    End\n",
+            "script Main #1:\n    Message 7\n    End\n",
             db,
             &ConstantDb::new(),
         )
@@ -1161,7 +1161,7 @@ function Main #1:
         fs::write(
             &input_path,
             r#"#include "constants/missing.h"
-function Main #1:
+script Main #1:
     End
 "#,
         )
