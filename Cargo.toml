@@ -17,6 +17,7 @@ clap = { version = "4.5.51", features = ["derive"] }
 codespan-reporting = "0.13.1"
 dashmap = "6.1.0"
 hex = "0.4"
+lsp-types = { version = "0.97", optional = true }
 linked_hash_set = "0.1.6"
 rayon = "1.11.0"
 regex = "1.12.2"
@@ -26,7 +27,7 @@ sha2 = "0.10"
 minreq = { version = "2.14.1", features = ["https-rustls"] }
 thiserror = "2.0"
 toml = "0.8.19"
-uxie = { path = "../uxie" }
+uxie = "0.6.5"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 indicatif = { version = "0.18.4", features = ["rayon"] }
@@ -39,6 +40,9 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 hex = "0.4"
 tempfile = "3.23.0"
+
+[features]
+lsp-types = ["dep:lsp-types"]
 
 [profile.release]
 debug = true

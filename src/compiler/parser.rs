@@ -3,7 +3,7 @@ use super::{
         Expression, ExpressionKind, FunctionHeader, MatchCase, Precedence, ScriptFile, Spanned,
         Statement, StatementKind,
     },
-    diagnostic::{ParseResult, parse_error},
+    diagnostic::{CompileError, ParseResult, parse_error},
     lexer::Lexer,
     token::{Token, TokenType},
 };
@@ -12,7 +12,13 @@ pub struct Parser<'a> {
     lexer: Lexer<'a>,
     current_token: Token,
     peek_token: Token,
+    /// When `true`, the parser recovers from syntax errors by inserting
+    /// `StatementKind::Error` nodes and collecting diagnostics in `errors`.
+    recover: bool,
+    /// Collected diagnostics when `recover` is `true`.
+    errors: Vec<CompileError>,
 }
+
 impl<'a> Parser<'a> {
     pub fn new(mut lexer: Lexer<'a>) -> Parser<'a> {
         let first = lexer.next_token();
@@ -21,8 +27,29 @@ impl<'a> Parser<'a> {
             lexer,
             current_token: first,
             peek_token: second,
+            recover: false,
+            errors: Vec::new(),
         }
     }
+
+    /// Create a parser with error recovery enabled.
+    ///
+    /// When recovery is on, `parse_statement` and friends insert
+    /// `StatementKind::Error` nodes into the AST and continue parsing
+    /// instead of returning `Err`.  Collected diagnostics can be retrieved
+    /// with [`Self::take_errors`] after parsing finishes.
+    pub fn new_fallible(mut lexer: Lexer<'a>) -> Parser<'a> {
+        let first = lexer.next_token();
+        let second = lexer.next_token();
+        Parser {
+            lexer,
+            current_token: first,
+            peek_token: second,
+            recover: true,
+            errors: Vec::new(),
+        }
+    }
+
     pub fn advance(&mut self) {
         self.current_token = self.peek_token.clone();
         self.peek_token = self.lexer.next_token();
@@ -68,6 +95,7 @@ impl<'a> Parser<'a> {
             _ => false,
         }
     }
+
     pub fn expect_advance(&mut self, kind: &TokenType) -> ParseResult<Token> {
         if std::mem::discriminant(&self.current_token.kind) == std::mem::discriminant(kind) {
             let token = self.current_token.clone();
@@ -94,33 +122,42 @@ impl<'a> Parser<'a> {
                 self.advance();
                 continue;
             }
-            let stmt = self.parse_top_level_stmt()?;
+            let stmt = match self.parse_top_level_stmt() {
+                Ok(s) => s,
+                Err(e) => {
+                    if self.recover {
+                        self.errors.push(e);
+                        self.synchronize_top_level();
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
             match &stmt.node {
                 StatementKind::Function { headers, .. } => {
-                    // Check if we already have a script with the same name
                     if let Some(first_header) = headers.first() {
                         if script_headers_by_name.contains(&first_header.name) {
-                            // Already exists - this is a duplicate body definition
-                            return Err(parse_error(
-                                stmt.span.clone(),
-                                format!(
-                                    "Duplicate definition for script '{}'. All headers for a script must be stacked together before the body.",
-                                    first_header.name
-                                ),
-                            ));
+                            let msg = format!(
+                                "Duplicate definition for script '{}'. All headers for a script must be stacked together before the body.",
+                                first_header.name
+                            );
+                            if self.recover {
+                                self.errors.push(parse_error(stmt.span.clone(), msg));
+                            } else {
+                                return Err(parse_error(stmt.span.clone(), msg));
+                            }
+                        } else {
+                            script_headers_by_name.insert(first_header.name.clone());
                         }
-                        // New script - add it
-                        script_headers_by_name.insert(first_header.name.clone());
-                        items.push(stmt);
-                    } else {
-                        items.push(stmt);
                     }
+                    items.push(stmt);
                 }
                 StatementKind::Action { .. } => items.push(stmt),
                 StatementKind::AliasStatement { .. } => {
                     aliases.push(stmt.clone());
                     items.push(stmt);
                 }
+                _ if self.recover => items.push(stmt),
                 _ => unreachable!("top_level_stmt should prevent other statements or errors"),
             }
         }
@@ -130,6 +167,43 @@ impl<'a> Parser<'a> {
             jump_table_end_marker_count: 1,
         })
     }
+
+    /// Skip tokens until we reach a safe top-level boundary.
+    fn synchronize_top_level(&mut self) {
+        while !self.current_token_is(&TokenType::EOF) {
+            if self.at_top_level_boundary() {
+                return;
+            }
+            self.advance();
+        }
+    }
+
+    /// Skip tokens until we reach a safe statement boundary.
+    fn synchronize_statement(&mut self) {
+        while !self.current_token_is(&TokenType::EOF) {
+            if self.at_top_level_boundary() {
+                return;
+            }
+            match &self.current_token.kind {
+                TokenType::If
+                | TokenType::While
+                | TokenType::Match
+                | TokenType::Break
+                | TokenType::End
+                | TokenType::Return
+                | TokenType::EndMovement
+                | TokenType::Alias
+                | TokenType::Jump
+                | TokenType::LocalLabel(_) => return,
+                TokenType::Newline => {
+                    self.advance();
+                    return;
+                }
+                _ => self.advance(),
+            }
+        }
+    }
+
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         let statement = match self.current_token.kind.clone() {
             TokenType::If => self.parse_if()?,
@@ -285,12 +359,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse script/helper body until we hit the next script, label, action, or EOF
+    /// Parse function body until we hit the next function, label, action, or EOF.
     fn parse_function_body(&mut self) -> ParseResult<Vec<Statement>> {
         let mut body = Vec::new();
 
         while !self.current_token_is(&TokenType::EOF) {
-            // Check for top-level boundary (next script, label, action)
             if self.at_top_level_boundary() {
                 break;
             }
@@ -300,7 +373,19 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            body.push(self.parse_statement()?);
+            match self.parse_statement() {
+                Ok(stmt) => body.push(stmt),
+                Err(e) if self.recover => {
+                    let span = self.current_token.span.clone();
+                    self.errors.push(e);
+                    body.push(Spanned {
+                        node: StatementKind::Error,
+                        span,
+                    });
+                    self.synchronize_statement();
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         Ok(body)
@@ -342,7 +427,19 @@ impl<'a> Parser<'a> {
                 self.advance();
                 continue;
             }
-            block.push(self.parse_statement()?);
+            match self.parse_statement() {
+                Ok(stmt) => block.push(stmt),
+                Err(e) if self.recover => {
+                    let span = self.current_token.span.clone();
+                    self.errors.push(e);
+                    block.push(Spanned {
+                        node: StatementKind::Error,
+                        span,
+                    });
+                    self.synchronize_statement();
+                }
+                Err(e) => return Err(e),
+            }
         }
         Ok(block)
     }
@@ -1294,5 +1391,78 @@ script TestFunc #1:
             }
             _ => panic!("Expected script"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Error-tolerant parsing tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_fallible_parser_recovers_from_bad_statement() {
+        let source = r"
+script TestFunc #1:
+    Message 1
+    garbage_token !@#
+    Message 2
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new_fallible(lexer);
+        let file = parser.parse_script_file().unwrap();
+        let errors = std::mem::take(&mut parser.errors);
+
+        // Should still produce a function with three statements (including error)
+        assert!(!errors.is_empty(), "expected at least one error");
+        let functions: Vec<_> = file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 1);
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => {
+                // Message 1, Error, Message 2, End
+                assert_eq!(body.len(), 4);
+                assert!(matches!(&body[1].node, StatementKind::Error));
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_fallible_parser_recovers_at_top_level() {
+        // `!!!` is not a valid token sequence, so it will cause a parse error
+        // that the fallible parser must recover from.
+        let source = r"
+script First #1:
+    End
+
+!!! invalid garbage
+
+script Second #2:
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new_fallible(lexer);
+        let file = parser.parse_script_file().unwrap();
+        let errors = std::mem::take(&mut parser.errors);
+
+        assert!(!errors.is_empty(), "expected at least one error");
+        let functions: Vec<_> = file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 2);
+    }
+
+    #[test]
+    fn test_fallible_parser_empty_source() {
+        let lexer = Lexer::new("");
+        let mut parser = Parser::new_fallible(lexer);
+        let file = parser.parse_script_file().unwrap();
+        let errors = std::mem::take(&mut parser.errors);
+        assert!(errors.is_empty());
+        assert!(file.items.is_empty());
     }
 }

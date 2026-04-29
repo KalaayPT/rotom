@@ -220,6 +220,7 @@ impl<'a> Analyzer<'a> {
         self.warn_unused_aliases();
         Ok(())
     }
+
     fn register_alias(&mut self, stmt: &Statement) -> ParseResult<()> {
         if let StatementKind::AliasStatement { name, value, .. } = &stmt.node {
             let id = self.resolve_expression_to_int(value)?;
@@ -316,7 +317,8 @@ impl<'a> Analyzer<'a> {
             | StatementKind::Break
             | StatementKind::Return
             | StatementKind::End
-            | StatementKind::EndMovement => {}
+            | StatementKind::EndMovement
+            | StatementKind::Error => {}
         }
     }
 
@@ -340,7 +342,7 @@ impl<'a> Analyzer<'a> {
                     self.collect_alias_references_in_expression(arg);
                 }
             }
-            ExpressionKind::Number(_) => {}
+            ExpressionKind::Number(_) | ExpressionKind::Error => {}
         }
     }
 
@@ -517,8 +519,11 @@ impl<'a> Analyzer<'a> {
             StatementKind::AliasStatement { .. } => {
                 self.register_alias(stmt)?;
             }
-            // labels already gathered, skip
-            StatementKind::Label(_) | StatementKind::Return | StatementKind::End => {}
+            // labels already gathered, skip; error placeholders too
+            StatementKind::Label(_)
+            | StatementKind::Return
+            | StatementKind::End
+            | StatementKind::Error => {}
             _ => {
                 return Err(analysis_error(
                     stmt.span.clone(),
@@ -882,7 +887,7 @@ impl<'a> Analyzer<'a> {
                     format!("Could not resolve '{}' as a constant expression", expr_text),
                 ))
             }
-            ExpressionKind::Label(_) => Err(analysis_error(
+            ExpressionKind::Label(_) | ExpressionKind::Error => Err(analysis_error(
                 expr.span.clone(),
                 format!(
                     "Unsupported expression {:?} in integer expression",
@@ -957,6 +962,10 @@ impl<'a> Analyzer<'a> {
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
             }
+            ExpressionKind::Error => Err(analysis_error(
+                expr.span.clone(),
+                "Invalid expression in constant evaluation".to_string(),
+            )),
         }
     }
 
@@ -1050,7 +1059,7 @@ impl<'a> Analyzer<'a> {
 
     pub fn validate_expression(&self, expr: &Expression) -> ParseResult<()> {
         match &expr.node {
-            ExpressionKind::Number(_) | ExpressionKind::Label(_) => {}
+            ExpressionKind::Number(_) | ExpressionKind::Label(_) | ExpressionKind::Error => {}
             ExpressionKind::Identifier(name) => {
                 if self.resolve_symbol(name).is_none() {
                     return Err(analysis_error(

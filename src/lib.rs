@@ -27,7 +27,10 @@ pub use compiler::batch_compile::compile_batch;
 pub use compiler::codegen::Emitter;
 pub use compiler::{
     Analyzer, Lexer, Lowerer, Parser,
+    analysis::{SymbolTable, SymbolType},
     diagnostic::{CompileError, CompileWarning, print_error},
+    preprocessor::{IncludeDirective, PreprocessResult},
+    sourcemap::{Position, SourceMap},
 };
 pub use database::{ConstantDb, DatabaseV2, GameFamily, GameFamilyExt, game_family_from_hint};
 pub use decompiler::{

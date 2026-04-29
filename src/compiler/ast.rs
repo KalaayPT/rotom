@@ -66,6 +66,11 @@ pub enum StatementKind {
     Return,
     End,
     EndMovement,
+    /// A placeholder for a statement that could not be parsed.
+    ///
+    /// Used by the error-tolerant parser to preserve AST structure around
+    /// syntax errors.
+    Error,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +91,11 @@ pub enum ExpressionKind {
         function: Box<Expression>,
         args: Vec<Expression>,
     },
+    /// A placeholder for an expression that could not be parsed.
+    ///
+    /// Used by the error-tolerant parser to preserve AST structure around
+    /// syntax errors inside expressions.
+    Error,
 }
 #[derive(Debug, PartialEq, Eq, PartialOrd, Copy, Clone)]
 pub enum Precedence {

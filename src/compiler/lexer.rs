@@ -2,22 +2,36 @@ use std::{iter::Peekable, str::Chars};
 
 use super::token::{Token, TokenType, normalize_control_keyword};
 
+/// A lexer for the Rotom scripting language.
+///
+/// Produces a stream of [`Token`]s from a source string. Whitespace and
+/// comments are skipped automatically.
+///
+/// # Example
+/// ```
+/// use rotom::compiler::{Lexer, TokenType};
+///
+/// let lexer = Lexer::new("script Main #1:\nEnd\n");
+/// let tokens: Vec<_> = lexer.tokenize();
+/// assert!(tokens.iter().any(|t| matches!(t.kind, TokenType::Script)));
+/// ```
 pub struct Lexer<'a> {
-    pub source: &'a str,
-    pub chars: Peekable<Chars<'a>>,
-    pub current_pos: usize,
+    chars: Peekable<Chars<'a>>,
+    current_pos: usize,
     finished: bool,
 }
+
 impl<'a> Lexer<'a> {
+    /// Create a new lexer for the given source text.
     pub fn new(source: &'a str) -> Lexer<'a> {
         Lexer {
-            source,
             chars: source.chars().peekable(),
             current_pos: 0,
             finished: false,
         }
     }
 
+    /// Consume the lexer and return all tokens up to `EOF`.
     pub fn tokenize(self) -> Vec<Token> {
         self.collect()
     }
@@ -78,6 +92,10 @@ impl<'a> Lexer<'a> {
             }
         }
     }
+    /// Return the next token from the source.
+    ///
+    /// Repeatedly calling this method (or iterating the lexer) will yield
+    /// all tokens including a final `EOF` token.
     pub fn next_token(&mut self) -> Token {
         self.skip_whitespace_and_comments();
         let start = self.current_pos;
@@ -167,6 +185,9 @@ impl<'a> Lexer<'a> {
             span: start..end,
         }
     }
+    /// Read an identifier (or keyword) starting with `first`.
+    ///
+    /// Advances the lexer past the full identifier.
     pub fn read_identifier(&mut self, first: char) -> TokenType {
         let mut name = String::from(first);
         while let Some(c) = self.chars.peek() {
@@ -178,6 +199,9 @@ impl<'a> Lexer<'a> {
         }
         normalize_control_keyword(&name).unwrap_or(TokenType::Identifier(name))
     }
+    /// Read a numeric literal starting with `first`.
+    ///
+    /// Supports decimal and hexadecimal (`0x…`) formats.
     pub fn read_integer(&mut self, first: char) -> TokenType {
         if first == '0' && matches!(self.chars.peek(), Some('x')) {
             self.read_char();

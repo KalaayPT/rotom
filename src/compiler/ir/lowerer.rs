@@ -841,6 +841,9 @@ impl<'a> Lowerer<'a> {
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
             }
+            ExpressionKind::Error => Err(lowering_error(
+                "Invalid expression in macro argument".to_string(),
+            )),
         }
     }
 
@@ -917,6 +920,9 @@ impl<'a> Lowerer<'a> {
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
             }
+            ExpressionKind::Error => Err(lowering_error(
+                "Invalid expression in constant evaluation".to_string(),
+            )),
         }
     }
 
@@ -1257,6 +1263,9 @@ impl<'a> Lowerer<'a> {
                     expr_text
                 )))
             }
+            ExpressionKind::Error => Err(lowering_error(
+                "Invalid expression in argument resolution".to_string(),
+            )),
         }
     }
 

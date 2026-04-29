@@ -9,12 +9,15 @@ pub mod ir;
 pub mod lexer;
 pub mod parser;
 pub mod preprocessor;
+pub mod sourcemap;
 pub mod token;
 
 // Re-export commonly used types
-pub use analysis::Analyzer;
+pub use analysis::{Analyzer, SymbolTable, SymbolType};
 pub use ast::StatementKind;
 pub use diagnostic::{CompileError, CompileWarning, ParseResult};
 pub use ir::{IrFunction, Lowerer};
 pub use lexer::Lexer;
 pub use parser::Parser;
+pub use preprocessor::{IncludeDirective, PreprocessResult};
+pub use sourcemap::{Position, SourceMap};

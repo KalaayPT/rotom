@@ -1,7 +1,12 @@
 use std::fmt;
 use std::ops::Range;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::Serialize;
+
+use super::diagnostic::serialize_range;
+
+/// The type of a token in the Rotom language.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum TokenType {
     Script,   // "script"
     Public,   // "public"
@@ -164,9 +169,11 @@ impl fmt::Display for TokenType {
     }
 }
 
-#[derive(Debug, Clone)]
+/// A single token with its source span.
+#[derive(Debug, Clone, Serialize)]
 pub struct Token {
     pub kind: TokenType,
+    #[serde(serialize_with = "serialize_range")]
     pub span: Range<usize>,
 }
 
