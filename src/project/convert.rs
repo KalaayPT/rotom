@@ -2,7 +2,7 @@ use crate::{ConstantDb, DatabaseV2, is_levelscript_path, transpiler};
 use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
-use uxie::Workspace;
+use uxie::{GameLanguage, RomHeader, Workspace};
 
 use super::config::{ProjectTypeConfig, RotomConfig};
 use super::error::{ProjectError, Result};
@@ -77,8 +77,11 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
             }
         }
         ProjectTypeConfig::Dspre => {
+            let language = RomHeader::open(root)
+                .map(|h| h.detect_language())
+                .unwrap_or(GameLanguage::English);
             let _ = constants
-                .load_dspre_text_archives(root)
+                .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;
         }
         ProjectTypeConfig::Generic => {}

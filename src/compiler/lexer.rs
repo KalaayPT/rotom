@@ -242,7 +242,7 @@ fn is_identifier_start(c: char) -> bool {
     c.is_alphabetic() || c == '_'
 }
 fn is_identifier_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '’' // TODO: potentially hacky, this is to support "ITEM_OAK’S_LETTER", already fixed in dspre canary
+    c.is_alphanumeric() || c == '_' || c == '’' || c == '?'
 }
 
 impl Iterator for Lexer<'_> {

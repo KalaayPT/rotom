@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::compiler::ParseResult;
 use crate::compiler::diagnostic::{CompileError, database_error};
 pub use uxie::GameFamily;
-use uxie::SymbolTable;
+use uxie::{GameLanguage, SymbolTable};
 use uxie::c_parser::defines::eval_expr_with_parent;
 
 pub fn normalize_command_name(name: &str) -> String {
@@ -738,6 +738,7 @@ impl ConstantDb {
     pub fn load_dspre_text_archives<P: AsRef<Path>>(
         &mut self,
         root: P,
+        language: GameLanguage,
     ) -> Result<usize, CompileError> {
         #[derive(Deserialize)]
         struct DspreArchiveKey {
@@ -792,7 +793,7 @@ impl ConstantDb {
 
             if archive.key == 12973 {
                 total += symbols
-                    .load_dspre_sound_archive_constants(&path)
+                    .load_dspre_sound_archive_constants(&path, language)
                     .map_err(|e| CompileError::Database {
                         message: format!(
                             "Failed to load DSPRE sound archive constants from '{}': {}",
@@ -810,7 +811,7 @@ impl ConstantDb {
             };
 
             total += symbols
-                .load_text_bank_json_constants(&path, prefix, index_suffix_width)
+                .load_text_bank_json_constants(&path, prefix, index_suffix_width, language)
                 .map_err(|e| CompileError::Database {
                     message: format!(
                         "Failed to load DSPRE text archive constants from '{}': {}",
@@ -1033,7 +1034,8 @@ impl ConstantDb {
     fn dspre_text_archive_constant_format(key: u16) -> Option<(&'static str, Option<usize>)> {
         match key {
             51885 => Some(("ITEM_", None)),
-            30764 => Some(("SPECIES_", None)),
+            // English, Japanese, and German Platinum species archives.
+            30764 | 53262 => Some(("SPECIES_", None)),
             2566 => Some(("LOCATION_", None)),
             55533 => Some(("TRAINER_", Some(3))),
             64556 => Some(("TRAINER_CLASS_", None)),
@@ -1166,6 +1168,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use uxie::RomHeader;
 
     fn test_command(cmd_type: CommandType, id: u16, legacy_name: Option<&str>) -> Command {
         Command {
@@ -1575,7 +1578,7 @@ mod tests {
 
         let mut constants = ConstantDb::new();
         let loaded = constants
-            .load_dspre_text_archives(&temp_dir)
+            .load_dspre_text_archives(&temp_dir, GameLanguage::English)
             .expect("failed to load dspre text archives");
 
         fs::remove_dir_all(&temp_dir).ok();
@@ -1629,7 +1632,7 @@ mod tests {
 
         let mut constants = ConstantDb::new();
         let loaded = constants
-            .load_dspre_text_archives(&temp_dir)
+            .load_dspre_text_archives(&temp_dir, GameLanguage::English)
             .expect("failed to load dspre sound archive");
 
         fs::remove_dir_all(&temp_dir).ok();
@@ -1655,8 +1658,11 @@ mod tests {
         );
 
         let mut constants = ConstantDb::new();
+        let language = RomHeader::open(root)
+            .map(|h| h.detect_language())
+            .unwrap_or(GameLanguage::English);
         constants
-            .load_dspre_text_archives(root)
+            .load_dspre_text_archives(root, language)
             .expect("failed to load platinum DSPRE text archives");
 
         let sound_regex = regex::Regex::new(r"\bSEQ_[A-Z0-9_]+\b").unwrap();
@@ -1690,8 +1696,11 @@ mod tests {
         );
 
         let mut constants = ConstantDb::new();
+        let language = RomHeader::open(root)
+            .map(|h| h.detect_language())
+            .unwrap_or(GameLanguage::English);
         constants
-            .load_dspre_text_archives(root)
+            .load_dspre_text_archives(root, language)
             .expect("failed to load hgss DSPRE text archives");
 
         let sound_regex = regex::Regex::new(r"\bSEQ_[A-Z0-9_]+\b").unwrap();
@@ -1739,8 +1748,11 @@ mod tests {
             );
 
             let mut constants = ConstantDb::new();
+            let language = RomHeader::open(root)
+                .map(|h| h.detect_language())
+                .unwrap_or(GameLanguage::English);
             constants
-                .load_dspre_text_archives(root)
+                .load_dspre_text_archives(root, language)
                 .expect("failed to load DSPRE trainer archive");
 
             let expected: std::collections::HashMap<String, String> =

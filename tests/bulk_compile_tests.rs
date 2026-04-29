@@ -40,6 +40,7 @@ use rotom::transpiler::decomp::transpile as transpile_decomp;
 use rotom::transpiler::is_levelscript_source;
 use rotom::transpiler::transpile_dspre;
 use rotom::{compile_to_bytes, compile_to_bytes_with_options};
+use uxie::{GameLanguage, RomHeader};
 
 /// Result category for a single script compilation attempt
 #[derive(Debug, Clone)]
@@ -253,6 +254,13 @@ fn load_platinum_db_and_constants() -> (DatabaseV2, ConstantDb) {
     constants
         .load_directory(DatabaseV2::test_db_root())
         .expect("Failed to load Platinum constants directory");
+    let dspre_root = get_dspre_platinum_root();
+    if dspre_root.is_dir() {
+        let language = RomHeader::open(&dspre_root)
+            .map(|h| h.detect_language())
+            .unwrap_or(GameLanguage::English);
+        let _ = constants.load_dspre_text_archives(&dspre_root, language);
+    }
     (db, constants)
 }
 
@@ -264,6 +272,13 @@ fn load_heartgold_db_and_constants() -> (DatabaseV2, ConstantDb) {
     constants
         .load_directory(DatabaseV2::test_db_root().join("hgss"))
         .expect("Failed to load HeartGold constants directory");
+    let dspre_root = get_dspre_heartgold_root();
+    if dspre_root.is_dir() {
+        let language = RomHeader::open(&dspre_root)
+            .map(|h| h.detect_language())
+            .unwrap_or(GameLanguage::English);
+        let _ = constants.load_dspre_text_archives(&dspre_root, language);
+    }
     (db, constants)
 }
 
