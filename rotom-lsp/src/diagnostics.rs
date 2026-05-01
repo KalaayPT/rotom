@@ -23,12 +23,11 @@ pub fn compute_diagnostics(
         compute_diagnostics_inner(source, db, constants)
     }));
 
-    match result {
-        Ok(diagnostics) => diagnostics,
-        Err(_) => {
-            eprintln!("[rotom-lsp] compute_diagnostics panicked, returning empty diagnostics");
-            vec![]
-        }
+    if let Ok(diagnostics) = result {
+        diagnostics
+    } else {
+        eprintln!("[rotom-lsp] compute_diagnostics panicked, returning empty diagnostics");
+        vec![]
     }
 }
 
@@ -51,10 +50,10 @@ fn compute_diagnostics_inner(
         } else {
             Analyzer::new()
         };
-        if let Err(e) = analyzer.analyze(&ast) {
+        if let Err(e) = analyzer.analyze(ast) {
             errors.push(e);
         }
-        warnings = analyzer.warnings.clone();
+        warnings.clone_from(&analyzer.warnings);
     }
 
     let map = SourceMap::new(source);
@@ -64,9 +63,7 @@ fn compute_diagnostics_inner(
         .collect();
 
     for w in &warnings {
-        if let Some(d) = compile_warning_to_diagnostic(w, &map) {
-            diagnostics.push(d);
-        }
+        diagnostics.push(compile_warning_to_diagnostic(w, &map));
     }
 
     diagnostics
@@ -74,10 +71,7 @@ fn compute_diagnostics_inner(
 
 fn compile_error_to_diagnostic(error: &CompileError, map: &SourceMap) -> Option<Diagnostic> {
     let (span, message, severity) = match error {
-        CompileError::Parse { span, message } => {
-            (span.clone(), message.clone(), DiagnosticSeverity::ERROR)
-        }
-        CompileError::Analysis { span, message } => {
+        CompileError::Parse { span, message } | CompileError::Analysis { span, message } => {
             (span.clone(), message.clone(), DiagnosticSeverity::ERROR)
         }
         // Other error kinds don't have source spans, so skip them for now.
@@ -108,11 +102,11 @@ fn compile_error_to_diagnostic(error: &CompileError, map: &SourceMap) -> Option<
     })
 }
 
-fn compile_warning_to_diagnostic(warning: &CompileWarning, map: &SourceMap) -> Option<Diagnostic> {
+fn compile_warning_to_diagnostic(warning: &CompileWarning, map: &SourceMap) -> Diagnostic {
     let span = warning.span();
     let start = map.byte_to_position(span.start);
     let end = map.byte_to_position(span.end);
-    Some(Diagnostic {
+    Diagnostic {
         range: Range {
             start: Position {
                 line: start.line,
@@ -131,7 +125,7 @@ fn compile_warning_to_diagnostic(warning: &CompileWarning, map: &SourceMap) -> O
         related_information: None,
         tags: None,
         data: None,
-    })
+    }
 }
 
 #[cfg(test)]

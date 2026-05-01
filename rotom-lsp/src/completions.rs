@@ -36,27 +36,25 @@ pub fn compute_completions(
 
     // Commands from the database (canonical + legacy names).
     // Suppressed when we're clearly typing command parameters.
-    if !in_command_params {
-        if let Some(db) = db {
-            for (name, cmd) in &db.commands {
-                if matches_prefix(name, &prefix) {
-                    items.push(CompletionItem {
-                        label: name.clone(),
-                        kind: Some(CompletionItemKind::FUNCTION),
-                        detail: command_detail(name, cmd),
-                        ..Default::default()
-                    });
-                }
-                if let Some(legacy) = &cmd.legacy_name {
-                    if matches_prefix(legacy, &prefix) {
-                        items.push(CompletionItem {
-                            label: legacy.clone(),
-                            kind: Some(CompletionItemKind::FUNCTION),
-                            detail: Some(format!("legacy alias for {}", name)),
-                            ..Default::default()
-                        });
-                    }
-                }
+    if !in_command_params && let Some(db) = db {
+        for (name, cmd) in &db.commands {
+            if matches_prefix(name, &prefix) {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some(command_detail(name, cmd)),
+                    ..Default::default()
+                });
+            }
+            if let Some(legacy) = &cmd.legacy_name
+                && matches_prefix(legacy, &prefix)
+            {
+                items.push(CompletionItem {
+                    label: legacy.clone(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some(format!("legacy alias for {name}")),
+                    ..Default::default()
+                });
             }
         }
     }
@@ -93,7 +91,7 @@ pub fn compute_completions(
 /// Return true if the cursor is inside a line comment or block comment.
 fn is_in_comment(source: &str, byte_offset: usize) -> bool {
     // Check for line comment on the current line.
-    let line_start = source[..byte_offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_start = source[..byte_offset].rfind('\n').map_or(0, |i| i + 1);
     let line_text = &source[line_start..byte_offset];
     if let Some(idx) = line_text.find("//") {
         // Cursor is after the // on this line.
@@ -123,7 +121,7 @@ fn is_in_comment(source: &str, byte_offset: usize) -> bool {
 /// (`GiveItem(1)`) notation.
 fn is_typing_command_params(source: &str, byte_offset: usize) -> bool {
     let before_cursor = &source[..byte_offset.min(source.len())];
-    let last_line_start = before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let last_line_start = before_cursor.rfind('\n').map_or(0, |i| i + 1);
     let before_cursor_on_line = &before_cursor[last_line_start..];
 
     // Space-separated: `CommandName arg` — command name followed by whitespace.
@@ -132,7 +130,7 @@ fn is_typing_command_params(source: &str, byte_offset: usize) -> bool {
         && trimmed
             .chars()
             .next()
-            .map_or(false, |c| c.is_alphabetic() || c == '_');
+            .is_some_and(|c| c.is_alphabetic() || c == '_');
     let ends_with_space = before_cursor_on_line.ends_with(' ');
 
     if has_command && ends_with_space {
@@ -150,8 +148,7 @@ fn extract_prefix(source: &str, byte_offset: usize) -> String {
     let before = &source[..byte_offset.min(source.len())];
     let start = before
         .rfind(|c: char| !is_identifier_char(c))
-        .map(|i| i + before[i..].chars().next().map_or(1, char::len_utf8))
-        .unwrap_or(0);
+        .map_or(0, |i| i + before[i..].chars().next().map_or(1, char::len_utf8));
     before[start..].to_string()
 }
 
@@ -166,7 +163,7 @@ fn matches_prefix(name: &str, prefix: &str) -> bool {
     name.to_lowercase().starts_with(&prefix.to_lowercase())
 }
 
-fn command_detail(name: &str, cmd: &rotom::database::Command) -> Option<String> {
+fn command_detail(name: &str, cmd: &rotom::database::Command) -> String {
     let params: Vec<String> = cmd
         .params
         .iter()
@@ -178,7 +175,7 @@ fn command_detail(name: &str, cmd: &rotom::database::Command) -> Option<String> 
             }
         })
         .collect();
-    Some(format!("{}({})", name, params.join(", ")))
+    format!("{name}({})", params.join(", "))
 }
 
 #[cfg(test)]

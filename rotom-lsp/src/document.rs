@@ -41,8 +41,8 @@ impl DocumentCache {
         self.docs.get(uri)
     }
 
-    pub fn apply_changes(&self, uri: Url, changes: Vec<TextDocumentContentChangeEvent>) {
-        if let Some(mut doc) = self.docs.get_mut(&uri) {
+    pub fn apply_changes(&self, uri: &Url, changes: Vec<TextDocumentContentChangeEvent>) {
+        if let Some(mut doc) = self.docs.get_mut(uri) {
             for change in changes {
                 if let Some(range) = change.range {
                     // Incremental update using SourceMap for robust UTF-16 -> byte conversion.

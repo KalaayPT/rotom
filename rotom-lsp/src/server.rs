@@ -3,12 +3,19 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::*;
+use tower_lsp::lsp_types::{
+    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, MessageType,
+    SaveOptions, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions,
+};
 use tower_lsp::{Client, LanguageServer};
 
 use crate::completions::compute_completions;
 use crate::document::DocumentCache;
 use crate::diagnostics::compute_diagnostics;
+use crate::hover::compute_hover;
 
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::project::config::{find_project_root, load_config, ProjectTypeConfig, RotomConfig};
@@ -90,8 +97,7 @@ impl RotomServer {
             }
             ProjectTypeConfig::Dspre => {
                 let language = uxie::RomHeader::open(root)
-                    .map(|h| h.detect_language())
-                    .unwrap_or(uxie::game::GameLanguage::English);
+                    .map_or(uxie::game::GameLanguage::English, |h| h.detect_language());
                 let _ = constants.load_dspre_text_archives(root, language);
             }
             ProjectTypeConfig::Generic => {}
@@ -121,7 +127,7 @@ impl RotomServer {
 
         let diagnostics = compute_diagnostics(
             &text,
-            db.as_ref().map(|a| a.as_ref()),
+            db.as_deref(),
             constants.as_ref(),
         );
         self.client
@@ -155,6 +161,7 @@ impl LanguageServer for RotomServer {
                     },
                     completion_item: None,
                 }),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 // Only advertise capabilities that are actually implemented.
                 // Re-enable each one as the corresponding handler is wired up.
                 ..Default::default()
@@ -190,12 +197,36 @@ impl LanguageServer for RotomServer {
         let items = compute_completions(
             &doc.text,
             position,
-            db.as_ref().map(|a| a.as_ref()),
+            db.as_deref(),
             constant_names,
             local_symbols,
         );
 
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let doc = self.documents.get(uri);
+        let Some(doc) = doc else {
+            return Ok(None);
+        };
+
+        let (db, constants) = match self.project_state_for_uri(uri) {
+            Some(state) => (Some(state.db), Some(state.constants)),
+            None => (None, None),
+        };
+
+        let hover = compute_hover(
+            &doc.text,
+            position,
+            db.as_deref(),
+            constants.as_ref(),
+        );
+
+        Ok(hover)
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -207,7 +238,7 @@ impl LanguageServer for RotomServer {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         self.documents
-            .apply_changes(uri.clone(), params.content_changes);
+            .apply_changes(&uri, params.content_changes);
         self.publish_diagnostics(&uri).await;
     }
 
