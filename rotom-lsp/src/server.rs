@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
@@ -20,6 +21,9 @@ use crate::hover::compute_hover;
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::project::config::{find_project_root, load_config, ProjectTypeConfig, RotomConfig};
 
+/// How long to wait after the last keystroke before re-running diagnostics.
+const DIAGNOSTIC_DEBOUNCE_MS: u64 = 300;
+
 /// Per-project cached state: loaded database, constants, and pre-collected constant names.
 #[derive(Clone)]
 struct ProjectState {
@@ -33,6 +37,9 @@ pub struct RotomServer {
     documents: DocumentCache,
     /// Cache of project root → loaded project state.
     projects: DashMap<PathBuf, ProjectState>,
+    /// Pending diagnostic tasks per document. Old tasks are aborted when a new
+    /// change arrives so we only publish diagnostics after typing pauses.
+    pending_diagnostics: DashMap<Url, tokio::task::JoinHandle<()>>,
 }
 
 impl RotomServer {
@@ -41,6 +48,7 @@ impl RotomServer {
             client,
             documents: DocumentCache::new(),
             projects: DashMap::new(),
+            pending_diagnostics: DashMap::new(),
         }
     }
 
@@ -112,27 +120,37 @@ impl RotomServer {
         })
     }
 
-    /// Re-compute and publish diagnostics for the given document.
-    async fn publish_diagnostics(&self, uri: &Url) {
-        // Clone text out of the map so we don't hold the DashMap guard across .await.
-        let text = self.documents.get(uri).map(|doc| doc.text.clone());
-        let Some(text) = text else {
-            return;
-        };
+    /// Schedule diagnostics to be published after a debounce delay.
+    ///
+    /// If the user is typing rapidly, old pending tasks are aborted so only
+    /// the most recent change triggers a diagnostic pass.
+    fn publish_diagnostics(&self, uri: &Url) {
+        // Abort any existing pending diagnostic task for this document.
+        if let Some((_, old)) = self.pending_diagnostics.remove(uri) {
+            old.abort();
+        }
 
-        let (db, constants) = match self.project_state_for_uri(uri) {
-            Some(state) => (Some(state.db), Some(state.constants)),
-            None => (None, None),
-        };
+        let uri_for_task = uri.clone();
+        let client = self.client.clone();
+        let text = self.documents.get(&uri_for_task).map(|doc| doc.text.clone());
+        let project_state = self.project_state_for_uri(&uri_for_task);
 
-        let diagnostics = compute_diagnostics(
-            &text,
-            db.as_deref(),
-            constants.as_ref(),
-        );
-        self.client
-            .publish_diagnostics(uri.clone(), diagnostics, None)
-            .await;
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(DIAGNOSTIC_DEBOUNCE_MS)).await;
+
+            let Some(text) = text else {
+                return;
+            };
+            let (db, constants) = match project_state {
+                Some(state) => (Some(state.db), Some(state.constants)),
+                None => (None, None),
+            };
+
+            let diagnostics = compute_diagnostics(&text, db.as_deref(), constants.as_ref());
+            client.publish_diagnostics(uri_for_task, diagnostics, None).await;
+        });
+
+        self.pending_diagnostics.insert(uri.clone(), handle);
     }
 }
 
@@ -264,18 +282,22 @@ impl LanguageServer for RotomServer {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         self.documents.insert(uri.clone(), params.text_document.text);
-        self.publish_diagnostics(&uri).await;
+        self.publish_diagnostics(&uri);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         self.documents
             .apply_changes(&uri, params.content_changes);
-        self.publish_diagnostics(&uri).await;
+        self.publish_diagnostics(&uri);
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
+        // Cancel any pending diagnostic task for this document.
+        if let Some((_, old)) = self.pending_diagnostics.remove(&uri) {
+            old.abort();
+        }
         // Clear stale diagnostics so the editor doesn't keep showing old errors.
         self.client
             .publish_diagnostics(uri.clone(), vec![], None)
