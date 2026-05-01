@@ -1,0 +1,3 @@
+# rotom-lsp local ignores
+/Cargo.lock
+/target

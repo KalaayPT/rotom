@@ -1092,6 +1092,19 @@ impl ConstantDb {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Return all known constant names for completion/symbol listing.
+    pub fn constant_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.constants.keys().cloned().collect();
+        if let Some(symbols) = &self.uxie_symbols {
+            for (name, _) in symbols.get_all_defines() {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    }
 }
 
 impl DatabaseV2 {

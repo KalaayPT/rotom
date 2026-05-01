@@ -16,7 +16,7 @@ pub struct Parser<'a> {
     /// `StatementKind::Error` nodes and collecting diagnostics in `errors`.
     recover: bool,
     /// Collected diagnostics when `recover` is `true`.
-    errors: Vec<CompileError>,
+    pub errors: Vec<CompileError>,
 }
 
 impl<'a> Parser<'a> {
@@ -37,7 +37,7 @@ impl<'a> Parser<'a> {
     /// When recovery is on, `parse_statement` and friends insert
     /// `StatementKind::Error` nodes into the AST and continue parsing
     /// instead of returning `Err`.  Collected diagnostics can be retrieved
-    /// with [`Self::take_errors`] after parsing finishes.
+    /// with `std::mem::take(&mut parser.errors)` after parsing finishes.
     pub fn new_fallible(mut lexer: Lexer<'a>) -> Parser<'a> {
         let first = lexer.next_token();
         let second = lexer.next_token();
@@ -421,6 +421,10 @@ impl<'a> Parser<'a> {
         let mut block = Vec::new();
         while !self.current_token_is(&TokenType::EOF) {
             if end_condition.contains(&self.current_token.kind) {
+                break;
+            }
+            // If we hit a top-level keyword the block was never properly closed.
+            if matches!(self.current_token.kind, TokenType::Script | TokenType::Action) {
                 break;
             }
             if self.current_token_is(&TokenType::Newline) {
@@ -1464,5 +1468,31 @@ script Second #2:
         let errors = std::mem::take(&mut parser.errors);
         assert!(errors.is_empty());
         assert!(file.items.is_empty());
+    }
+
+    #[test]
+    fn test_fallible_parser_recovers_from_missing_endwhile() {
+        // Missing `endwhile` followed by another top-level script used to
+        // cause an infinite loop because `synchronize_statement` would
+        // return without advancing past the `script` boundary token.
+        let source = r"
+script First #1:
+    while true do
+        Message 1
+script Second #2:
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new_fallible(lexer);
+        let file = parser.parse_script_file().unwrap();
+        let errors = std::mem::take(&mut parser.errors);
+
+        assert!(!errors.is_empty(), "expected at least one error for missing endwhile");
+        let functions: Vec<_> = file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 2, "both scripts should still be parsed");
     }
 }

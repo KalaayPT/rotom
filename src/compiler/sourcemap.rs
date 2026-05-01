@@ -108,10 +108,17 @@ impl<'a> SourceMap<'a> {
     /// `Range` using the `lsp_types` crate.
     #[cfg(feature = "lsp-types")]
     pub fn byte_range_to_lsp_range(&self, range: std::ops::Range<usize>) -> lsp_types::Range {
-        lsp_types::Range {
-            start: self.byte_to_position(range.start),
-            end: self.byte_to_position(range.end),
-        }
+        let pos = self.byte_to_position(range.start);
+        let start = lsp_types::Position {
+            line: pos.line,
+            character: pos.character,
+        };
+        let pos = self.byte_to_position(range.end);
+        let end = lsp_types::Position {
+            line: pos.line,
+            character: pos.character,
+        };
+        lsp_types::Range { start, end }
     }
 
     /// Total number of lines in the source.
