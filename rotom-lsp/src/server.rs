@@ -13,7 +13,7 @@ use tower_lsp::lsp_types::{
 use tower_lsp::{Client, LanguageServer};
 
 use crate::completions::compute_completions;
-use crate::document::DocumentCache;
+use crate::document::{compute_document_symbols, DocumentCache};
 use crate::diagnostics::compute_diagnostics;
 use crate::hover::compute_hover;
 
@@ -204,12 +204,15 @@ impl LanguageServer for RotomServer {
             None => (None, None),
         };
 
+        let local_symbols = self.documents.get(uri)
+            .map(|doc| compute_document_symbols(&doc.text));
+
         let items = compute_completions(
             &doc.text,
             position,
             db.as_deref(),
             constant_names,
-            Some(&doc.symbols),
+            local_symbols.as_deref(),
         );
 
         Ok(Some(CompletionResponse::Array(items)))
@@ -245,15 +248,16 @@ impl LanguageServer for RotomServer {
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
 
-        let doc = self.documents.get(uri);
-        let Some(doc) = doc else {
+        let symbols = self.documents.get(uri)
+            .map(|doc| compute_document_symbols(&doc.text));
+        let Some(symbols) = symbols else {
             return Ok(None);
         };
 
-        if doc.symbols.is_empty() {
+        if symbols.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(DocumentSymbolResponse::Nested(doc.symbols.clone())))
+            Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         }
     }
 

@@ -8,10 +8,9 @@ use rotom::compiler::{
     sourcemap::{Position, SourceMap},
 };
 
-/// Cached document entry: text + pre-computed outline symbols.
+/// Cached document entry.
 pub struct DocumentEntry {
     pub text: String,
-    pub symbols: Vec<DocumentSymbol>,
 }
 
 /// Incrementally-synced document cache with pre-computed outline symbols.
@@ -27,8 +26,7 @@ impl DocumentCache {
     }
 
     pub fn insert(&self, uri: Url, text: String) {
-        let symbols = compute_document_symbols(&text);
-        self.docs.insert(uri, DocumentEntry { text, symbols });
+        self.docs.insert(uri, DocumentEntry { text });
     }
 
     pub fn remove(&self, uri: &Url) {
@@ -57,25 +55,25 @@ impl DocumentCache {
                     doc.text = change.text;
                 }
             }
-            doc.symbols = compute_document_symbols(&doc.text);
         }
     }
 }
 
-/// Build a flat list of document symbols.
+/// Build grouped document symbols.
 ///
-/// Rotom files don't have a real hierarchy — scripts, labels, and actions
-/// appear in whatever order the author wrote them. We emit them as a flat
-/// list so that Scintilla bridges and editor outlines show them in source
-/// order.
-fn compute_document_symbols(source: &str) -> Vec<DocumentSymbol> {
+/// Scripts, labels, and actions are bucketed into collapsible parent nodes
+/// so the editor outline shows them grouped by kind.
+pub fn compute_document_symbols(source: &str) -> Vec<DocumentSymbol> {
     let lexer = Lexer::new(source);
     let mut parser = Parser::new_fallible(lexer);
     let ast = parser.parse_script_file().ok();
 
-    let mut symbols = Vec::new();
+    let mut scripts = Vec::new();
+    let mut labels = Vec::new();
+    let mut actions = Vec::new();
+
     let Some(file) = ast else {
-        return symbols;
+        return Vec::new();
     };
 
     let map = SourceMap::new(source);
@@ -84,23 +82,84 @@ fn compute_document_symbols(source: &str) -> Vec<DocumentSymbol> {
         match &item.node {
             StatementKind::Function { headers, .. } => {
                 for header in headers {
-                    symbols.push(make_symbol(&header.name, SymbolKind::FUNCTION, &item.span, &map));
+                    if header.is_public {
+                        scripts.push(make_symbol(
+                            &header.name,
+                            SymbolKind::FUNCTION,
+                            &item.span,
+                            &map,
+                        ));
+                    } else {
+                        labels.push(make_symbol(
+                            &header.name,
+                            SymbolKind::FUNCTION,
+                            &item.span,
+                            &map,
+                        ));
+                    }
                 }
             }
             StatementKind::Action { name, .. } => {
-                symbols.push(make_symbol(name, SymbolKind::METHOD, &item.span, &map));
+                actions.push(make_symbol(name, SymbolKind::METHOD, &item.span, &map));
             }
             StatementKind::AliasStatement { name, .. } => {
-                symbols.push(make_symbol(name, SymbolKind::VARIABLE, &item.span, &map));
+                labels.push(make_symbol(name, SymbolKind::VARIABLE, &item.span, &map));
             }
             StatementKind::Label(name) => {
-                symbols.push(make_symbol(name, SymbolKind::PROPERTY, &item.span, &map));
+                labels.push(make_symbol(name, SymbolKind::PROPERTY, &item.span, &map));
             }
             _ => {}
         }
     }
 
-    symbols
+    let mut groups = Vec::new();
+    if !scripts.is_empty() {
+        groups.push(make_group("Scripts", SymbolKind::NAMESPACE, &scripts, &map));
+    }
+    if !labels.is_empty() {
+        groups.push(make_group("Labels", SymbolKind::NAMESPACE, &labels, &map));
+    }
+    if !actions.is_empty() {
+        groups.push(make_group("Actions", SymbolKind::NAMESPACE, &actions, &map));
+    }
+    groups
+}
+
+fn make_group(
+    name: &str,
+    kind: SymbolKind,
+    children: &[DocumentSymbol],
+    _map: &SourceMap,
+) -> DocumentSymbol {
+    // Use the first child's range as the group's range, or a zero range if empty.
+    let (range, selection_range) = children.first().map_or_else(
+        || {
+            let zero = tower_lsp::lsp_types::Range {
+                start: tower_lsp::lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: tower_lsp::lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+            };
+            (zero, zero)
+        },
+        |c| (c.range, c.selection_range),
+    );
+
+    #[allow(deprecated)]
+    DocumentSymbol {
+        name: name.to_string(),
+        detail: None,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children: Some(children.to_vec()),
+    }
 }
 
 fn make_symbol(
