@@ -587,10 +587,25 @@ impl<'a> Parser<'a> {
             unreachable!()
         };
         let mut args = Vec::new();
-        if !self.current_token_is(&TokenType::Newline)
+        if self.current_token_is(&TokenType::LParen) {
+            // Call-style: CommandName(arg1, arg2)
+            self.advance();
+            if !self.current_token_is(&TokenType::RParen) {
+                loop {
+                    args.push(self.parse_expression(Precedence::Lowest)?);
+                    if self.current_token_is(&TokenType::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            self.expect_advance(&TokenType::RParen)?;
+        } else if !self.current_token_is(&TokenType::Newline)
             && (!self.current_token_is_keyword()
                 || matches!(self.current_token.kind, TokenType::True | TokenType::False))
         {
+            // Space-separated: CommandName arg1, arg2
             loop {
                 args.push(self.parse_expression(Precedence::Lowest)?);
                 if self.current_token_is(&TokenType::Comma) {
@@ -1494,5 +1509,38 @@ script Second #2:
             .filter(|s| matches!(s.node, StatementKind::Function { .. }))
             .collect();
         assert_eq!(functions.len(), 2, "both scripts should still be parsed");
+    }
+
+    #[test]
+    fn test_parse_command_call_style_multiple_args() {
+        // Call-style commands like TeachMovesScreen(1, 1) should parse
+        // correctly with multiple parenthesized arguments.
+        let source = r"
+script Test #1:
+    TeachMovesScreen(1, 1)
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let file = parser.parse_script_file().unwrap();
+        let functions: Vec<_> = file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 1);
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => {
+                assert_eq!(body.len(), 2); // command + End
+                match &body[0].node {
+                    StatementKind::ScriptCommand { command, args } => {
+                        assert_eq!(command, "TeachMovesScreen");
+                        assert_eq!(args.len(), 2);
+                    }
+                    _ => panic!("Expected ScriptCommand"),
+                }
+            }
+            _ => panic!("Expected function"),
+        }
     }
 }

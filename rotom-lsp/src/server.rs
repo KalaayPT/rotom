@@ -13,11 +13,12 @@ use crate::diagnostics::compute_diagnostics;
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::project::config::{find_project_root, load_config, ProjectTypeConfig, RotomConfig};
 
-/// Per-project cached state: loaded database and constants.
+/// Per-project cached state: loaded database, constants, and pre-collected constant names.
 #[derive(Clone)]
 struct ProjectState {
     db: Arc<DatabaseV2>,
     constants: ConstantDb,
+    constant_names: Arc<Vec<String>>,
 }
 
 pub struct RotomServer {
@@ -96,16 +97,19 @@ impl RotomServer {
             ProjectTypeConfig::Generic => {}
         }
 
+        let constant_names = Arc::new(constants.constant_names());
+
         Ok(ProjectState {
             db: Arc::new(db),
             constants,
+            constant_names,
         })
     }
 
     /// Re-compute and publish diagnostics for the given document.
     async fn publish_diagnostics(&self, uri: &Url) {
         // Clone text out of the map so we don't hold the DashMap guard across .await.
-        let text = self.documents.get(uri).map(|doc| doc.clone());
+        let text = self.documents.get(uri).map(|doc| doc.text.clone());
         let Some(text) = text else {
             return;
         };
@@ -173,21 +177,22 @@ impl LanguageServer for RotomServer {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        let text = self.documents.get(uri).map(|doc| doc.clone());
-        let Some(text) = text else {
+        let doc = self.documents.get(uri);
+        let Some(doc) = doc else {
             return Ok(None);
         };
 
-        let (db, constants) = match self.project_state_for_uri(uri) {
-            Some(state) => (Some(state.db), Some(state.constants)),
-            None => (None, None),
+        let (db, constant_names, local_symbols) = match self.project_state_for_uri(uri) {
+            Some(state) => (Some(state.db), Some(state.constant_names.clone()), Some(doc.local_symbols.clone())),
+            None => (None, None, Some(doc.local_symbols.clone())),
         };
 
         let items = compute_completions(
-            &text,
+            &doc.text,
             position,
             db.as_ref().map(|a| a.as_ref()),
-            constants.as_ref(),
+            constant_names,
+            local_symbols,
         );
 
         Ok(Some(CompletionResponse::Array(items)))
