@@ -5,9 +5,9 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, MessageType,
-    SaveOptions, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolResponse, Hover,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    MessageType, SaveOptions, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions,
 };
 use tower_lsp::{Client, LanguageServer};
@@ -162,6 +162,16 @@ impl LanguageServer for RotomServer {
                     completion_item: None,
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                document_symbol_provider: Some(
+                    tower_lsp::lsp_types::OneOf::Right(
+                        tower_lsp::lsp_types::DocumentSymbolOptions {
+                            label: Some("Rotom".to_string()),
+                            work_done_progress_options: WorkDoneProgressOptions {
+                                work_done_progress: None,
+                            },
+                        },
+                    ),
+                ),
                 // Only advertise capabilities that are actually implemented.
                 // Re-enable each one as the corresponding handler is wired up.
                 ..Default::default()
@@ -189,9 +199,9 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let (db, constant_names, local_symbols) = match self.project_state_for_uri(uri) {
-            Some(state) => (Some(state.db), Some(state.constant_names.clone()), Some(doc.local_symbols.clone())),
-            None => (None, None, Some(doc.local_symbols.clone())),
+        let (db, constant_names) = match self.project_state_for_uri(uri) {
+            Some(state) => (Some(state.db), Some(state.constant_names.clone())),
+            None => (None, None),
         };
 
         let items = compute_completions(
@@ -199,7 +209,7 @@ impl LanguageServer for RotomServer {
             position,
             db.as_deref(),
             constant_names,
-            local_symbols,
+            Some(&doc.symbols),
         );
 
         Ok(Some(CompletionResponse::Array(items)))
@@ -227,6 +237,24 @@ impl LanguageServer for RotomServer {
         );
 
         Ok(hover)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: tower_lsp::lsp_types::DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = &params.text_document.uri;
+
+        let doc = self.documents.get(uri);
+        let Some(doc) = doc else {
+            return Ok(None);
+        };
+
+        if doc.symbols.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(DocumentSymbolResponse::Nested(doc.symbols.clone())))
+        }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {

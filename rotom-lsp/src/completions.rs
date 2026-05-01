@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position as LspPosition};
+use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, DocumentSymbol, Position as LspPosition, SymbolKind};
 
 use rotom::compiler::sourcemap::{Position as SourcePosition, SourceMap};
 use rotom::database::DatabaseV2;
@@ -16,7 +16,7 @@ pub fn compute_completions(
     position: LspPosition,
     db: Option<&DatabaseV2>,
     constant_names: Option<Arc<Vec<String>>>,
-    local_symbols: Option<Arc<Vec<(String, CompletionItemKind)>>>,
+    local_symbols: Option<&[DocumentSymbol]>,
 ) -> Vec<CompletionItem> {
     let map = SourceMap::new(source);
     let byte_offset = map.position_to_byte(SourcePosition {
@@ -74,11 +74,11 @@ pub fn compute_completions(
 
     // Local symbols.
     if let Some(local_symbols) = local_symbols {
-        for (name, kind) in local_symbols.iter() {
-            if matches_prefix(name, &prefix) {
+        for sym in local_symbols {
+            if matches_prefix(&sym.name, &prefix) {
                 items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(*kind),
+                    label: sym.name.clone(),
+                    kind: Some(symbol_kind_to_completion_kind(sym.kind)),
                     ..Default::default()
                 });
             }
@@ -161,6 +161,15 @@ fn matches_prefix(name: &str, prefix: &str) -> bool {
         return true;
     }
     name.to_lowercase().starts_with(&prefix.to_lowercase())
+}
+
+fn symbol_kind_to_completion_kind(kind: SymbolKind) -> CompletionItemKind {
+    match kind {
+        SymbolKind::FUNCTION | SymbolKind::METHOD => CompletionItemKind::FUNCTION,
+        SymbolKind::VARIABLE => CompletionItemKind::VARIABLE,
+        SymbolKind::PROPERTY | SymbolKind::KEY => CompletionItemKind::REFERENCE,
+        _ => CompletionItemKind::TEXT,
+    }
 }
 
 fn command_detail(name: &str, cmd: &rotom::database::Command) -> String {
