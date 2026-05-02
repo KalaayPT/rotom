@@ -8,6 +8,7 @@ use tower_lsp::{LspService, Server};
 mod completions;
 mod diagnostics;
 mod document;
+mod goto;
 mod hover;
 mod server;
 

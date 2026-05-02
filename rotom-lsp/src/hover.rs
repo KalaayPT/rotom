@@ -127,7 +127,7 @@ fn format_param_desc(p: &rotom::database::ParamDef) -> String {
 }
 
 /// Extract the complete identifier word surrounding the given byte offset.
-fn extract_word(source: &str, byte_offset: usize) -> Option<String> {
+pub fn extract_word(source: &str, byte_offset: usize) -> Option<String> {
     let before = &source[..byte_offset.min(source.len())];
 
     // Walk backward to find the start of the current identifier.

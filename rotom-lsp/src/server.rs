@@ -6,16 +6,18 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolResponse, Hover,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-    MessageType, SaveOptions, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolResponse,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, MessageType, SaveOptions, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions, OneOf,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::completions::compute_completions;
 use crate::document::{compute_document_symbols, DocumentCache};
 use crate::diagnostics::compute_diagnostics;
+use crate::goto::compute_goto_definition;
 use crate::hover::compute_hover;
 
 use rotom::database::{ConstantDb, DatabaseV2};
@@ -181,7 +183,7 @@ impl LanguageServer for RotomServer {
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_symbol_provider: Some(
-                    tower_lsp::lsp_types::OneOf::Right(
+                    OneOf::Right(
                         tower_lsp::lsp_types::DocumentSymbolOptions {
                             label: Some("Rotom".to_string()),
                             work_done_progress_options: WorkDoneProgressOptions {
@@ -190,6 +192,7 @@ impl LanguageServer for RotomServer {
                         },
                     ),
                 ),
+                definition_provider: Some(OneOf::Left(true)),
                 // Only advertise capabilities that are actually implemented.
                 // Re-enable each one as the corresponding handler is wired up.
                 ..Default::default()
@@ -277,6 +280,21 @@ impl LanguageServer for RotomServer {
         } else {
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         }
+    }
+
+    async fn goto_definition(
+        &self,
+        params: tower_lsp::lsp_types::GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let doc = self.documents.get(uri);
+        let Some(doc) = doc else {
+            return Ok(None);
+        };
+
+        Ok(compute_goto_definition(&doc.text, position, uri))
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
