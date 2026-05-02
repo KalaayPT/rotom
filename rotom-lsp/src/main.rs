@@ -11,6 +11,7 @@ mod diagnostics;
 mod document;
 mod goto;
 mod hover;
+mod inlay_hints;
 mod server;
 mod signature_help;
 mod util;

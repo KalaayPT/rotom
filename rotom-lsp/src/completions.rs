@@ -1,16 +1,20 @@
 use std::sync::Arc;
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, DocumentSymbol, Position as LspPosition, SymbolKind};
+use tower_lsp::lsp_types::{
+    CompletionItem, CompletionItemKind, DocumentSymbol, Position as LspPosition, SymbolKind,
+};
 
 use rotom::compiler::sourcemap::{Position as SourcePosition, SourceMap};
-use rotom::database::DatabaseV2;
+use rotom::database::{DatabaseV2, ParamType};
+
+use crate::signature_help::extract_command_context;
 
 /// Produce LSP completion items for the given document position.
 ///
-/// Suggests commands from the database, constants, and local symbols
-/// (labels, aliases, scripts, actions) scoped to the current file.
-///
-/// `constant_names` and `local_symbols` are pre-computed by the caller
-/// so this function does not re-parse or re-allocate on every keystroke.
+/// Context-aware completion:
+/// - When typing a command name: suggests commands from the database.
+/// - When typing a non-label parameter: suggests constants.
+/// - When typing a label parameter (e.g. `Jump`, `Call`): suggests local
+///   symbols (scripts, labels, actions) only.
 pub fn compute_completions(
     source: &str,
     position: LspPosition,
@@ -30,58 +34,93 @@ pub fn compute_completions(
     }
 
     let prefix = extract_prefix(source, byte_offset);
-    let in_command_params = is_typing_command_params(source, byte_offset);
+
+    // Detect if we're typing a command parameter and which one.
+    // Returns:
+    // - Some(true)  = label-type param (Jump, Call, etc.) → show local symbols
+    // - Some(false) = non-label param → show constants only
+    // - None        = not in param context → show commands + constants
+    let param_context = db.and_then(|db| {
+        let (command_name, param_index) = extract_command_context(source, byte_offset)?;
+        let cmd = db.get_command(&command_name).ok()?;
+        if cmd.params.is_empty() {
+            return None;
+        }
+        let param = cmd.params.get(param_index as usize)?;
+        Some(param.param_type == ParamType::Label || param.name == "relative_jump")
+    });
 
     let mut items: Vec<CompletionItem> = Vec::new();
 
-    // Commands from the database (canonical + legacy names).
-    // Suppressed when we're clearly typing command parameters.
-    if !in_command_params && let Some(db) = db {
-        for (name, cmd) in &db.commands {
-            if matches_prefix(name, &prefix) {
-                items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::FUNCTION),
-                    detail: Some(command_detail(name, cmd)),
-                    ..Default::default()
-                });
-            }
-            if let Some(legacy) = &cmd.legacy_name
-                && legacy != name
-                && matches_prefix(legacy, &prefix)
-            {
-                items.push(CompletionItem {
-                    label: legacy.clone(),
-                    kind: Some(CompletionItemKind::FUNCTION),
-                    detail: Some(format!("legacy alias for {name}")),
-                    ..Default::default()
-                });
+    match param_context {
+        // Label parameter context: only suggest local symbols (flattened from groups).
+        Some(true) => {
+            if let Some(local_symbols) = local_symbols {
+                for group in local_symbols {
+                    if let Some(children) = &group.children {
+                        for sym in children {
+                            if matches_prefix(&sym.name, &prefix) {
+                                items.push(CompletionItem {
+                                    label: sym.name.clone(),
+                                    kind: Some(symbol_kind_to_completion_kind(sym.kind)),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
             }
         }
-    }
-
-    // Constants.
-    if let Some(constant_names) = constant_names {
-        for name in constant_names.iter() {
-            if matches_prefix(name, &prefix) {
-                items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::CONSTANT),
-                    ..Default::default()
-                });
+        // Non-label parameter: suggest constants only.
+        Some(false) => {
+            if let Some(constant_names) = constant_names {
+                for name in constant_names.iter() {
+                    if matches_prefix(name, &prefix) {
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: Some(CompletionItemKind::CONSTANT),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         }
-    }
+        // Not in parameter context (typing a command name): suggest commands + constants.
+        None => {
+            if let Some(db) = db {
+                for (name, cmd) in &db.commands {
+                    if matches_prefix(name, &prefix) {
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: Some(CompletionItemKind::FUNCTION),
+                            detail: Some(command_detail(name, cmd)),
+                            ..Default::default()
+                        });
+                    }
+                    if let Some(legacy) = &cmd.legacy_name
+                        && legacy != name
+                        && matches_prefix(legacy, &prefix)
+                    {
+                        items.push(CompletionItem {
+                            label: legacy.clone(),
+                            kind: Some(CompletionItemKind::FUNCTION),
+                            detail: Some(format!("legacy alias for {name}")),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
 
-    // Local symbols.
-    if let Some(local_symbols) = local_symbols {
-        for sym in local_symbols {
-            if matches_prefix(&sym.name, &prefix) {
-                items.push(CompletionItem {
-                    label: sym.name.clone(),
-                    kind: Some(symbol_kind_to_completion_kind(sym.kind)),
-                    ..Default::default()
-                });
+            if let Some(constant_names) = constant_names {
+                for name in constant_names.iter() {
+                    if matches_prefix(name, &prefix) {
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: Some(CompletionItemKind::CONSTANT),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         }
     }
@@ -114,34 +153,6 @@ fn is_in_comment(source: &str, byte_offset: usize) -> bool {
     }
 
     in_block
-}
-
-/// Return true if the cursor is inside a command's argument list.
-///
-/// Detects both space-separated (`Message 1`) and call-style
-/// (`GiveItem(1)`) notation.
-fn is_typing_command_params(source: &str, byte_offset: usize) -> bool {
-    let before_cursor = &source[..byte_offset.min(source.len())];
-    let last_line_start = before_cursor.rfind('\n').map_or(0, |i| i + 1);
-    let before_cursor_on_line = &before_cursor[last_line_start..];
-
-    // Space-separated: `CommandName arg` — command name followed by whitespace.
-    let trimmed = before_cursor_on_line.trim_start();
-    let has_command = !trimmed.is_empty()
-        && trimmed
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_alphabetic() || c == '_');
-    let ends_with_space = before_cursor_on_line.ends_with(' ');
-
-    if has_command && ends_with_space {
-        return true;
-    }
-
-    // Call-style: `CommandName(` — count unclosed parentheses.
-    let open = before_cursor_on_line.matches('(').count();
-    let close = before_cursor_on_line.matches(')').count();
-    open > close
 }
 
 /// Extract the identifier prefix at the given byte offset.
@@ -233,25 +244,5 @@ mod tests {
         assert!(is_in_comment(source, byte));
         let byte = map.position_to_byte(SourcePosition { line: 2, character: 18 });
         assert!(!is_in_comment(source, byte));
-    }
-
-    #[test]
-    fn test_is_typing_command_params_detects_param_context() {
-        let source = "script Test #1:\n    GiveItem \n";
-        let map = SourceMap::new(source);
-        // Cursor right after the space following the command name.
-        let byte = map.position_to_byte(SourcePosition { line: 1, character: 13 });
-        assert!(is_typing_command_params(source, byte));
-        // Cursor still inside the command name.
-        let byte = map.position_to_byte(SourcePosition { line: 1, character: 10 });
-        assert!(!is_typing_command_params(source, byte));
-    }
-
-    #[test]
-    fn test_is_typing_command_params_detects_call_style() {
-        let source = "script Test #1:\n    GiveItem(\n";
-        let map = SourceMap::new(source);
-        let byte = map.position_to_byte(SourcePosition { line: 1, character: 13 });
-        assert!(is_typing_command_params(source, byte));
     }
 }

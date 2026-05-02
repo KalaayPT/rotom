@@ -8,10 +8,10 @@ use tower_lsp::lsp_types::{
     CodeLens, CodeLensOptions, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbolResponse, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, SaveOptions,
-    ServerCapabilities, SignatureHelp, SignatureHelpOptions, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url,
-    WorkDoneProgressOptions, OneOf,
+    InlayHint, InlayHintOptions, InitializeParams, InitializeResult, InitializedParams,
+    MessageType, SaveOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions, OneOf,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -21,6 +21,7 @@ use crate::document::{compute_document_symbols, DocumentCache};
 use crate::diagnostics::compute_diagnostics;
 use crate::goto::compute_goto_definition;
 use crate::hover::compute_hover;
+use crate::inlay_hints::compute_inlay_hints;
 use crate::signature_help::compute_signature_help;
 
 use rotom::database::{ConstantDb, DatabaseV2};
@@ -206,6 +207,14 @@ impl LanguageServer for RotomServer {
                         work_done_progress: None,
                     },
                 }),
+                inlay_hint_provider: Some(OneOf::Right(
+                    tower_lsp::lsp_types::InlayHintServerCapabilities::Options(InlayHintOptions {
+                        resolve_provider: Some(false),
+                        work_done_progress_options: WorkDoneProgressOptions {
+                            work_done_progress: None,
+                        },
+                    }),
+                )),
                 // Only advertise capabilities that are actually implemented.
                 // Re-enable each one as the corresponding handler is wired up.
                 ..Default::default()
@@ -341,7 +350,12 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let lenses = compute_code_lens(&doc.text, uri);
+        let db = match self.project_state_for_uri(uri) {
+            Some(state) => Some(state.db),
+            None => None,
+        };
+
+        let lenses = compute_code_lens(&doc.text, uri, db.as_deref());
         if lenses.is_empty() {
             Ok(None)
         } else {
@@ -360,6 +374,30 @@ impl LanguageServer for RotomServer {
         self.documents
             .apply_changes(&uri, params.content_changes);
         self.publish_diagnostics(&uri);
+    }
+
+    async fn inlay_hint(
+        &self,
+        params: tower_lsp::lsp_types::InlayHintParams,
+    ) -> Result<Option<Vec<InlayHint>>> {
+        let uri = &params.text_document.uri;
+
+        let doc = self.documents.get(uri);
+        let Some(doc) = doc else {
+            return Ok(None);
+        };
+
+        let db = match self.project_state_for_uri(uri) {
+            Some(state) => Some(state.db),
+            None => None,
+        };
+
+        let hints = compute_inlay_hints(&doc.text, db.as_deref());
+        if hints.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(hints))
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {

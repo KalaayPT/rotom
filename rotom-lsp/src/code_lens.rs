@@ -6,13 +6,14 @@ use rotom::compiler::{
     ast::{ExpressionKind, Statement, StatementKind},
     sourcemap::SourceMap,
 };
+use rotom::database::{DatabaseV2, ParamType};
 
 use crate::util::{byte_span_to_location, byte_span_to_range, parse_source};
 
 /// Produce `CodeLens` hints for a Rotom source file.
 ///
 /// Shows reference counts above scripts, labels, aliases, and actions.
-pub fn compute_code_lens(source: &str, uri: &Url) -> Vec<CodeLens> {
+pub fn compute_code_lens(source: &str, uri: &Url, db: Option<&DatabaseV2>) -> Vec<CodeLens> {
     let Some(ast) = parse_source(source) else {
         return Vec::new();
     };
@@ -21,7 +22,7 @@ pub fn compute_code_lens(source: &str, uri: &Url) -> Vec<CodeLens> {
     let mut refs: HashMap<String, Vec<Location>> = HashMap::new();
 
     // First pass: count every reference.
-    count_refs(&ast.items, uri, &map, &mut refs);
+    count_refs(&ast.items, uri, &map, &mut refs, db);
 
     // Second pass: emit a lens for every definition.
     let mut lenses = Vec::new();
@@ -34,6 +35,7 @@ fn count_refs(
     uri: &Url,
     map: &SourceMap,
     refs: &mut HashMap<String, Vec<Location>>,
+    db: Option<&DatabaseV2>,
 ) {
     for item in items {
         match &item.node {
@@ -45,10 +47,14 @@ fn count_refs(
                 }
             }
             StatementKind::ScriptCommand { command, args } => {
-                let lower = command.to_lowercase();
-                if lower.contains("jump") || lower.contains("call") || lower.contains("goto") {
-                    for arg in args {
-                        if let Some(name) = expr_name(arg) {
+                if let Some(db) = db
+                    && let Ok(cmd) = db.get_command(command)
+                {
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some(param) = cmd.params.get(i)
+                            && (param.param_type == ParamType::Label || param.name == "relative_jump")
+                            && let Some(name) = expr_name(arg)
+                        {
                             refs.entry(name.to_string())
                                 .or_default()
                                 .push(byte_span_to_location(uri, &arg.span, map));
@@ -59,20 +65,20 @@ fn count_refs(
             StatementKind::Function { body, .. }
             | StatementKind::Action { body, .. }
             | StatementKind::WhileStatement { body, .. } => {
-                count_refs(body, uri, map, refs);
+                count_refs(body, uri, map, refs, db);
             }
             StatementKind::IfStatement { body, elseblock, .. } => {
-                count_refs(body, uri, map, refs);
+                count_refs(body, uri, map, refs, db);
                 if let Some(else_b) = elseblock {
-                    count_refs(else_b, uri, map, refs);
+                    count_refs(else_b, uri, map, refs, db);
                 }
             }
             StatementKind::MatchStatement { cases, default, .. } => {
                 for case in cases {
-                    count_refs(&case.body, uri, map, refs);
+                    count_refs(&case.body, uri, map, refs, db);
                 }
                 if let Some(default) = default {
-                    count_refs(default, uri, map, refs);
+                    count_refs(default, uri, map, refs, db);
                 }
             }
             _ => {}

@@ -32,7 +32,7 @@ pub fn compute_signature_help(
 ///
 /// Handles both call-style (`GiveItem(5, |)`) and space-separated (`GiveItem 5, |`).
 #[allow(clippy::cast_possible_truncation)]
-fn extract_command_context(source: &str, byte_offset: usize) -> Option<(String, u32)> {
+pub fn extract_command_context(source: &str, byte_offset: usize) -> Option<(String, u32)> {
     let line_start = source[..byte_offset].rfind('\n').map_or(0, |i| i + 1);
     let before_cursor = &source[line_start..byte_offset];
 
