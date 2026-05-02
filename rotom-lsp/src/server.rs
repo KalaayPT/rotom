@@ -9,8 +9,9 @@ use tower_lsp::lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbolResponse, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, MessageType, SaveOptions,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions, OneOf,
+    ServerCapabilities, SignatureHelp, SignatureHelpOptions, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url,
+    WorkDoneProgressOptions, OneOf,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -20,6 +21,7 @@ use crate::document::{compute_document_symbols, DocumentCache};
 use crate::diagnostics::compute_diagnostics;
 use crate::goto::compute_goto_definition;
 use crate::hover::compute_hover;
+use crate::signature_help::compute_signature_help;
 
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::project::config::{find_project_root, load_config, ProjectTypeConfig, RotomConfig};
@@ -197,6 +199,13 @@ impl LanguageServer for RotomServer {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string(), " ".to_string()]),
+                    retrigger_characters: Some(vec![",".to_string(), " ".to_string()]),
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: None,
+                    },
+                }),
                 // Only advertise capabilities that are actually implemented.
                 // Re-enable each one as the corresponding handler is wired up.
                 ..Default::default()
@@ -299,6 +308,26 @@ impl LanguageServer for RotomServer {
         };
 
         Ok(compute_goto_definition(&doc.text, position, uri))
+    }
+
+    async fn signature_help(
+        &self,
+        params: tower_lsp::lsp_types::SignatureHelpParams,
+    ) -> Result<Option<SignatureHelp>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let doc = self.documents.get(uri);
+        let Some(doc) = doc else {
+            return Ok(None);
+        };
+
+        let db = match self.project_state_for_uri(uri) {
+            Some(state) => Some(state.db),
+            None => None,
+        };
+
+        Ok(compute_signature_help(&doc.text, position, db.as_deref()))
     }
 
     async fn code_lens(

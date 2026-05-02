@@ -148,13 +148,9 @@ fn is_typing_command_params(source: &str, byte_offset: usize) -> bool {
 fn extract_prefix(source: &str, byte_offset: usize) -> String {
     let before = &source[..byte_offset.min(source.len())];
     let start = before
-        .rfind(|c: char| !is_identifier_char(c))
+        .rfind(|c: char| !rotom::compiler::lexer::is_identifier_char(c))
         .map_or(0, |i| i + before[i..].chars().next().map_or(1, char::len_utf8));
     before[start..].to_string()
-}
-
-fn is_identifier_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '.' || c == '?'
 }
 
 fn matches_prefix(name: &str, prefix: &str) -> bool {

@@ -248,15 +248,13 @@ pub fn extract_word(source: &str, byte_offset: usize) -> Option<String> {
 
     // Walk backward to find the start of the current identifier.
     let start = before
-        .rfind(|c: char| !is_identifier_char(c))
-        .map_or(0, |i| {
-            i + before[i..].chars().next().map_or(1, char::len_utf8)
-        });
+        .rfind(|c: char| !rotom::compiler::lexer::is_identifier_char(c))
+        .map_or(0, |i| i + before[i..].chars().next().map_or(1, char::len_utf8));
 
     // Walk forward from the cursor to find the end.
     let after = &source[byte_offset.min(source.len())..];
     let end_forward = after
-        .find(|c: char| !is_identifier_char(c))
+        .find(|c: char| !rotom::compiler::lexer::is_identifier_char(c))
         .unwrap_or(after.len());
 
     let word = &source[start..byte_offset.min(source.len()) + end_forward];
@@ -265,10 +263,6 @@ pub fn extract_word(source: &str, byte_offset: usize) -> Option<String> {
     } else {
         Some(word.to_string())
     }
-}
-
-fn is_identifier_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '.' || c == '?'
 }
 
 #[cfg(test)]

@@ -241,8 +241,13 @@ impl<'a> Lexer<'a> {
 fn is_identifier_start(c: char) -> bool {
     c.is_alphabetic() || c == '_'
 }
-fn is_identifier_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '’' || c == '?'
+/// Return true if `c` can appear inside (or as part of) an identifier.
+///
+/// This includes `.` because local labels like `.start` are treated as a
+/// single conceptual word by editor tooling, even though the lexer handles
+/// the leading `.` separately.
+pub fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '.' || c == '’' || c == '?'
 }
 
 impl Iterator for Lexer<'_> {
