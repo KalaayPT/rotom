@@ -5,6 +5,7 @@
 
 use tower_lsp::{LspService, Server};
 
+mod code_lens;
 mod completions;
 mod diagnostics;
 mod document;

@@ -4,7 +4,12 @@ use tower_lsp::lsp_types::{
     Hover, HoverContents, MarkupContent, MarkupKind, Position as LspPosition,
 };
 
-use rotom::compiler::sourcemap::{Position as SourcePosition, SourceMap};
+use rotom::compiler::{
+    ast::{ExpressionKind, Statement, StatementKind},
+    lexer::Lexer,
+    parser::Parser,
+    sourcemap::{Position as SourcePosition, SourceMap},
+};
 use rotom::database::{Command, ConstantDb, DatabaseV2};
 
 /// Produce an LSP hover response for the symbol under the cursor.
@@ -36,13 +41,11 @@ pub fn compute_hover(
 
         // Check legacy names — show the canonical name prominently.
         for (canonical, cmd) in &db.commands {
-            if cmd.legacy_name.as_deref() == Some(&word) {
+            if cmd.legacy_name.as_deref() == Some(&word) && canonical != &word {
                 let mut lines = Vec::new();
                 lines.push(format!("**{canonical}**"));
                 lines.push(String::new());
-                lines.push(format!(
-                    "Also known as `{word}` (legacy alias)"
-                ));
+                lines.push(format!("Also known as `{word}` (legacy alias)"));
 
                 if let Some(desc) = &cmd.description {
                     lines.push(String::new());
@@ -72,8 +75,41 @@ pub fn compute_hover(
     if let Some(constants) = constants
         && let Some(value) = constants.get(&word)
     {
+        let content = format!("**{word}**\n\nConstant value: `{value}` hex: `0x{value:x}`");
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: content,
+            }),
+            range: None,
+        });
+    }
+
+    // Try aliases defined in the source file.
+    if let Some((alias_value, alias_name)) = find_alias_value(source, &word) {
+        let value_str = match &alias_value.node {
+            ExpressionKind::Number(n) => format!("{n}"),
+            ExpressionKind::Identifier(id) => id.clone(),
+            ExpressionKind::Label(l) => format!(".{l}"),
+            ExpressionKind::Prefix { operator, id } => {
+                format!("{operator:?} {}", format_expr(id))
+            }
+            ExpressionKind::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                format!("{} {operator:?} {}", format_expr(left), format_expr(right))
+            }
+            ExpressionKind::Call { function, args } => {
+                let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
+                format!("{}({})", format_expr(function), arg_strs.join(", "))
+            }
+            ExpressionKind::Error => "<error>".to_string(),
+        };
+        let value_int: i32 = value_str.parse().ok()?;
         let content = format!(
-            "**{word}**\n\nConstant value: `{value}` hex: `0x{value:x}`"
+            "**{alias_name}**\n\nAlias value: `{value_str}` hex: `0x{value_int:x}`"
         );
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -87,11 +123,91 @@ pub fn compute_hover(
     None
 }
 
+fn format_expr(expr: &rotom::compiler::ast::Expression) -> String {
+    match &expr.node {
+        ExpressionKind::Number(n) => n.to_string(),
+        ExpressionKind::Identifier(id) => id.clone(),
+        ExpressionKind::Label(l) => format!(".{l}"),
+        ExpressionKind::Prefix { operator, id } => format!("{operator:?} {}", format_expr(id)),
+        ExpressionKind::Infix {
+            left,
+            operator,
+            right,
+        } => {
+            format!("{} {operator:?} {}", format_expr(left), format_expr(right))
+        }
+        ExpressionKind::Call { function, args } => {
+            let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
+            format!("{}({})", format_expr(function), arg_strs.join(", "))
+        }
+        ExpressionKind::Error => "<error>".to_string(),
+    }
+}
+
+/// Parse the source and look for an alias whose name matches `word`.
+/// Returns the alias expression and name if found.
+fn find_alias_value(
+    source: &str,
+    word: &str,
+) -> Option<(rotom::compiler::ast::Expression, String)> {
+    let lexer = Lexer::new(source);
+    let mut parser = Parser::new_fallible(lexer);
+    let ast = parser.parse_script_file().ok()?;
+    find_alias_in_items(&ast.items, word)
+}
+
+fn find_alias_in_items(
+    items: &[Statement],
+    word: &str,
+) -> Option<(rotom::compiler::ast::Expression, String)> {
+    for item in items {
+        if let StatementKind::AliasStatement { value, name } = &item.node
+            && name == word
+        {
+            return Some((value.clone(), name.clone()));
+        }
+        // Recurse into blocks.
+        let body = match &item.node {
+            StatementKind::Function { body, .. }
+            | StatementKind::Action { body, .. }
+            | StatementKind::IfStatement { body, .. }
+            | StatementKind::WhileStatement { body, .. } => Some(body),
+            _ => None,
+        };
+        if let Some(body) = body
+            && let Some(result) = find_alias_in_items(body, word)
+        {
+            return Some(result);
+        }
+        if let StatementKind::IfStatement { elseblock, .. } = &item.node
+            && let Some(else_b) = elseblock
+            && let Some(result) = find_alias_in_items(else_b, word)
+        {
+            return Some(result);
+        }
+        if let StatementKind::MatchStatement { cases, default, .. } = &item.node {
+            for case in cases {
+                if let Some(result) = find_alias_in_items(&case.body, word) {
+                    return Some(result);
+                }
+            }
+            if let Some(default) = default
+                && let Some(result) = find_alias_in_items(default, word)
+            {
+                return Some(result);
+            }
+        }
+    }
+    None
+}
+
 fn format_command_hover(name: &str, cmd: &Command) -> String {
     let mut lines = Vec::new();
     lines.push(format!("**{name}**"));
 
-    if let Some(legacy) = &cmd.legacy_name {
+    if let Some(legacy) = &cmd.legacy_name
+        && name != legacy
+    {
         lines.push(format!("(legacy name: `{legacy}`)"));
     }
 
@@ -133,7 +249,9 @@ pub fn extract_word(source: &str, byte_offset: usize) -> Option<String> {
     // Walk backward to find the start of the current identifier.
     let start = before
         .rfind(|c: char| !is_identifier_char(c))
-        .map_or(0, |i| i + before[i..].chars().next().map_or(1, char::len_utf8));
+        .map_or(0, |i| {
+            i + before[i..].chars().next().map_or(1, char::len_utf8)
+        });
 
     // Walk forward from the cursor to find the end.
     let after = &source[byte_offset.min(source.len())..];

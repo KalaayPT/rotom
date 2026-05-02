@@ -47,6 +47,7 @@ pub fn compute_completions(
                 });
             }
             if let Some(legacy) = &cmd.legacy_name
+                && legacy != name
                 && matches_prefix(legacy, &prefix)
             {
                 items.push(CompletionItem {

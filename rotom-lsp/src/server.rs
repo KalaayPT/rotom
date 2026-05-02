@@ -5,15 +5,16 @@ use std::time::Duration;
 use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolResponse,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, MessageType, SaveOptions, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    CodeLens, CodeLensOptions, CompletionOptions, CompletionParams, CompletionResponse,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentSymbolResponse, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, MessageType, SaveOptions,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
     TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions, OneOf,
 };
 use tower_lsp::{Client, LanguageServer};
 
+use crate::code_lens::compute_code_lens;
 use crate::completions::compute_completions;
 use crate::document::{compute_document_symbols, DocumentCache};
 use crate::diagnostics::compute_diagnostics;
@@ -193,6 +194,9 @@ impl LanguageServer for RotomServer {
                     ),
                 ),
                 definition_provider: Some(OneOf::Left(true)),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 // Only advertise capabilities that are actually implemented.
                 // Re-enable each one as the corresponding handler is wired up.
                 ..Default::default()
@@ -295,6 +299,25 @@ impl LanguageServer for RotomServer {
         };
 
         Ok(compute_goto_definition(&doc.text, position, uri))
+    }
+
+    async fn code_lens(
+        &self,
+        params: tower_lsp::lsp_types::CodeLensParams,
+    ) -> Result<Option<Vec<CodeLens>>> {
+        let uri = &params.text_document.uri;
+
+        let doc = self.documents.get(uri);
+        let Some(doc) = doc else {
+            return Ok(None);
+        };
+
+        let lenses = compute_code_lens(&doc.text, uri);
+        if lenses.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(lenses))
+        }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
