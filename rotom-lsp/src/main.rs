@@ -13,6 +13,7 @@ mod goto;
 mod hover;
 mod server;
 mod signature_help;
+mod util;
 
 #[tokio::main]
 async fn main() {

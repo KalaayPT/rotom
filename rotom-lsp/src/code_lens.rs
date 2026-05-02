@@ -1,21 +1,19 @@
 use std::collections::HashMap;
 
-use tower_lsp::lsp_types::{CodeLens, Command, Location, Position as LspPosition, Range, Url};
+use tower_lsp::lsp_types::{CodeLens, Command, Location, Url};
 
 use rotom::compiler::{
     ast::{ExpressionKind, Statement, StatementKind},
-    lexer::Lexer,
-    parser::Parser,
     sourcemap::SourceMap,
 };
+
+use crate::util::{byte_span_to_location, byte_span_to_range, parse_source};
 
 /// Produce `CodeLens` hints for a Rotom source file.
 ///
 /// Shows reference counts above scripts, labels, aliases, and actions.
 pub fn compute_code_lens(source: &str, uri: &Url) -> Vec<CodeLens> {
-    let lexer = Lexer::new(source);
-    let mut parser = Parser::new_fallible(lexer);
-    let Some(ast) = parser.parse_script_file().ok() else {
+    let Some(ast) = parse_source(source) else {
         return Vec::new();
     };
 
@@ -43,7 +41,7 @@ fn count_refs(
                 if let Some(name) = expr_name(expr) {
                     refs.entry(name.to_string())
                         .or_default()
-                        .push(make_location(uri, &expr.span, map));
+                        .push(byte_span_to_location(uri, &expr.span, map));
                 }
             }
             StatementKind::ScriptCommand { command, args } => {
@@ -53,7 +51,7 @@ fn count_refs(
                         if let Some(name) = expr_name(arg) {
                             refs.entry(name.to_string())
                                 .or_default()
-                                .push(make_location(uri, &arg.span, map));
+                                .push(byte_span_to_location(uri, &arg.span, map));
                         }
                     }
                 }
@@ -135,7 +133,7 @@ fn make_ref_lens(
     uri: &Url,
     locations: &[Location],
 ) -> CodeLens {
-    let range = make_range(span, map);
+    let range = byte_span_to_range(map, span);
     CodeLens {
         range,
         command: Some(Command {
@@ -152,28 +150,6 @@ fn make_ref_lens(
             ]),
         }),
         data: None,
-    }
-}
-
-fn make_location(uri: &Url, span: &std::ops::Range<usize>, map: &SourceMap) -> Location {
-    Location {
-        uri: uri.clone(),
-        range: make_range(span, map),
-    }
-}
-
-fn make_range(span: &std::ops::Range<usize>, map: &SourceMap) -> Range {
-    let start = map.byte_to_position(span.start);
-    let end = map.byte_to_position(span.end);
-    Range {
-        start: LspPosition {
-            line: start.line,
-            character: start.character,
-        },
-        end: LspPosition {
-            line: end.line,
-            character: end.character,
-        },
     }
 }
 

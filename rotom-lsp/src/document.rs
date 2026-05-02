@@ -3,10 +3,10 @@ use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind, TextDocumentContentChange
 
 use rotom::compiler::{
     ast::StatementKind,
-    lexer::Lexer,
-    parser::Parser,
     sourcemap::{Position, SourceMap},
 };
+
+use crate::util::parse_source;
 
 /// Cached document entry.
 pub struct DocumentEntry {
@@ -64,17 +64,13 @@ impl DocumentCache {
 /// Scripts, labels, and actions are bucketed into collapsible parent nodes
 /// so the editor outline shows them grouped by kind.
 pub fn compute_document_symbols(source: &str) -> Vec<DocumentSymbol> {
-    let lexer = Lexer::new(source);
-    let mut parser = Parser::new_fallible(lexer);
-    let ast = parser.parse_script_file().ok();
+    let Some(file) = parse_source(source) else {
+        return Vec::new();
+    };
 
     let mut scripts = Vec::new();
     let mut labels = Vec::new();
     let mut actions = Vec::new();
-
-    let Some(file) = ast else {
-        return Vec::new();
-    };
 
     let map = SourceMap::new(source);
 

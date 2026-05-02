@@ -6,11 +6,11 @@ use tower_lsp::lsp_types::{
 
 use rotom::compiler::{
     ast::{ExpressionKind, Statement, StatementKind},
-    lexer::Lexer,
-    parser::Parser,
     sourcemap::{Position as SourcePosition, SourceMap},
 };
 use rotom::database::{Command, ConstantDb, DatabaseV2};
+
+use crate::util::parse_source;
 
 /// Produce an LSP hover response for the symbol under the cursor.
 pub fn compute_hover(
@@ -150,9 +150,7 @@ fn find_alias_value(
     source: &str,
     word: &str,
 ) -> Option<(rotom::compiler::ast::Expression, String)> {
-    let lexer = Lexer::new(source);
-    let mut parser = Parser::new_fallible(lexer);
-    let ast = parser.parse_script_file().ok()?;
+    let ast = parse_source(source)?;
     find_alias_in_items(&ast.items, word)
 }
 

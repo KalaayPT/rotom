@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
 use rotom::compiler::{
     diagnostic::{CompileError, CompileWarning},
@@ -8,6 +8,8 @@ use rotom::compiler::{
     Analyzer,
 };
 use rotom::database::{ConstantDb, DatabaseV2};
+
+use crate::util::byte_span_to_range;
 
 /// Produce LSP diagnostics for a Rotom source document.
 ///
@@ -78,19 +80,8 @@ fn compile_error_to_diagnostic(error: &CompileError, map: &SourceMap) -> Option<
         _ => return None,
     };
 
-    let start = map.byte_to_position(span.start);
-    let end = map.byte_to_position(span.end);
     Some(Diagnostic {
-        range: Range {
-            start: Position {
-                line: start.line,
-                character: start.character,
-            },
-            end: Position {
-                line: end.line,
-                character: end.character,
-            },
-        },
+        range: byte_span_to_range(map, &span),
         severity: Some(severity),
         code: None,
         code_description: None,
@@ -103,20 +94,8 @@ fn compile_error_to_diagnostic(error: &CompileError, map: &SourceMap) -> Option<
 }
 
 fn compile_warning_to_diagnostic(warning: &CompileWarning, map: &SourceMap) -> Diagnostic {
-    let span = warning.span();
-    let start = map.byte_to_position(span.start);
-    let end = map.byte_to_position(span.end);
     Diagnostic {
-        range: Range {
-            start: Position {
-                line: start.line,
-                character: start.character,
-            },
-            end: Position {
-                line: end.line,
-                character: end.character,
-            },
-        },
+        range: byte_span_to_range(map, &warning.span()),
         severity: Some(DiagnosticSeverity::WARNING),
         code: None,
         code_description: None,
