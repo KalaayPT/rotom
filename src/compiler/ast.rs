@@ -42,6 +42,13 @@ pub enum StatementKind {
         value: Expression,
         name: String,
     },
+    Include {
+        path: String,
+    },
+    Define {
+        name: String,
+        value: Expression,
+    },
     IfStatement {
         condition: Box<Expression>,
         body: Vec<Statement>,

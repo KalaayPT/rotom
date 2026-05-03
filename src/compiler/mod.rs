@@ -8,7 +8,6 @@ pub mod diagnostic;
 pub mod ir;
 pub mod lexer;
 pub mod parser;
-pub mod preprocessor;
 pub mod sourcemap;
 pub mod token;
 
@@ -19,5 +18,4 @@ pub use diagnostic::{CompileError, CompileWarning, ParseResult};
 pub use ir::{IrFunction, Lowerer};
 pub use lexer::Lexer;
 pub use parser::Parser;
-pub use preprocessor::{IncludeDirective, PreprocessResult};
 pub use sourcemap::{Position, SourceMap};

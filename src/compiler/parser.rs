@@ -157,6 +157,7 @@ impl<'a> Parser<'a> {
                     aliases.push(stmt.clone());
                     items.push(stmt);
                 }
+                StatementKind::Include { .. } | StatementKind::Define { .. } => items.push(stmt),
                 _ if self.recover => items.push(stmt),
                 _ => unreachable!("top_level_stmt should prevent other statements or errors"),
             }
@@ -264,6 +265,8 @@ impl<'a> Parser<'a> {
             TokenType::Script => self.parse_function(),
             TokenType::Action => self.parse_action(),
             TokenType::Alias => self.parse_alias(),
+            TokenType::Include => self.parse_include(),
+            TokenType::Define => self.parse_define(),
             // Bare label: `LabelName:` at top level becomes a private helper
             TokenType::Identifier(_) if self.peek_token.kind == TokenType::Colon => {
                 self.parse_bare_label()
@@ -460,6 +463,33 @@ impl<'a> Parser<'a> {
         let end = self.current_token.span.start;
         Ok(Spanned {
             node: StatementKind::AliasStatement { value, name },
+            span: start..end,
+        })
+    }
+    pub fn parse_include(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        self.expect_advance(&TokenType::Include)?;
+        let path_token = self.expect_advance(&TokenType::String(String::new()))?;
+        let TokenType::String(path) = path_token.kind else {
+            unreachable!()
+        };
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: StatementKind::Include { path },
+            span: start..end,
+        })
+    }
+    pub fn parse_define(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        self.expect_advance(&TokenType::Define)?;
+        let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
+        let TokenType::Identifier(name) = name_token.kind else {
+            unreachable!()
+        };
+        let value = self.parse_expression(Precedence::Lowest)?;
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: StatementKind::Define { name, value },
             span: start..end,
         })
     }
@@ -1542,5 +1572,21 @@ script Test #1:
             }
             _ => panic!("Expected function"),
         }
+    }
+
+    #[test]
+    fn test_parse_preprocessor_directives() {
+        // #include and #define should be skipped at the top level.
+        let source = "#include \"stdpoke.txt\"\n#define SOME_CONST 42\n\nscript Test #1:\n    Message SOME_CONST\n    End\n";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let file = parser.parse_script_file().unwrap();
+        assert!(parser.errors.is_empty(), "expected no errors for preprocessor directives");
+        let functions: Vec<_> = file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 1, "expected one script after preprocessor directives");
     }
 }

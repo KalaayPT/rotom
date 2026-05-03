@@ -846,7 +846,7 @@ impl ConstantDb {
         script_path: Q,
     ) -> Result<usize, CompileError> {
         let script_path = script_path.as_ref();
-        if !script_path.exists() || !script_path.is_file() {
+        if !script_path.is_file() {
             return Ok(0);
         }
 
@@ -864,45 +864,7 @@ impl ConstantDb {
                                               include_dirs: &[PathBuf],
                                               include_path: &str|
          -> std::io::Result<bool> {
-            if Self::try_load_decomp_events_include_json(
-                table,
-                parent_dir,
-                include_dirs,
-                include_path,
-            )? {
-                return Ok(true);
-            }
-
-            if SymbolTable::try_load_generated_header_fallback(
-                table,
-                parent_dir,
-                include_dirs,
-                include_path,
-            )? {
-                return Ok(true);
-            }
-
-            if SymbolTable::try_load_text_bank_include_json(
-                table,
-                parent_dir,
-                include_dirs,
-                include_path,
-            )? {
-                return Ok(true);
-            }
-
-            if SymbolTable::try_load_gmm_fallback(table, parent_dir, include_dirs, include_path)? {
-                return Ok(true);
-            }
-
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "Unresolved include '{}' (searched from {})",
-                    include_path,
-                    parent_dir.display()
-                ),
-            ))
+            Self::handle_unresolved_decomp_include(table, parent_dir, include_dirs, include_path)
         };
 
         collected
@@ -923,6 +885,132 @@ impl ConstantDb {
         let collected_count = collected.get_all_defines().len();
         self.uxie_symbols = Some(collected);
         Ok(collected_count.saturating_sub(base_count))
+    }
+
+    /// Apply `#include` and `#define` directives from a parsed Rotom AST directly.
+    ///
+    /// Builds Uxie `CInclude`/`CDefine` structs from the AST items and passes
+    /// them to `SymbolTable::load_c_directives`.  Uxie handles all evaluation,
+    /// recursive loading, and caching — no re-parsing or reimplementation.
+    pub fn apply_directives(
+        &mut self,
+        script_dir: &Path,
+        source: &str,
+        items: &[crate::compiler::ast::Statement],
+    ) -> Result<usize, CompileError> {
+        let Some(project_root) = &self.uxie_project_root else {
+            return Ok(0);
+        };
+        let Some(base_symbols) = &self.uxie_base_symbols else {
+            return Ok(0);
+        };
+
+        let include_dirs = Self::decomp_include_dirs(project_root);
+        let mut collected = SymbolTable::with_parent(Arc::clone(base_symbols));
+
+        let uxie_includes: Vec<uxie::c_parser::includes::CInclude> = items
+            .iter()
+            .filter_map(|s| match &s.node {
+                crate::compiler::ast::StatementKind::Include { path } => {
+                    Some(uxie::c_parser::includes::CInclude {
+                        path: path.clone(),
+                        is_system: false,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+
+        let uxie_defines: Vec<uxie::c_parser::defines::CDefine> = items
+            .iter()
+            .filter_map(|s| match &s.node {
+                crate::compiler::ast::StatementKind::Define { name, value } => {
+                    let raw_value = &source[value.span.clone()];
+                    Some(uxie::c_parser::defines::CDefine {
+                        name: name.clone(),
+                        value: raw_value.to_string(),
+                        resolved: None,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+
+        let mut unresolved_include_handler = |table: &mut SymbolTable,
+                                              parent_dir: &Path,
+                                              include_dirs: &[PathBuf],
+                                              include_path: &str|
+         -> std::io::Result<bool> {
+            Self::handle_unresolved_decomp_include(table, parent_dir, include_dirs, include_path)
+        };
+
+        collected
+            .load_c_directives_with_handler(
+                &uxie_defines,
+                &uxie_includes,
+                script_dir,
+                &include_dirs,
+                Some(&mut unresolved_include_handler),
+            )
+            .map_err(|e| CompileError::Database {
+                message: format!(
+                    "Failed to apply directives from '{}': {}",
+                    script_dir.display(),
+                    e
+                ),
+            })?;
+
+        let base_count = base_symbols.get_all_defines().len();
+        let collected_count = collected.get_all_defines().len();
+        self.uxie_symbols = Some(collected);
+        Ok(collected_count.saturating_sub(base_count))
+    }
+
+    fn handle_unresolved_decomp_include(
+        table: &mut SymbolTable,
+        parent_dir: &Path,
+        include_dirs: &[PathBuf],
+        include_path: &str,
+    ) -> std::io::Result<bool> {
+        if Self::try_load_decomp_events_include_json(
+            table,
+            parent_dir,
+            include_dirs,
+            include_path,
+        )? {
+            return Ok(true);
+        }
+
+        if SymbolTable::try_load_generated_header_fallback(
+            table,
+            parent_dir,
+            include_dirs,
+            include_path,
+        )? {
+            return Ok(true);
+        }
+
+        if SymbolTable::try_load_text_bank_include_json(
+            table,
+            parent_dir,
+            include_dirs,
+            include_path,
+        )? {
+            return Ok(true);
+        }
+
+        if SymbolTable::try_load_gmm_fallback(table, parent_dir, include_dirs, include_path)? {
+            return Ok(true);
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "Unresolved include '{}' (searched from {})",
+                include_path,
+                parent_dir.display()
+            ),
+        ))
     }
 
     /// Clone the constant database and apply file-local constants for one source file.

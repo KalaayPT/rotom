@@ -318,6 +318,8 @@ impl<'a> Analyzer<'a> {
             | StatementKind::Return
             | StatementKind::End
             | StatementKind::EndMovement
+            | StatementKind::Include { .. }
+            | StatementKind::Define { .. }
             | StatementKind::Error => {}
         }
     }

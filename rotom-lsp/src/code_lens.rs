@@ -148,7 +148,7 @@ fn make_ref_lens(
                 locations.len(),
                 if locations.len() == 1 { "" } else { "s" }
             ),
-            command: "rotom.showReferences".to_string(),
+            command: "editor.action.showReferences".to_string(),
             arguments: Some(vec![
                 serde_json::json!(uri.as_str()),
                 serde_json::json!(range.start),

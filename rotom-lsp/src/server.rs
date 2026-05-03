@@ -30,12 +30,11 @@ use rotom::project::config::{find_project_root, load_config, ProjectTypeConfig, 
 /// How long to wait after the last keystroke before re-running diagnostics.
 const DIAGNOSTIC_DEBOUNCE_MS: u64 = 300;
 
-/// Per-project cached state: loaded database, constants, and pre-collected constant names.
+/// Per-project cached state: loaded database and project-wide constants.
 #[derive(Clone)]
 struct ProjectState {
     db: Arc<DatabaseV2>,
     constants: ConstantDb,
-    constant_names: Arc<Vec<String>>,
 }
 
 pub struct RotomServer {
@@ -117,13 +116,30 @@ impl RotomServer {
             ProjectTypeConfig::Generic => {}
         }
 
-        let constant_names = Arc::new(constants.constant_names());
-
         Ok(ProjectState {
             db: Arc::new(db),
             constants,
-            constant_names,
         })
+    }
+
+    /// Build file-local constants for a URI by cloning project-wide constants
+    /// and applying any `#include` / `#define` directives found in the source.
+    fn file_constants_for_uri(&self, uri: &Url, source: &str) -> Option<ConstantDb> {
+        let state = self.project_state_for_uri(uri)?;
+        let mut file_constants = state.constants.clone();
+
+        let file_path = uri.to_file_path().ok()?;
+        if file_path.extension().and_then(|s| s.to_str()) != Some("rotom") {
+            return Some(file_constants);
+        }
+
+        let lexer = rotom::compiler::Lexer::new(source);
+        let mut parser = rotom::compiler::Parser::new_fallible(lexer);
+        let file = parser.parse_script_file().ok()?;
+        let script_dir = file_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let _ = file_constants.apply_directives(script_dir, source, &file.items);
+
+        Some(file_constants)
     }
 
     /// Schedule diagnostics to be published after a debounce delay.
@@ -141,18 +157,26 @@ impl RotomServer {
         let text = self.documents.get(&uri_for_task).map(|doc| doc.text.clone());
         let project_state = self.project_state_for_uri(&uri_for_task);
 
+        // Compute file-local constants synchronously before spawning.
+        let file_constants = text.as_ref().and_then(|src| {
+            self.file_constants_for_uri(&uri_for_task, src)
+        });
+
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(DIAGNOSTIC_DEBOUNCE_MS)).await;
 
             let Some(text) = text else {
                 return;
             };
-            let (db, constants) = match project_state {
-                Some(state) => (Some(state.db), Some(state.constants)),
-                None => (None, None),
+            let (db, constants) = if let Some(state) = project_state {
+                let c = file_constants.unwrap_or_else(|| state.constants.clone());
+                (Some(state.db), c)
+            } else {
+                let empty = rotom::database::ConstantDb::new();
+                (None, empty)
             };
 
-            let diagnostics = compute_diagnostics(&text, db.as_deref(), constants.as_ref());
+            let diagnostics = compute_diagnostics(&text, db.as_deref(), Some(&constants));
             client.publish_diagnostics(uri_for_task, diagnostics, None).await;
         });
 
@@ -242,10 +266,11 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let (db, constant_names) = match self.project_state_for_uri(uri) {
-            Some(state) => (Some(state.db), Some(state.constant_names.clone())),
-            None => (None, None),
-        };
+        let db = self.project_state_for_uri(uri).map(|s| s.db);
+        let file_constants = self.file_constants_for_uri(uri, &doc.text);
+        let constant_names = file_constants.as_ref().map(|c| {
+            Arc::new(c.constant_names()) as Arc<Vec<String>>
+        });
 
         let local_symbols = self.documents.get(uri)
             .map(|doc| compute_document_symbols(&doc.text));
@@ -270,16 +295,14 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let (db, constants) = match self.project_state_for_uri(uri) {
-            Some(state) => (Some(state.db), Some(state.constants)),
-            None => (None, None),
-        };
+        let db = self.project_state_for_uri(uri).map(|s| s.db);
+        let file_constants = self.file_constants_for_uri(uri, &doc.text);
 
         let hover = compute_hover(
             &doc.text,
             position,
             db.as_deref(),
-            constants.as_ref(),
+            file_constants.as_ref(),
         );
 
         Ok(hover)

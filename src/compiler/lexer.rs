@@ -100,7 +100,35 @@ impl<'a> Lexer<'a> {
         self.skip_whitespace_and_comments();
         let start = self.current_pos;
         let kind = match self.read_char() {
-            Some('#') => TokenType::Hash,
+            Some('#') => match self.chars.peek() {
+                Some(&c) if is_identifier_start(c) => {
+                    let first = self.read_char().unwrap();
+                    match self.read_identifier(first) {
+                        TokenType::Identifier(s) => match s.as_str() {
+                            "include" => TokenType::Include,
+                            "define" => TokenType::Define,
+                            _ => TokenType::Hash,
+                        },
+                        keyword => {
+                            // If read_identifier returned a keyword (e.g.
+                            // "if" after #), treat the # as standalone.
+                            let _ = keyword;
+                            TokenType::Hash
+                        }
+                    }
+                }
+                _ => TokenType::Hash,
+            },
+            Some('"') => {
+                let mut value = String::new();
+                while let Some(c) = self.read_char() {
+                    if c == '"' {
+                        break;
+                    }
+                    value.push(c);
+                }
+                TokenType::String(value)
+            }
             Some(',') => TokenType::Comma,
             Some('.') => {
                 if let Some(&c) = self.chars.peek()

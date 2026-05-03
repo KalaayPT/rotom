@@ -29,7 +29,6 @@ pub use compiler::{
     Analyzer, Lexer, Lowerer, Parser,
     analysis::{SymbolTable, SymbolType},
     diagnostic::{CompileError, CompileWarning, print_error},
-    preprocessor::{IncludeDirective, PreprocessResult},
     sourcemap::{Position, SourceMap},
 };
 pub use database::{ConstantDb, DatabaseV2, GameFamily, GameFamilyExt, game_family_from_hint};
@@ -119,48 +118,44 @@ pub fn compile_to_bytes(
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> Result<Vec<u8>, CompileError> {
-    compile_to_bytes_with_options(source, db, constants, 1)
+    Ok(compile(source, db, constants)?.bytes)
 }
 
+/// Compilation output including emitted bytes and any warnings.
 pub struct CompiledBytes {
     pub bytes: Vec<u8>,
     pub warnings: Vec<CompileWarning>,
 }
 
-pub fn compile_to_compiled_bytes(
+/// Compile Rotom source to bytes.
+///
+/// Parses the source, runs semantic analysis, lowers to IR, and emits binary.
+pub fn compile(
     source: &str,
     db: &DatabaseV2,
     constants: &ConstantDb,
 ) -> Result<CompiledBytes, CompileError> {
-    compile_to_compiled_bytes_with_options(source, db, constants, 1)
-}
-
-pub fn compile_to_bytes_with_options(
-    source: &str,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-    jump_table_end_marker_count: u8,
-) -> Result<Vec<u8>, CompileError> {
-    compile_to_compiled_bytes_with_options(source, db, constants, jump_table_end_marker_count)
-        .map(|output| output.bytes)
-}
-
-pub fn compile_to_compiled_bytes_with_options(
-    source: &str,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-    jump_table_end_marker_count: u8,
-) -> Result<CompiledBytes, CompileError> {
-    let cleaned_source = compiler::preprocessor::preprocess(source).cleaned_source;
-    let lexer = Lexer::new(&cleaned_source);
+    let lexer = Lexer::new(source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
+    compile_ast(&file, db, constants, 1)
+}
 
+/// Compile an already-parsed AST to bytes.
+///
+/// Internal entry point used by the compiler pipeline when the AST is
+/// already available (e.g. after extracting `#include` / `#define`).
+pub(crate) fn compile_ast(
+    file: &compiler::ast::ScriptFile,
+    db: &DatabaseV2,
+    constants: &ConstantDb,
+    jump_table_end_marker_count: u8,
+) -> Result<CompiledBytes, CompileError> {
     let mut analyzer = Analyzer::with_database(constants, db);
-    analyzer.analyze(&file)?;
+    analyzer.analyze(file)?;
 
     let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, constants);
-    let items = lowerer.lower_script_file(&file)?;
+    let items = lowerer.lower_script_file(file)?;
 
     let mut emitter = Emitter::new(db);
     let bytes = emitter.emit_script_file(&items, jump_table_end_marker_count)?;
@@ -245,17 +240,6 @@ pub(crate) fn compile_file_internal_with_source(
         .unwrap_or("")
         .to_lowercase();
 
-    let file_constants = if load_file_constants && (extension == "s" || extension == "rotom") {
-        Some(
-            constants
-                .clone_for_script(input)
-                .map_err(CompileFileError::IoError)?,
-        )
-    } else {
-        None
-    };
-    let constants = file_constants.as_ref().unwrap_or(constants);
-
     let is_levelscript = is_levelscript_path(input)
         || (extension == "s" && transpiler::is_levelscript_source(source));
 
@@ -271,6 +255,14 @@ pub(crate) fn compile_file_internal_with_source(
             source.to_string(),
         )
     } else if is_levelscript && extension == "s" {
+        let file_constants = if load_file_constants {
+            let mut cloned = constants.clone();
+            cloned.load_script_constants(input).map_err(CompileFileError::IoError)?;
+            Some(cloned)
+        } else {
+            None
+        };
+        let constants = file_constants.as_ref().unwrap_or(constants);
         (
             compile_levelscript_to_bytes(source, constants).map_err(|e| {
                 CompileFileError::CompileError {
@@ -303,17 +295,50 @@ pub(crate) fn compile_file_internal_with_source(
             }
         };
 
-        let output = compile_to_compiled_bytes_with_options(
-            &rotom_source,
-            db,
-            constants,
-            jump_table_end_marker_count,
-        )
-        .map_err(|e| CompileFileError::CompileError {
-            error: e,
-            source: rotom_source.clone(),
-        })?;
-        (output.bytes, output.warnings, rotom_source)
+        if extension == "rotom" && load_file_constants {
+            // Parse once, use the AST for both constants and compilation.
+            let lexer = compiler::Lexer::new(&rotom_source);
+            let mut parser = compiler::Parser::new(lexer);
+            let file = parser.parse_script_file().map_err(|e| CompileFileError::CompileError {
+                error: e,
+                source: rotom_source.clone(),
+            })?;
+
+            let mut cloned = constants.clone();
+            let script_dir = input.parent().unwrap_or_else(|| Path::new("."));
+            cloned
+                .apply_directives(script_dir, &rotom_source, &file.items)
+                .map_err(CompileFileError::IoError)?;
+
+            let output = compile_ast(&file, db, &cloned, jump_table_end_marker_count)
+                .map_err(|e| CompileFileError::CompileError {
+                    error: e,
+                    source: rotom_source.clone(),
+                })?;
+            (output.bytes, output.warnings, rotom_source)
+        } else {
+            let file_constants = if load_file_constants {
+                let mut cloned = constants.clone();
+                cloned.load_script_constants(input).map_err(CompileFileError::IoError)?;
+                Some(cloned)
+            } else {
+                None
+            };
+            let constants = file_constants.as_ref().unwrap_or(constants);
+
+            let lexer = compiler::Lexer::new(&rotom_source);
+            let mut parser = compiler::Parser::new(lexer);
+            let file = parser.parse_script_file().map_err(|e| CompileFileError::CompileError {
+                error: e,
+                source: rotom_source.clone(),
+            })?;
+            let output = compile_ast(&file, db, constants, jump_table_end_marker_count)
+                .map_err(|e| CompileFileError::CompileError {
+                    error: e,
+                    source: rotom_source.clone(),
+                })?;
+            (output.bytes, output.warnings, rotom_source)
+        }
     };
     let size = bytes.len();
 
@@ -874,8 +899,6 @@ mod tests {
 
         let result = compile_path(&input_path, &output_path, db, &constants)
             .expect("compile_path should return a batch result");
-        fs::remove_dir_all(&temp_dir).ok();
-
         assert!(result.is_success(), "compile_path should succeed");
         assert_eq!(result.successes.len(), 1);
         assert_eq!(result.successes[0].output, output_path);

@@ -50,6 +50,11 @@ pub fn compute_completions(
         Some(param.param_type == ParamType::Label || param.name == "relative_jump")
     });
 
+    // Check if we're typing the first word of a statement (start of line).
+    let line_start = source[..byte_offset].rfind('\n').map_or(0, |i| i + 1);
+    let line_before_prefix = &source[line_start..(byte_offset - prefix.len())];
+    let is_first_word = line_before_prefix.trim().is_empty();
+
     let mut items: Vec<CompletionItem> = Vec::new();
 
     match param_context {
@@ -85,7 +90,7 @@ pub fn compute_completions(
                 }
             }
         }
-        // Not in parameter context (typing a command name): suggest commands + constants.
+        // Not in parameter context (typing a command name).
         None => {
             if let Some(db) = db {
                 for (name, cmd) in &db.commands {
@@ -111,14 +116,17 @@ pub fn compute_completions(
                 }
             }
 
-            if let Some(constant_names) = constant_names {
-                for name in constant_names.iter() {
-                    if matches_prefix(name, &prefix) {
-                        items.push(CompletionItem {
-                            label: name.clone(),
-                            kind: Some(CompletionItemKind::CONSTANT),
-                            ..Default::default()
-                        });
+            // Only suggest constants when not typing the first word of a line.
+            if !is_first_word {
+                if let Some(constant_names) = constant_names {
+                    for name in constant_names.iter() {
+                        if matches_prefix(name, &prefix) {
+                            items.push(CompletionItem {
+                                label: name.clone(),
+                                kind: Some(CompletionItemKind::CONSTANT),
+                                ..Default::default()
+                            });
+                        }
                     }
                 }
             }

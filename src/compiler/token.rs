@@ -18,6 +18,11 @@ pub enum TokenType {
     Identifier(String), // variable,
     Label(String),      // label definition (ends with :)
     LocalLabel(String), // local label reference (.name without colon)
+    String(String),     // string literal
+
+    // preprocessor
+    Include, // "#include"
+    Define,  // "#define"
 
     // control flow
     True,        // "true"
@@ -135,8 +140,11 @@ impl fmt::Display for TokenType {
             TokenType::Num(n) => write!(f, "number '{}'", n),
             TokenType::Label(l) => write!(f, "label definition '{}'", l),
             TokenType::LocalLabel(l) => write!(f, "local label reference '{}'", l),
-            // if we add string literals for inline messages later
-            // TokenType::StringLit(s) => write!(f, "string \"{}\"", s),
+            TokenType::String(s) => write!(f, "string \"{}\"", s),
+
+            // --- Preprocessor ---
+            TokenType::Include => write!(f, "'#include'"),
+            TokenType::Define => write!(f, "'#define'"),
 
             // --- Symbols ---
             TokenType::Hash => write!(f, "'#'"),
