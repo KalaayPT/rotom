@@ -127,7 +127,7 @@ Use `match` to dispatch based on a variable's value:
 
 ```rotom
 script HandleChoice #1:
-    match VAR_RESULT where
+    match VAR_RESULT with
         case 0:
             Message 1
         case 1, 2:
@@ -157,7 +157,7 @@ script BikeCheck #1:
     endif
 
     // In match statements
-    match ShowYesNoMenu() where
+    match ShowYesNoMenu() with
         case 0:
             Call HandleNo // note: these get optimized into CallIf instructions
         case 1:

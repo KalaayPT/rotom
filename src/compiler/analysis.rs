@@ -365,6 +365,12 @@ impl<'a> Analyzer<'a> {
                 std::collections::HashSet::new();
 
             for header in headers {
+                if header.id == Some(0) {
+                    return Err(analysis_error(
+                        func.span.clone(),
+                        "script slot IDs must start at #1, not #0",
+                    ));
+                }
                 // Only define the script name once (even if it has multiple headers)
                 if !registered_names.contains(&header.name) {
                     registered_names.insert(header.name.clone());
@@ -1625,7 +1631,7 @@ script TestFunc #1:
         let source = r"
 alias 0x800C as VAR_RESULT
 
-script MainFunc #0:
+script MainFunc #1:
     SetVar VAR_RESULT, 5
     if VAR_RESULT == 5 then
         Message 1
@@ -1665,7 +1671,7 @@ action TestMovement
 alias 0x8000 as VAR_X
 alias 0x8001 as VAR_X
 
-script Dummy #0:
+script Dummy #1:
     End
 ";
         let lexer = Lexer::new(source);
@@ -1688,7 +1694,7 @@ script Dummy #0:
         use crate::compiler::parser::Parser;
 
         let source = r"
-script Dummy #0:
+script Dummy #1:
     End
 
 action BadAction

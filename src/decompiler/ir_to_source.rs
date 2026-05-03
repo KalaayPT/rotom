@@ -56,7 +56,8 @@ fn normal_script_to_source(items: &[TopLevelItem], db: &DatabaseV2) -> String {
                 for header in &func.headers {
                     if header.is_public {
                         if let Some(id) = header.id {
-                            let _ = writeln!(output, "script {} #{}:", header.name, id);
+                            // Binary slot IDs are 0-based; source uses 1-based IDs.
+                            let _ = writeln!(output, "script {} #{}:", header.name, id + 1);
                         } else {
                             let _ = writeln!(output, "script {}:", header.name);
                         }

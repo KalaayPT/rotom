@@ -304,7 +304,8 @@ Note: Complex expressions in conditions (e.g., `if x + 1 == 5`) are not yet supp
 ### 5.1 Script Commands
 
 Native hardware commands defined in the game database.
-* Syntax: CommandName Arg1, Arg2, ...
+* Syntax: `CommandName Arg1, Arg2, ...` (assembly-style) or `CommandName(Arg1, Arg2)` (call-style)
+* Both forms are equivalent and can be used interchangeably.
 * Argument Resolution:
     * If Arg is an Integer, it passes raw.
     * If Arg is a Variable Alias, it resolves to the ID (e.g., 0x4000).

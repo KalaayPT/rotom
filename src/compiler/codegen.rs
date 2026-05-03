@@ -51,13 +51,17 @@ impl<'a> Emitter<'a> {
         items: &[TopLevelItem],
         jump_table_end_marker_count: u8,
     ) -> ParseResult<Vec<u8>> {
-        // Collect jump table slots from all functions
-        // Sort by slot ID to match game expectations (jump table entries are indexed by slot ID)
+        // Collect jump table slots from all functions.
+        // Source slot IDs are 1-based; subtract 1 for the binary jump table index.
         self.jump_table_slots = items
             .iter()
             .filter_map(|item| {
                 if let TopLevelItem::Function(f) = item {
-                    Some(f.jump_table_slots().collect::<Vec<_>>())
+                    Some(
+                        f.jump_table_slots()
+                            .map(|(id, name)| (id.saturating_sub(1), name))
+                            .collect::<Vec<_>>(),
+                    )
                 } else {
                     None
                 }
@@ -697,7 +701,7 @@ mod tests {
             TopLevelItem::Function(IrFunction {
                 headers: vec![FunctionHeader {
                     name: "Func0".to_string(),
-                    id: Some(0),
+                    id: Some(1),
                     is_public: true,
                 }],
                 instructions: vec![IrOpcode::Command {
@@ -708,7 +712,7 @@ mod tests {
             TopLevelItem::Function(IrFunction {
                 headers: vec![FunctionHeader {
                     name: "Func1".to_string(),
-                    id: Some(1),
+                    id: Some(2),
                     is_public: true,
                 }],
                 instructions: vec![IrOpcode::Command {
@@ -741,7 +745,7 @@ mod tests {
         let items = vec![TopLevelItem::Function(IrFunction {
             headers: vec![FunctionHeader {
                 name: "TestFunc".to_string(),
-                id: Some(0),
+                id: Some(1),
                 is_public: true,
             }],
             instructions: vec![
@@ -785,7 +789,7 @@ mod tests {
             TopLevelItem::Function(IrFunction {
                 headers: vec![FunctionHeader {
                     name: "TestFunc".to_string(),
-                    id: Some(0),
+                    id: Some(1),
                     is_public: true,
                 }],
                 instructions: vec![
