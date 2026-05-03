@@ -108,9 +108,8 @@ pub fn compute_hover(
             ExpressionKind::Error => "<error>".to_string(),
         };
         let value_int: i32 = value_str.parse().ok()?;
-        let content = format!(
-            "**{alias_name}**\n\nAlias value: `{value_str}` hex: `0x{value_int:x}`"
-        );
+        let content =
+            format!("**{alias_name}**\n\nAlias value: `{value_str}` hex: `0x{value_int:x}`");
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -201,12 +200,21 @@ fn find_alias_in_items(
 
 fn format_command_hover(name: &str, cmd: &Command) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("**{name}**"));
+    lines.push(format!("# {name}"));
+
+    let type_label = match cmd.cmd_type {
+        rotom::database::CommandType::Macro => "(macro)",
+        rotom::database::CommandType::Movement => "(movement)",
+        rotom::database::CommandType::ScriptCmd => "(command)",
+        rotom::database::CommandType::LevelscriptCmd => "(levelscript command)",
+    };
+    lines.push(type_label.to_string());
 
     if let Some(legacy) = &cmd.legacy_name
         && name != legacy
     {
-        lines.push(format!("(legacy name: `{legacy}`)"));
+        lines.push(String::new());
+        lines.push(format!("legacy name: `{legacy}`"));
     }
 
     if let Some(desc) = &cmd.description {
@@ -216,10 +224,20 @@ fn format_command_hover(name: &str, cmd: &Command) -> String {
 
     if !cmd.params.is_empty() {
         lines.push(String::new());
-        lines.push("**Parameters:**".to_string());
+        lines.push("## Parameters:".to_string());
         for p in &cmd.params {
             lines.push(format_param_desc(p));
         }
+    }
+
+    if let Some(expansion) = &cmd.expansion {
+        lines.push(String::new());
+        lines.push("## Expansion:".to_string());
+        lines.push(String::from("```rotom"));
+        for stmt in expansion {
+            lines.push(format!("{stmt}"));
+        }
+        lines.push(String::from("```"));
     }
 
     lines.join("\n")
@@ -247,7 +265,9 @@ pub fn extract_word(source: &str, byte_offset: usize) -> Option<String> {
     // Walk backward to find the start of the current identifier.
     let start = before
         .rfind(|c: char| !rotom::compiler::lexer::is_identifier_char(c))
-        .map_or(0, |i| i + before[i..].chars().next().map_or(1, char::len_utf8));
+        .map_or(0, |i| {
+            i + before[i..].chars().next().map_or(1, char::len_utf8)
+        });
 
     // Walk forward from the cursor to find the end.
     let after = &source[byte_offset.min(source.len())..];
