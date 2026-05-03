@@ -96,7 +96,7 @@ script InteractWithSign #6:
     End
 ```
 
-* `script Name #N:` - Script with jump-table slot N (required)
+* `script Name #N:` - Script with jump-table slot N (required). Slot IDs are 1-based.
 * The colon after the header is required
 
 ### 2.2 Labels (Private Code Blocks)
