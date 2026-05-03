@@ -113,6 +113,10 @@ impl BatchDecompileResult {
     }
 }
 
+/// Compile Rotom source to raw binary bytes.
+///
+/// Convenience wrapper around [`compile`] that discards warnings and returns
+/// only the emitted bytecode.
 pub fn compile_to_bytes(
     source: &str,
     db: &DatabaseV2,
@@ -165,6 +169,10 @@ pub(crate) fn compile_ast(
     })
 }
 
+/// Compile a levelscript source string to binary bytes.
+///
+/// Accepts the legacy `.s` levelscript syntax and emits the raw binary
+/// levelscript format used by the game engine.
 pub fn compile_levelscript_to_bytes(
     source: &str,
     constants: &ConstantDb,
@@ -184,6 +192,7 @@ pub fn compile_levelscript_to_bytes(
     Ok(bytes)
 }
 
+/// Compile a levelscript from its JSON representation to binary bytes.
 pub fn compile_levelscript_json_to_bytes(source: &str) -> Result<Vec<u8>, CompileError> {
     let levelscript = LevelScript::from_json(source).map_err(|e| CompileError::Transpile {
         message: format!("Failed to parse levelscript JSON: {}", e),
@@ -202,6 +211,10 @@ pub fn is_levelscript_path(path: &Path) -> bool {
     (stem.contains("_init_") && !stem.contains("_init_new_game")) || stem.ends_with("_hdr")
 }
 
+/// Disassemble binary script bytes into an intermediate representation.
+///
+/// The returned [`ScriptOutput`] can be fed to [`ir_to_source`] to obtain
+/// human-readable Rotoscript.
 pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<ScriptOutput> {
     disassemble_bytes(db, bytes)
 }
@@ -257,7 +270,9 @@ pub(crate) fn compile_file_internal_with_source(
     } else if is_levelscript && extension == "s" {
         let file_constants = if load_file_constants {
             let mut cloned = constants.clone();
-            cloned.load_script_constants(input).map_err(CompileFileError::IoError)?;
+            cloned
+                .load_script_constants(input)
+                .map_err(CompileFileError::IoError)?;
             Some(cloned)
         } else {
             None
@@ -299,10 +314,12 @@ pub(crate) fn compile_file_internal_with_source(
             // Parse once, use the AST for both constants and compilation.
             let lexer = compiler::Lexer::new(&rotom_source);
             let mut parser = compiler::Parser::new(lexer);
-            let file = parser.parse_script_file().map_err(|e| CompileFileError::CompileError {
-                error: e,
-                source: rotom_source.clone(),
-            })?;
+            let file = parser
+                .parse_script_file()
+                .map_err(|e| CompileFileError::CompileError {
+                    error: e,
+                    source: rotom_source.clone(),
+                })?;
 
             let mut cloned = constants.clone();
             let script_dir = input.parent().unwrap_or_else(|| Path::new("."));
@@ -310,16 +327,20 @@ pub(crate) fn compile_file_internal_with_source(
                 .apply_directives(script_dir, &rotom_source, &file.items)
                 .map_err(CompileFileError::IoError)?;
 
-            let output = compile_ast(&file, db, &cloned, jump_table_end_marker_count)
-                .map_err(|e| CompileFileError::CompileError {
-                    error: e,
-                    source: rotom_source.clone(),
+            let output =
+                compile_ast(&file, db, &cloned, jump_table_end_marker_count).map_err(|e| {
+                    CompileFileError::CompileError {
+                        error: e,
+                        source: rotom_source.clone(),
+                    }
                 })?;
             (output.bytes, output.warnings, rotom_source)
         } else {
             let file_constants = if load_file_constants {
                 let mut cloned = constants.clone();
-                cloned.load_script_constants(input).map_err(CompileFileError::IoError)?;
+                cloned
+                    .load_script_constants(input)
+                    .map_err(CompileFileError::IoError)?;
                 Some(cloned)
             } else {
                 None
@@ -328,14 +349,18 @@ pub(crate) fn compile_file_internal_with_source(
 
             let lexer = compiler::Lexer::new(&rotom_source);
             let mut parser = compiler::Parser::new(lexer);
-            let file = parser.parse_script_file().map_err(|e| CompileFileError::CompileError {
-                error: e,
-                source: rotom_source.clone(),
-            })?;
-            let output = compile_ast(&file, db, constants, jump_table_end_marker_count)
+            let file = parser
+                .parse_script_file()
                 .map_err(|e| CompileFileError::CompileError {
                     error: e,
                     source: rotom_source.clone(),
+                })?;
+            let output =
+                compile_ast(&file, db, constants, jump_table_end_marker_count).map_err(|e| {
+                    CompileFileError::CompileError {
+                        error: e,
+                        source: rotom_source.clone(),
+                    }
                 })?;
             (output.bytes, output.warnings, rotom_source)
         }
@@ -447,6 +472,21 @@ fn detect_compile_output_collisions(
     collisions
 }
 
+/// Compile a file or directory of scripts to binary.
+///
+/// Supports `.rotom`, `.script`, `.s`, and `.json` inputs. When `input` is a
+/// directory, all supported files inside it are compiled in parallel.
+///
+/// # Arguments
+/// * `input` - Path to a single file or a directory of source files
+/// * `output` - Output file path (for single file) or output directory
+/// * `db` - The command database
+/// * `constants` - The constant database
+///
+/// # Errors
+/// Returns an error when the input path does not exist, when the output is
+/// not a directory for directory-mode compilation, or when output path
+/// collisions are detected.
 pub fn compile_path(
     input: &Path,
     output: &Path,
@@ -577,6 +617,7 @@ fn decompile_file_internal(
     output_file: Option<&Path>,
     output_dir: Option<&Path>,
     db: &DatabaseV2,
+    constants: Option<&ConstantDb>,
 ) -> Result<DecompileFileResult, DecompileFailure> {
     let bytes = std::fs::read(input).map_err(|e| DecompileFailure {
         path: input.to_path_buf(),
@@ -606,7 +647,7 @@ fn decompile_file_internal(
 
     let output_path = resolve_decompile_output_path(input, output_file, output_dir, is_levelscript);
 
-    let source_text = ir_to_source(&script_output, db);
+    let source_text = ir_to_source(&script_output, db, constants);
     let size = source_text.len();
 
     if let Some(parent) = output_path.parent() {
@@ -646,22 +687,30 @@ pub(crate) fn decompile_file_for_batch(
     output_file: Option<&Path>,
     output_dir: Option<&Path>,
     db: &DatabaseV2,
+    constants: Option<&ConstantDb>,
 ) -> Result<DecompileFileResult, DecompileFailure> {
-    decompile_file_internal(input, output_file, output_dir, db)
+    decompile_file_internal(input, output_file, output_dir, db, constants)
 }
 
-pub fn decompile_file(
-    input: &Path,
-    output_dir: Option<&Path>,
-    db: &DatabaseV2,
-) -> DecompileResult<DecompileFileResult> {
-    decompile_file_internal(input, None, output_dir, db).map_err(|f| f.error)
-}
-
+/// Decompile a file or directory of binary scripts to Rotoscript source.
+///
+/// When `input` is a directory, all `.bin` files (and extensionless binaries)
+/// inside it are decompiled in parallel.
+///
+/// # Arguments
+/// * `input` - Path to a single `.bin` file or a directory
+/// * `output` - Output file path (for single file) or output directory
+/// * `db` - The command database
+/// * `constants` - Optional constant database for symbolic argument resolution
+///
+/// # Errors
+/// Returns an error when the input path does not exist or when no `.bin` files
+/// are found in directory mode.
 pub fn decompile_path(
     input: &Path,
     output: &Path,
     db: &DatabaseV2,
+    constants: Option<&ConstantDb>,
 ) -> Result<BatchDecompileResult, DecompileError> {
     if input.is_file() {
         let (output_file, output_dir) = if output.is_dir() {
@@ -670,7 +719,7 @@ pub fn decompile_path(
             (Some(output), None)
         };
 
-        match decompile_file_internal(input, output_file, output_dir, db) {
+        match decompile_file_internal(input, output_file, output_dir, db, constants) {
             Ok(result) => Ok(BatchDecompileResult {
                 successes: vec![result],
                 failures: vec![],
@@ -722,7 +771,9 @@ pub fn decompile_path(
 
         let results: Vec<Result<DecompileFileResult, DecompileFailure>> = files
             .par_iter()
-            .map(|input_file| decompile_file_internal(input_file, None, Some(output), db))
+            .map(|input_file| {
+                decompile_file_internal(input_file, None, Some(output), db, constants)
+            })
             .collect();
 
         let mut successes = Vec::new();
@@ -947,7 +998,7 @@ mod tests {
         let output_path = temp_dir.join("custom_out.rotom");
         fs::write(&input_path, bytes).expect("failed to write input binary");
 
-        let result = decompile_path(&input_path, &output_path, db)
+        let result = decompile_path(&input_path, &output_path, db, None)
             .expect("decompile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 
@@ -970,7 +1021,7 @@ mod tests {
 
         fs::write(input_dir.join("0000"), bytes).expect("failed to write extensionless binary");
 
-        let result = decompile_path(&input_dir, &output_dir, db)
+        let result = decompile_path(&input_dir, &output_dir, db, None)
             .expect("decompile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 

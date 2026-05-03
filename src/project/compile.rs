@@ -385,23 +385,15 @@ fn dependency_hashes_for_script(
 /// generated sources in compile state so a follow-up project compile can skip
 /// unchanged outputs.
 pub fn decompile_project(root: &Path, config: &RotomConfig) -> Result<BatchDecompileResult> {
-    let db_path = config
-        .database_file(root)
-        .ok_or(ProjectError::MissingDefaultDatabase)?;
-    let db_hash = fs::read(&db_path)
-        .map(|bytes| xxh3_64(&bytes))
-        .map_err(|source| ProjectError::Io {
-            action: "Failed to hash database file",
-            path: db_path.clone(),
-            source,
-        })?;
-    let db = DatabaseV2::load(&db_path).map_err(ProjectError::from)?;
+    let (db, constants, db_hash, _) = load_project_database_and_constants(root, config)?;
 
     let work = collect_project_decompile_work(root, config)?;
 
     let results: Vec<std::result::Result<crate::DecompileFileResult, DecompileFailure>> = work
         .par_iter()
-        .map(|(input, output_dir)| decompile_file_for_batch(input, None, Some(output_dir), &db))
+        .map(|(input, output_dir)| {
+            decompile_file_for_batch(input, None, Some(output_dir), &db, Some(&constants))
+        })
         .collect();
 
     let mut successes = Vec::new();

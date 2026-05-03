@@ -1,19 +1,38 @@
 use std::fmt::Write;
 
 use crate::compiler::ir::{Arg, IrOpcode, TopLevelItem};
-use crate::database::{ComparisonOperator, DatabaseV2};
+use crate::database::{ComparisonOperator, ConstantDb, DatabaseV2};
 
 use super::disassembler::ScriptOutput;
 use super::levelscript::LevelScript;
 
-pub fn ir_to_source(output: &ScriptOutput, db: &DatabaseV2) -> String {
+pub fn ir_to_source(
+    output: &ScriptOutput,
+    db: &DatabaseV2,
+    constants: Option<&ConstantDb>,
+) -> String {
     match output {
-        ScriptOutput::Normal { items, .. } => normal_script_to_source(items, db),
+        ScriptOutput::Normal { items, .. } => normal_script_to_source(items, db, constants),
         ScriptOutput::Levelscript(ls) => levelscript_to_source(ls),
     }
 }
 
-fn format_arg(arg: &Arg, param_name: Option<&str>) -> String {
+/// Map a parameter name from the command database to a Uxie constant family.
+/// Not perfect given how variable the naming used by the decomps is.
+fn param_semantic_family(param_name: &str) -> Option<uxie::ConstantFamily> {
+    match param_name.to_ascii_lowercase().as_str() {
+        "item" | "itemid" | "item_id" => Some(uxie::ConstantFamily::Item),
+        "species" | "pokemon" | "pokémon" | "pokémon_id" => Some(uxie::ConstantFamily::Species),
+        "move" | "moveid" | "move_id" => Some(uxie::ConstantFamily::Move),
+        "sound" | "seq" | "seqid" | "seq_id" | "bgm" | "sfx" => Some(uxie::ConstantFamily::Sound),
+        "trainer" | "trainerid" | "trainer_id" => Some(uxie::ConstantFamily::Trainer),
+        "trainerclass" | "trainer_class" => Some(uxie::ConstantFamily::TrainerClass),
+        "location" | "mapsec" => Some(uxie::ConstantFamily::Location),
+        _ => None,
+    }
+}
+
+fn format_arg(arg: &Arg, param_name: Option<&str>, constants: Option<&ConstantDb>) -> String {
     match arg {
         Arg::Value(v) => {
             if param_name == Some("condition")
@@ -22,28 +41,46 @@ fn format_arg(arg: &Arg, param_name: Option<&str>) -> String {
                 return cond.as_str().to_string();
             }
             if *v >= 0x4000 {
-                format!("0x{:X}", v)
-            } else {
-                v.to_string()
+                return format!("0x{:X}", v);
             }
+            if let Some(name) = param_name {
+                if let Some(family) = param_semantic_family(name) {
+                    if let Some(constants) = constants
+                        && let Some(resolved) =
+                            constants.resolve_value_to_name(i64::from(*v), family)
+                    {
+                        return resolved;
+                    }
+                }
+            }
+            v.to_string()
         }
         Arg::Pointer(s) => s.clone(),
     }
 }
 
-fn format_command_args(name: &str, args: &[Arg], db: &DatabaseV2) -> Vec<String> {
+fn format_command_args(
+    name: &str,
+    args: &[Arg],
+    db: &DatabaseV2,
+    constants: Option<&ConstantDb>,
+) -> Vec<String> {
     let params = db.get_command(name).ok().map(|cmd| &cmd.params);
 
     args.iter()
         .enumerate()
         .map(|(i, arg)| {
             let param_name = params.and_then(|p| p.get(i)).map(|p| p.name.as_str());
-            format_arg(arg, param_name)
+            format_arg(arg, param_name, constants)
         })
         .collect()
 }
 
-fn normal_script_to_source(items: &[TopLevelItem], db: &DatabaseV2) -> String {
+fn normal_script_to_source(
+    items: &[TopLevelItem],
+    db: &DatabaseV2,
+    constants: Option<&ConstantDb>,
+) -> String {
     let mut output = String::new();
 
     for (i, item) in items.iter().enumerate() {
@@ -56,7 +93,6 @@ fn normal_script_to_source(items: &[TopLevelItem], db: &DatabaseV2) -> String {
                 for header in &func.headers {
                     if header.is_public {
                         if let Some(id) = header.id {
-                            // Binary slot IDs are 0-based; source uses 1-based IDs.
                             let _ = writeln!(output, "script {} #{}:", header.name, id + 1);
                         } else {
                             let _ = writeln!(output, "script {}:", header.name);
@@ -75,7 +111,7 @@ fn normal_script_to_source(items: &[TopLevelItem], db: &DatabaseV2) -> String {
                             let _ = write!(output, "    {}", name);
                             if !args.is_empty() {
                                 output.push(' ');
-                                let args_str = format_command_args(name, args, db);
+                                let args_str = format_command_args(name, args, db, constants);
                                 output.push_str(&args_str.join(", "));
                             }
                             output.push('\n');
@@ -156,7 +192,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, db);
+        let source = ir_to_source(&output, db, None);
 
         assert!(
             source.contains("GoToIf EQUAL, some_label"),
@@ -208,7 +244,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, db);
+        let source = ir_to_source(&output, db, None);
 
         assert!(source.contains("GoToIf LESS, label0"), "Missing LESS");
         assert!(source.contains("GoToIf EQUAL, label1"), "Missing EQUAL");
@@ -248,7 +284,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, db);
+        let source = ir_to_source(&output, db, None);
 
         assert!(
             source.contains("CallIf EQUAL, some_func"),

@@ -1169,6 +1169,18 @@ impl ConstantDb {
             .and_then(|val| i32::try_from(val).ok())
     }
 
+    /// Resolve a numeric value back to a constant name belonging to a specific
+    /// semantic family (e.g. `ITEM_`, `SPECIES_`, `SEQ_`).
+    pub fn resolve_value_to_name(
+        &self,
+        value: i64,
+        family: uxie::ConstantFamily,
+    ) -> Option<String> {
+        self.uxie_symbols
+            .as_ref()
+            .and_then(|s| s.resolve_name_in_family(value, family))
+    }
+
     pub fn len(&self) -> usize {
         let uxie_count = self
             .uxie_symbols

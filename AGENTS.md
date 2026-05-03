@@ -103,6 +103,19 @@ Ask yourself: "Is this logic already in the dependency's domain?" If yes, add th
 - If the approach requires re-reading files, building synthetic content, or duplicating existing logic, it's probably wrong.
 - State the approach before coding. If the user says "why aren't you just using X?", you've missed something.
 
+## 10. Document What You Touch
+
+**If a function lacks a doc comment and you modify it, add one.**
+
+- Keep docs concise and in simple, easy to understand language.
+- Surface-level APIs (public entry points, CLI plumbing, LSP handlers) deserve fuller docs:
+  - One-line summary
+  - Inputs / outputs
+  - Errors or options where non-obvious
+- Deep internals can be shorter — a single clear sentence is enough.
+- Don't document the obvious (`/// Returns true` on `is_success`).
+- Match Rust doc comment conventions (`///`).
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

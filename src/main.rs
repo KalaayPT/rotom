@@ -374,6 +374,12 @@ fn decompile(
         db.meta.version
     );
 
+    let mut constants = rotom::ConstantDb::new();
+    constants.load_from_db(&db);
+    if let Some(db_dir) = db_path.parent() {
+        let _ = constants.load_directory(db_dir);
+    }
+
     let output_path = match output {
         Some(path) => path.to_path_buf(),
         None => {
@@ -390,7 +396,7 @@ fn decompile(
 
     println!("\nDecompiling: {}", input.display());
 
-    let result = decompile_path(input, &output_path, &db)?;
+    let result = decompile_path(input, &output_path, &db, Some(&constants))?;
     report_decompile_result(&result);
 
     if result.is_success() {
