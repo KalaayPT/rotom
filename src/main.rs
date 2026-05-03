@@ -69,6 +69,10 @@ enum Commands {
         /// Output .rotom file (defaults to input with .rotom extension)
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Show per-file decompilation output
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     Init {
@@ -117,7 +121,8 @@ fn main() {
             database,
             input,
             output,
-        } => handle_decompile_command(database.as_deref(), input.as_deref(), output.as_deref()),
+            verbose,
+        } => handle_decompile_command(database.as_deref(), input.as_deref(), output.as_deref(), *verbose),
         Commands::Init {
             root,
             non_interactive,
@@ -174,13 +179,15 @@ fn handle_decompile_command(
     database: Option<&std::path::Path>,
     input: Option<&std::path::Path>,
     output: Option<&std::path::Path>,
+    verbose: bool,
 ) {
+    let start = std::time::Instant::now();
     let result = if database.is_none() && input.is_none() {
         if output.is_some() {
             Err(ProjectError::UnsupportedProjectDecompileArgs)
         } else {
             decompile_project_mode().and_then(|result| {
-                report_decompile_result(&result);
+                report_decompile_result(&result, verbose, Some(start.elapsed()));
                 if result.is_success() {
                     Ok(())
                 } else {
@@ -193,7 +200,8 @@ fn handle_decompile_command(
         let input = input.ok_or(ProjectError::MissingDecompileArgs);
         match (database, input) {
             (Ok(database), Ok(input)) => {
-                decompile(database, input, output).map_err(ProjectError::from)
+                decompile(database, input, output, verbose)
+                    .map_err(ProjectError::from)
             }
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
@@ -361,6 +369,7 @@ fn decompile(
     db_path: &std::path::Path,
     input: &std::path::Path,
     output: Option<&std::path::Path>,
+    verbose: bool,
 ) -> Result<(), rotom::decompiler::decomp_error::DecompileError> {
     println!("Loading database from: {}", db_path.display());
     let db = DatabaseV2::load(db_path).map_err(|e| {
@@ -395,9 +404,36 @@ fn decompile(
     };
 
     println!("\nDecompiling: {}", input.display());
+    let start = std::time::Instant::now();
 
-    let result = decompile_path(input, &output_path, &db, Some(&constants))?;
-    report_decompile_result(&result);
+    let progress = if input.is_dir() {
+        let files = std::fs::read_dir(input)
+            .map_err(|e| rotom::decompiler::decomp_error::DecompileError::Io {
+                message: format!("Failed to read input directory: {}", e),
+            })?
+            .flatten()
+            .filter(|entry| {
+                let path = entry.path();
+                path.is_file()
+                    && path.extension().is_none_or(|ext| {
+                        ext.to_str().is_some_and(|s| s.eq_ignore_ascii_case("bin"))
+                    })
+            })
+            .count();
+        if files > 1 {
+            let p = rotom::CompileProgress::new(files);
+            p.spawn_printer("Decompiling");
+            Some(p)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let result =
+        decompile_path(input, &output_path, &db, Some(&constants), progress.as_ref())?;
+    report_decompile_result(&result, verbose, Some(start.elapsed()));
 
     if result.is_success() {
         Ok(())
@@ -474,14 +510,20 @@ fn report_compile_result(
     Ok(())
 }
 
-fn report_decompile_result(result: &rotom::BatchDecompileResult) {
-    for success in &result.successes {
-        println!(
-            "  ✓ {} -> {} ({} bytes)",
-            success.input.display(),
-            success.output.display(),
-            success.size
-        );
+fn report_decompile_result(
+    result: &rotom::BatchDecompileResult,
+    verbose: bool,
+    elapsed: Option<std::time::Duration>,
+) {
+    if verbose {
+        for success in &result.successes {
+            println!(
+                "  ✓ {} -> {} ({} bytes)",
+                success.input.display(),
+                success.output.display(),
+                success.size
+            );
+        }
     }
 
     for failure in &result.failures {
@@ -493,9 +535,13 @@ fn report_decompile_result(result: &rotom::BatchDecompileResult) {
         eprintln!("  ✗ {}: {}", filename, failure.error);
     }
 
+    let time_str = elapsed
+        .map(|d| format!(" in {}ms", d.as_millis()))
+        .unwrap_or_default();
     println!(
-        "\nDecompilation complete: {}/{} succeeded",
+        "Done: {}/{} files decompiled{}",
         result.successes.len(),
-        result.total()
+        result.total(),
+        time_str
     );
 }

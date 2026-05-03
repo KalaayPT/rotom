@@ -389,10 +389,23 @@ pub fn decompile_project(root: &Path, config: &RotomConfig) -> Result<BatchDecom
 
     let work = collect_project_decompile_work(root, config)?;
 
+    let total_files = work.len();
+    let progress = indicatif::ProgressBar::new(total_files as u64);
+    progress.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+    progress.set_message("");
+
     let results: Vec<std::result::Result<crate::DecompileFileResult, DecompileFailure>> = work
         .par_iter()
         .map(|(input, output_dir)| {
-            decompile_file_for_batch(input, None, Some(output_dir), &db, Some(&constants))
+            let result =
+                decompile_file_for_batch(input, None, Some(output_dir), &db, Some(&constants));
+            progress.inc(1);
+            result
         })
         .collect();
 
@@ -404,6 +417,8 @@ pub fn decompile_project(root: &Path, config: &RotomConfig) -> Result<BatchDecom
             Err(failure) => failures.push(failure),
         }
     }
+
+    progress.finish_with_message("Done");
 
     update_decompile_state(root, config, db_hash, &successes)?;
 

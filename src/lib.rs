@@ -36,6 +36,7 @@ pub use decompiler::{
     DecompileError, DecompileResult, Disassembler, LevelScript, LevelScriptHeaderEntry,
     LevelScriptVarConditionEntry, ScriptOutput, ScriptType, disassemble_bytes, ir_to_source,
 };
+pub use progress::CompileProgress;
 
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
@@ -702,6 +703,7 @@ pub(crate) fn decompile_file_for_batch(
 /// * `output` - Output file path (for single file) or output directory
 /// * `db` - The command database
 /// * `constants` - Optional constant database for symbolic argument resolution
+/// * `progress` - Optional progress tracker for batch decompilation
 ///
 /// # Errors
 /// Returns an error when the input path does not exist or when no `.bin` files
@@ -711,6 +713,7 @@ pub fn decompile_path(
     output: &Path,
     db: &DatabaseV2,
     constants: Option<&ConstantDb>,
+    progress: Option<&crate::progress::CompileProgress>,
 ) -> Result<BatchDecompileResult, DecompileError> {
     if input.is_file() {
         let (output_file, output_dir) = if output.is_dir() {
@@ -772,7 +775,20 @@ pub fn decompile_path(
         let results: Vec<Result<DecompileFileResult, DecompileFailure>> = files
             .par_iter()
             .map(|input_file| {
-                decompile_file_internal(input_file, None, Some(output), db, constants)
+                let result = decompile_file_internal(input_file, None, Some(output), db, constants);
+                match &result {
+                    Ok(_) => {
+                        if let Some(p) = progress {
+                            p.inc_completed();
+                        }
+                    }
+                    Err(_) => {
+                        if let Some(p) = progress {
+                            p.inc_failed();
+                        }
+                    }
+                }
+                result
             })
             .collect();
 
@@ -998,7 +1014,7 @@ mod tests {
         let output_path = temp_dir.join("custom_out.rotom");
         fs::write(&input_path, bytes).expect("failed to write input binary");
 
-        let result = decompile_path(&input_path, &output_path, db, None)
+        let result = decompile_path(&input_path, &output_path, db, None, None)
             .expect("decompile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 
@@ -1021,7 +1037,7 @@ mod tests {
 
         fs::write(input_dir.join("0000"), bytes).expect("failed to write extensionless binary");
 
-        let result = decompile_path(&input_dir, &output_dir, db, None)
+        let result = decompile_path(&input_dir, &output_dir, db, None, None)
             .expect("decompile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 
