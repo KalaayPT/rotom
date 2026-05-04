@@ -39,8 +39,7 @@ pub fn compile_batch(
                 constants,
                 load_file_constants,
                 item.quirks.clone(),
-            )
-            .map_err(|e| e.into_failure(item.input.clone()));
+            );
             match &result {
                 Ok(_) => {
                     if let Some(p) = progress {

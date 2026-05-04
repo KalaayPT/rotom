@@ -66,6 +66,34 @@ pub struct CompileFailure {
     pub source: String,
 }
 
+impl CompileFailure {
+    fn io_error(input: &Path, message: impl Into<String>) -> Self {
+        CompileFailure {
+            path: input.to_path_buf(),
+            error: CompileError::Io {
+                message: message.into(),
+            },
+            source: String::new(),
+        }
+    }
+
+    fn with_source(input: &Path, source: &str, error: CompileError) -> Self {
+        CompileFailure {
+            path: input.to_path_buf(),
+            error,
+            source: source.to_string(),
+        }
+    }
+
+    fn with_path(input: &Path, error: CompileError) -> Self {
+        CompileFailure {
+            path: input.to_path_buf(),
+            error,
+            source: String::new(),
+        }
+    }
+}
+
 /// Result of compiling a path (file or directory)
 #[derive(Debug, Serialize)]
 pub struct BatchCompileResult {
@@ -217,30 +245,6 @@ pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<Scrip
     disassemble_bytes(db, bytes)
 }
 
-/// Errors from compiling a single file — either an I/O error or a compile error with source context.
-pub(crate) enum CompileFileError {
-    IoError(CompileError),
-    CompileError { error: CompileError, source: String },
-}
-
-impl CompileFileError {
-    /// Converts to a [`CompileFailure`] by attaching a file path.
-    fn into_failure(self, path: PathBuf) -> CompileFailure {
-        match self {
-            CompileFileError::IoError(error) => CompileFailure {
-                path,
-                error,
-                source: String::new(),
-            },
-            CompileFileError::CompileError { error, source } => CompileFailure {
-                path,
-                error,
-                source,
-            },
-        }
-    }
-}
-
 /// Reads a file from disk and compiles it, handling translation and preprocessor directives.
 ///
 /// Supports `.rotom`, `.script`, `.s`, and `.json` inputs.
@@ -251,11 +255,12 @@ pub(crate) fn compile_file_internal(
     constants: &ConstantDb,
     load_file_constants: bool,
     binary_quirks: BinaryQuirk,
-) -> Result<CompiledFile, CompileFileError> {
+) -> Result<CompiledFile, CompileFailure> {
     let source = std::fs::read_to_string(input).map_err(|e| {
-        CompileFileError::IoError(CompileError::Io {
-            message: format!("Failed to read input file '{}': {}", input.display(), e),
-        })
+        CompileFailure::io_error(
+            input,
+            format!("Failed to read input file '{}': {}", input.display(), e),
+        )
     })?;
     let extension = input
         .extension()
@@ -268,12 +273,8 @@ pub(crate) fn compile_file_internal(
 
     let (bytes, warnings, warning_source) = if extension == "json" {
         (
-            compile_levelscript_json_to_bytes(&source, binary_quirks).map_err(|e| {
-                CompileFileError::CompileError {
-                    error: e,
-                    source: source.to_string(),
-                }
-            })?,
+            compile_levelscript_json_to_bytes(&source, binary_quirks)
+                .map_err(|e| CompileFailure::with_source(input, &source, e))?,
             Vec::new(),
             source.to_string(),
         )
@@ -282,19 +283,15 @@ pub(crate) fn compile_file_internal(
             let mut cloned = constants.clone();
             cloned
                 .load_script_constants(input)
-                .map_err(CompileFileError::IoError)?;
+                .map_err(|e| CompileFailure::with_path(input, e))?;
             Some(cloned)
         } else {
             None
         };
         let constants = file_constants.as_ref().unwrap_or(constants);
         (
-            compile_levelscript_assembly_to_bytes(&source, constants).map_err(|e| {
-                CompileFileError::CompileError {
-                    error: e,
-                    source: source.to_string(),
-                }
-            })?,
+            compile_levelscript_assembly_to_bytes(&source, constants)
+                .map_err(|e| CompileFailure::with_source(input, &source, e))?,
             Vec::new(),
             source.to_string(),
         )
@@ -307,64 +304,54 @@ pub(crate) fn compile_file_internal(
             ),
             "s" => {
                 let result = transpiler::transpile_decomp(&source, Some(db)).map_err(|e| {
-                    CompileFileError::CompileError {
-                        error: CompileError::Transpile {
+                    CompileFailure::with_source(
+                        input,
+                        &source,
+                        CompileError::Transpile {
                             message: format!("Decomp transpile error at line {}: {}", e.line, e),
                         },
-                        source: source.to_string(),
-                    }
+                    )
                 })?;
                 (result.source, result.binary_quirks)
             }
             _ => {
-                return Err(CompileFileError::IoError(CompileError::Io {
-                    message: format!("Unsupported file extension: .{}", extension),
-                }));
+                return Err(CompileFailure::io_error(
+                    input,
+                    format!("Unsupported file extension: .{}", extension),
+                ));
             }
         };
 
         if extension == "rotom" && load_file_constants {
-            // Parse once, use the AST for both constants and compilation.
             let lexer = compiler::Lexer::new(&rotom_source);
             let mut parser = compiler::Parser::new(lexer);
             let file = parser
                 .parse_script_file()
-                .map_err(|e| CompileFileError::CompileError {
-                    error: e,
-                    source: rotom_source.clone(),
-                })?;
+                .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?;
 
             let mut cloned = constants.clone();
             let script_dir = input.parent().unwrap_or_else(|| Path::new("."));
             cloned
                 .apply_directives(script_dir, &rotom_source, &file.items)
-                .map_err(CompileFileError::IoError)?;
+                .map_err(|e| CompileFailure::with_path(input, e))?;
 
-            let output = emit_script_file(&file, db, &cloned, binary_quirks).map_err(|e| {
-                CompileFileError::CompileError {
-                    error: e,
-                    source: rotom_source.clone(),
-                }
-            })?;
+            let output = emit_script_file(&file, db, &cloned, binary_quirks)
+                .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?;
             (output.bytes, output.warnings, rotom_source)
         } else {
             let file_constants = if load_file_constants {
                 let mut cloned = constants.clone();
                 cloned
                     .load_script_constants(input)
-                    .map_err(CompileFileError::IoError)?;
+                    .map_err(|e| CompileFailure::with_path(input, e))?;
                 Some(cloned)
             } else {
                 None
             };
             let constants = file_constants.as_ref().unwrap_or(constants);
 
-            let output = compile(&rotom_source, db, constants, binary_quirks).map_err(|e| {
-                CompileFileError::CompileError {
-                    error: e,
-                    source: rotom_source.clone(),
-                }
-            })?;
+            let output = compile(&rotom_source, db, constants, binary_quirks)
+                .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?;
             (output.bytes, output.warnings, rotom_source)
         }
     };
@@ -372,20 +359,22 @@ pub(crate) fn compile_file_internal(
 
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
-            CompileFileError::IoError(CompileError::Io {
-                message: format!(
+            CompileFailure::io_error(
+                input,
+                format!(
                     "Failed to create output directory '{}': {}",
                     parent.display(),
                     e
                 ),
-            })
+            )
         })?;
     }
 
     std::fs::write(output, &bytes).map_err(|e| {
-        CompileFileError::IoError(CompileError::Io {
-            message: format!("Failed to write output file '{}': {}", output.display(), e),
-        })
+        CompileFailure::io_error(
+            input,
+            format!("Failed to write output file '{}': {}", output.display(), e),
+        )
     })?;
 
     Ok(CompiledFile {
@@ -494,7 +483,7 @@ pub fn compile_path(
             },
             Err(e) => BatchCompileResult {
                 successes: vec![],
-                failures: vec![e.into_failure(input.to_path_buf())],
+                failures: vec![e],
             },
         })
     } else if input.is_dir() {
@@ -661,16 +650,6 @@ fn decompile_file_internal(
         size,
         quirks,
     })
-}
-
-pub(crate) fn decompile_file_for_batch(
-    input: &Path,
-    output_file: Option<&Path>,
-    output_dir: Option<&Path>,
-    db: &DatabaseV2,
-    constants: Option<&ConstantDb>,
-) -> Result<DecompileFileResult, DecompileFailure> {
-    decompile_file_internal(input, output_file, output_dir, db, constants)
 }
 
 /// Decompile a file or directory of binary scripts to Rotoscript source.

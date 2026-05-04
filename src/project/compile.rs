@@ -1,6 +1,6 @@
 use crate::{
     BatchCompileResult, BatchDecompileResult, CompileError, CompileFailure, CompiledFile,
-    ConstantDb, DatabaseV2, DecompileFailure, decompile_file_for_batch,
+    ConstantDb, DatabaseV2, DecompileFailure, decompile_file_internal,
 };
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
@@ -240,8 +240,8 @@ pub fn compile_project(
                 }),
                 Err(e) => Ok(WorkerResult::Failure {
                     relative_path,
-                    failure: e.into_failure(input.clone()),
-                })
+                    failure: e,
+                }),
             }
         })
         .collect::<Result<Vec<_>>>()?;
@@ -408,7 +408,7 @@ pub fn decompile_project(root: &Path, config: &RotomConfig) -> Result<BatchDecom
         .par_iter()
         .map(|(input, output_dir)| {
             let result =
-                decompile_file_for_batch(input, None, Some(output_dir), &db, Some(&constants));
+                decompile_file_internal(input, None, Some(output_dir), &db, Some(&constants));
             progress.inc(1);
             result
         })
