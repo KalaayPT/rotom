@@ -133,15 +133,11 @@ pub fn compile(
     let lexer = Lexer::new(source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
-    compile_ast(&file, db, constants, binary_quirks)
+    emit_script_file(&file, db, constants, binary_quirks)
 }
 
-/// Compile an already-parsed AST to bytes.
-///
-/// Entry point used when the AST is already available (e.g. after extracting
-/// `#include` / `#define`) or when the caller needs to control
-/// `binary_quirks` for round-trip matching.
-pub fn compile_ast(
+/// Runs semantic analysis, lowers to IR, and emits binary bytes for a parsed script.
+fn emit_script_file(
     file: &compiler::ast::ScriptFile,
     db: &DatabaseV2,
     constants: &ConstantDb,
@@ -221,11 +217,33 @@ pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<Scrip
     disassemble_bytes(db, bytes)
 }
 
+/// Errors from compiling a single file — either an I/O error or a compile error with source context.
 pub(crate) enum CompileFileError {
     IoError(CompileError),
     CompileError { error: CompileError, source: String },
 }
 
+impl CompileFileError {
+    /// Converts to a [`CompileFailure`] by attaching a file path.
+    fn into_failure(self, path: PathBuf) -> CompileFailure {
+        match self {
+            CompileFileError::IoError(error) => CompileFailure {
+                path,
+                error,
+                source: String::new(),
+            },
+            CompileFileError::CompileError { error, source } => CompileFailure {
+                path,
+                error,
+                source,
+            },
+        }
+    }
+}
+
+/// Reads a file from disk and compiles it, handling translation and preprocessor directives.
+///
+/// Supports `.rotom`, `.script`, `.s`, and `.json` inputs.
 pub(crate) fn compile_file_internal(
     input: &Path,
     output: &Path,
@@ -322,7 +340,7 @@ pub(crate) fn compile_file_internal(
                 .apply_directives(script_dir, &rotom_source, &file.items)
                 .map_err(CompileFileError::IoError)?;
 
-            let output = compile_ast(&file, db, &cloned, binary_quirks).map_err(|e| {
+            let output = emit_script_file(&file, db, &cloned, binary_quirks).map_err(|e| {
                 CompileFileError::CompileError {
                     error: e,
                     source: rotom_source.clone(),
@@ -341,15 +359,7 @@ pub(crate) fn compile_file_internal(
             };
             let constants = file_constants.as_ref().unwrap_or(constants);
 
-            let lexer = compiler::Lexer::new(&rotom_source);
-            let mut parser = compiler::Parser::new(lexer);
-            let file = parser
-                .parse_script_file()
-                .map_err(|e| CompileFileError::CompileError {
-                    error: e,
-                    source: rotom_source.clone(),
-                })?;
-            let output = compile_ast(&file, db, constants, binary_quirks).map_err(|e| {
+            let output = compile(&rotom_source, db, constants, binary_quirks).map_err(|e| {
                 CompileFileError::CompileError {
                     error: e,
                     source: rotom_source.clone(),
@@ -469,35 +479,24 @@ pub fn compile_path(
             output.to_path_buf()
         };
 
-        match compile_file_internal(
+        let result = compile_file_internal(
             input,
             &output_path,
             db,
             constants,
             true,
             BinaryQuirk::default(),
-        ) {
-            Ok(success) => Ok(BatchCompileResult {
+        );
+        Ok(match result {
+            Ok(success) => BatchCompileResult {
                 successes: vec![success],
                 failures: vec![],
-            }),
-            Err(CompileFileError::IoError(e)) => Ok(BatchCompileResult {
+            },
+            Err(e) => BatchCompileResult {
                 successes: vec![],
-                failures: vec![CompileFailure {
-                    path: input.to_path_buf(),
-                    error: e,
-                    source: String::new(),
-                }],
-            }),
-            Err(CompileFileError::CompileError { error, source }) => Ok(BatchCompileResult {
-                successes: vec![],
-                failures: vec![CompileFailure {
-                    path: input.to_path_buf(),
-                    error,
-                    source,
-                }],
-            }),
-        }
+                failures: vec![e.into_failure(input.to_path_buf())],
+            },
+        })
     } else if input.is_dir() {
         if output.exists() && !output.is_dir() {
             return Err(CompileError::Io {

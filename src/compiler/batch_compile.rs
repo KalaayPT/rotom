@@ -40,18 +40,7 @@ pub fn compile_batch(
                 load_file_constants,
                 item.quirks.clone(),
             )
-            .map_err(|e| match e {
-                crate::CompileFileError::IoError(error) => CompileFailure {
-                    path: item.input.clone(),
-                    error,
-                    source: String::new(),
-                },
-                crate::CompileFileError::CompileError { error, source } => CompileFailure {
-                    path: item.input.clone(),
-                    error,
-                    source,
-                },
-            });
+            .map_err(|e| e.into_failure(item.input.clone()));
             match &result {
                 Ok(_) => {
                     if let Some(p) = progress {

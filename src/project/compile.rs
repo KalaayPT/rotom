@@ -238,24 +238,10 @@ pub fn compile_project(
                     dependency_hashes,
                     result,
                 }),
-                Err(crate::CompileFileError::IoError(error)) => Ok(WorkerResult::Failure {
+                Err(e) => Ok(WorkerResult::Failure {
                     relative_path,
-                    failure: CompileFailure {
-                        path: input.clone(),
-                        error,
-                        source: String::new(),
-                    },
-                }),
-                Err(crate::CompileFileError::CompileError { error, source }) => {
-                    Ok(WorkerResult::Failure {
-                        relative_path,
-                        failure: CompileFailure {
-                            path: input.clone(),
-                            error,
-                            source,
-                        },
-                    })
-                }
+                    failure: e.into_failure(input.clone()),
+                })
             }
         })
         .collect::<Result<Vec<_>>>()?;
