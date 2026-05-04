@@ -33,6 +33,7 @@
 
 use std::fmt::Write;
 
+use crate::BinaryQuirk;
 use crate::autovar::is_autovar_param;
 use crate::compiler::{Lexer, Parser};
 use crate::database::CommandType;
@@ -41,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone)]
 pub struct TranspileResult {
     pub source: String,
-    pub jump_table_end_marker_count: u8,
+    pub binary_quirks: BinaryQuirk,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +192,14 @@ fn render_transpile_body(
 
     Ok(TranspileResult {
         source: output,
-        jump_table_end_marker_count: state.jump_table_end_marker_count,
+        binary_quirks: BinaryQuirk {
+            jump_table_end_marker_count: if state.jump_table_end_marker_count == 1 {
+                None
+            } else {
+                Some(state.jump_table_end_marker_count)
+            },
+            ..Default::default()
+        },
     })
 }
 

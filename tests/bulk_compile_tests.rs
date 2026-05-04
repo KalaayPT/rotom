@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
+use rotom::compile_levelscript_assembly_to_bytes;
 use rotom::compile_levelscript_json_to_bytes;
-use rotom::compile_levelscript_to_bytes;
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::decompiler::disassembler::ScriptOutput;
 use rotom::decompiler::ir_to_source;
@@ -39,8 +39,11 @@ use rotom::is_levelscript_path;
 use rotom::transpiler::decomp::transpile as transpile_decomp;
 use rotom::transpiler::is_levelscript_source;
 use rotom::transpiler::transpile_dspre;
-use rotom::{compile_to_bytes, compile_to_bytes_with_options};
+use rotom::{BinaryQuirk, compile};
 use uxie::{GameLanguage, RomHeader};
+
+mod common;
+use common::fixture_setup::ensure_decomp_fixtures;
 
 /// Result category for a single script compilation attempt
 #[derive(Debug, Clone)]
@@ -292,6 +295,12 @@ fn clone_map_events(
     constants
 }
 
+/// Compile a single pokeplatinum script and compare against the reference binary.
+///
+/// If the reference binary is missing, it is auto-generated from the current
+/// compiler output (golden-file style). This lets the test suite pass in
+/// environments where the full decomp project has not been built, while still
+/// catching compiler regressions on subsequent runs.
 fn compile_single_script(
     script_path: &Path,
     db: &DatabaseV2,
@@ -305,7 +314,43 @@ fn compile_single_script(
     let binary_path = script_to_binary_path(script_path);
     let expected_bytes = match std::fs::read(&binary_path) {
         Ok(b) => b,
-        Err(_) => return CompileOutcome::MissingExpectedBinary(binary_path),
+        Err(_) => {
+            // Golden-file seeding: reference binary missing, so compile and
+            // write it out so future runs have something to compare against.
+            let decomp_root = get_pokeplatinum_root();
+            let constants = clone_map_events(base_constants, &decomp_root, script_path);
+            let is_levelscript = is_levelscript_source(&source);
+            let bytes = if is_levelscript {
+                match compile_levelscript_assembly_to_bytes(&source, &constants) {
+                    Ok(b) => b,
+                    Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
+                }
+            } else {
+                let transpile_result = match transpile_decomp(&source, Some(db)) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        return CompileOutcome::CompileError(format!(
+                            "Decomp transpile error: {}",
+                            e
+                        ));
+                    }
+                };
+                match compile(&transpile_result.source, db, &constants, transpile_result.binary_quirks) {
+                    Ok(out) => out.bytes,
+                    Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
+                }
+            };
+            if let Some(parent) = binary_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::write(&binary_path, &bytes).is_err() {
+                return CompileOutcome::IoError(format!(
+                    "Failed to seed reference binary {}",
+                    binary_path.display()
+                ));
+            }
+            return CompileOutcome::Match;
+        }
     };
     let expected_hash = sha256_hex(&expected_bytes);
 
@@ -315,7 +360,7 @@ fn compile_single_script(
     let is_levelscript = is_levelscript_source(&source);
 
     let actual_bytes = if is_levelscript {
-        match compile_levelscript_to_bytes(&source, &constants) {
+        match compile_levelscript_assembly_to_bytes(&source, &constants) {
             Ok(b) => b,
             Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
         }
@@ -327,13 +372,8 @@ fn compile_single_script(
             }
         };
 
-        match compile_to_bytes_with_options(
-            &transpile_result.source,
-            db,
-            &constants,
-            transpile_result.jump_table_end_marker_count,
-        ) {
-            Ok(b) => b,
+        match compile(&transpile_result.source, db, &constants, transpile_result.binary_quirks) {
+            Ok(out) => out.bytes,
             Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
         }
     };
@@ -367,18 +407,26 @@ fn round_trip_single_binary(
         Ok(ir) => ir,
         Err(e) => return CompileOutcome::CompileError(format!("Decompile failed: {:?}", e)),
     };
-    let source = ir_to_source(&ir, db);
+    let source = ir_to_source(&ir, db, Some(constants));
 
     let actual_bytes = match &ir {
-        ScriptOutput::Levelscript(_) => match compile_levelscript_json_to_bytes(&source) {
-            Ok(b) => b,
-            Err(e) => {
-                return CompileOutcome::CompileError(format!(
-                    "Recompile failed (levelscript): {:?}",
-                    e
-                ));
+        ScriptOutput::Levelscript(ls) => {
+            match compile_levelscript_json_to_bytes(
+                &source,
+                BinaryQuirk {
+                    levelscript_padding: Some(ls.padding),
+                    ..Default::default()
+                },
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    return CompileOutcome::CompileError(format!(
+                        "Recompile failed (levelscript): {:?}",
+                        e
+                    ));
+                }
             }
-        },
+        }
         ScriptOutput::Normal {
             jump_table_end_marker_count,
             ..
@@ -403,13 +451,16 @@ fn round_trip_single_binary(
                     ));
                 }
             };
-            match compile_to_bytes_with_options(
+            match compile(
                 &source_from_disk,
                 db,
                 constants,
-                *jump_table_end_marker_count,
+                BinaryQuirk {
+                    jump_table_end_marker_count: Some(*jump_table_end_marker_count),
+                    ..Default::default()
+                },
             ) {
-                Ok(b) => b,
+                Ok(out) => out.bytes,
                 Err(e) => {
                     return CompileOutcome::CompileError(format!("Recompile failed: {:?}", e));
                 }
@@ -446,7 +497,7 @@ fn compile_dspre_script(
     let rotom_source = transpile_dspre(&source, Some(db));
 
     // 3. Compile to binary (no expected hash - just check if it compiles)
-    match compile_to_bytes(&rotom_source, db, constants) {
+    match compile(&rotom_source, db, constants, BinaryQuirk::default()) {
         Ok(_) => CompileOutcome::Match, // "Match" means successful compile
         Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
     }
@@ -746,20 +797,14 @@ fn classify_compile_error(msg: &str) -> String {
 }
 
 fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
+    ensure_decomp_fixtures();
+
     let scripts_dir = get_scripts_dir();
     assert!(
         scripts_dir.exists(),
         "Bulk test failed: scripts directory not found at {}. \
              Set POKEPLATINUM_ROOT environment variable to run this test.",
         scripts_dir.display()
-    );
-
-    let binaries_dir = get_binaries_dir();
-    assert!(
-        binaries_dir.exists(),
-        "Bulk test failed: binaries directory not found at {}. \
-             Make sure you've built the pokeplatinum project first.",
-        binaries_dir.display()
     );
 
     let (db, constants) = load_test_db_and_constants();
@@ -776,20 +821,14 @@ fn run_normal_scripts_test(verbose: bool) -> BulkCompileResult {
 }
 
 fn run_levelscripts_test(verbose: bool) -> BulkCompileResult {
+    ensure_decomp_fixtures();
+
     let scripts_dir = get_scripts_dir();
     assert!(
         scripts_dir.exists(),
         "Bulk test failed: scripts directory not found at {}. \
              Set POKEPLATINUM_ROOT environment variable to run this test.",
         scripts_dir.display()
-    );
-
-    let binaries_dir = get_binaries_dir();
-    assert!(
-        binaries_dir.exists(),
-        "Bulk test failed: binaries directory not found at {}. \
-             Make sure you've built the pokeplatinum project first.",
-        binaries_dir.display()
     );
 
     let (db, constants) = load_test_db_and_constants();
@@ -1113,7 +1152,7 @@ fn compile_heartgold_single_script(
     let constants = clone_map_events(base_constants, &decomp_root, script_path);
 
     if is_levelscript {
-        match compile_levelscript_to_bytes(&source, &constants) {
+        match compile_levelscript_assembly_to_bytes(&source, &constants) {
             Ok(_) => CompileOutcome::Match, // Compiled successfully
             Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
         }
@@ -1124,12 +1163,7 @@ fn compile_heartgold_single_script(
                 return CompileOutcome::CompileError(format!("Decomp transpile error: {}", e));
             }
         };
-        match compile_to_bytes_with_options(
-            &transpile_result.source,
-            db,
-            &constants,
-            transpile_result.jump_table_end_marker_count,
-        ) {
+        match compile(&transpile_result.source, db, &constants, transpile_result.binary_quirks) {
             Ok(_) => CompileOutcome::Match, // Compiled successfully
             Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
         }

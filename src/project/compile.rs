@@ -216,13 +216,18 @@ pub fn compile_project(
             progress.set_message(format!("Compiling {file_name}"));
             // Use the already-loaded per-file constants to avoid a second clone_for_script.
             let constants_for_compile = loaded_constants.as_ref().unwrap_or(constants);
-            let compile_result = crate::compile_file_internal_with_source(
+            let binary_quirks = state
+                .entries
+                .get(&relative_path)
+                .map(|e| e.quirks.clone())
+                .unwrap_or_default();
+            let compile_result = crate::compile_file_internal(
                 input,
                 output,
                 db,
                 constants_for_compile,
                 false,
-                &source,
+                binary_quirks,
             );
             progress.inc(1);
 
@@ -276,7 +281,14 @@ pub fn compile_project(
                     .entries
                     .get(&relative_path)
                     .map_or(0, |e| e.output_hash);
-                let file_state = FileState::compiled(source_hash, existing, dependency_hashes);
+                let quirks = session
+                    .state
+                    .entries
+                    .get(&relative_path)
+                    .map(|e| e.quirks.clone())
+                    .unwrap_or_default();
+                let file_state = FileState::compiled(source_hash, existing, dependency_hashes)
+                    .with_quirks(quirks);
                 session.state.entries.insert(relative_path, file_state);
             }
             WorkerResult::Success {
@@ -287,8 +299,15 @@ pub fn compile_project(
             } => {
                 current_paths.push(relative_path.clone());
                 let output_hash = fs::read(&result.output).ok().map(|bytes| xxh3_64(&bytes));
+                let quirks = session
+                    .state
+                    .entries
+                    .get(&relative_path)
+                    .map(|e| e.quirks.clone())
+                    .unwrap_or_default();
                 let file_state =
-                    FileState::compiled(source_hash, output_hash.unwrap_or(0), dependency_hashes);
+                    FileState::compiled(source_hash, output_hash.unwrap_or(0), dependency_hashes)
+                        .with_quirks(quirks);
                 session.state.entries.insert(relative_path, file_state);
                 successes.push(result);
             }
@@ -781,12 +800,12 @@ mod tests {
         detect_project_output_collisions, project_output_path, project_root_pairs,
         relative_project_path,
     };
+    use crate::DatabaseV2;
     use crate::compile_state::{COMPILER_VERSION, CompileState, FileStatus};
     use crate::project::config::{
         DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
         WorkspaceConfig,
     };
-    use crate::DatabaseV2;
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;

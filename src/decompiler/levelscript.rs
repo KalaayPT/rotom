@@ -74,8 +74,9 @@ pub struct LevelScript {
     #[serde(default)]
     pub var_conditions: Vec<LevelScriptVarConditionEntry>,
     /// Additional trailing zero padding beyond normal 4-byte alignment.
-    #[serde(default)]
-    pub padding: u32,
+    /// Not serialized to JSON — preserved as a [`BinaryQuirk`] in compile state.
+    #[serde(skip)]
+    pub padding: u8,
 }
 
 impl LevelScript {
@@ -222,7 +223,7 @@ impl LevelScript {
         if bytes.len() > aligned_end {
             let extra = &bytes[aligned_end..];
             if extra.iter().all(|&b| b == 0) {
-                levelscript.padding = (bytes.len() - aligned_end) as u32;
+                levelscript.padding = (bytes.len() - aligned_end) as u8;
             }
         }
 

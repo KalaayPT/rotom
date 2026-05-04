@@ -9,7 +9,8 @@ use super::token::{Token, TokenType, normalize_control_keyword};
 ///
 /// # Example
 /// ```
-/// use rotom::compiler::{Lexer, TokenType};
+/// use rotom::compiler::Lexer;
+/// use rotom::compiler::token::TokenType;
 ///
 /// let lexer = Lexer::new("script Main #1:\nEnd\n");
 /// let tokens: Vec<_> = lexer.tokenize();

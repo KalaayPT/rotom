@@ -23,6 +23,7 @@ pub use project::{
     error as project_error, init as project_init,
 };
 
+pub use compile_state::{BinaryQuirk, CompileState};
 pub use compiler::batch_compile::compile_batch;
 pub use compiler::codegen::Emitter;
 pub use compiler::{
@@ -89,7 +90,7 @@ pub struct DecompileFileResult {
     pub input: PathBuf,
     pub output: PathBuf,
     pub size: usize,
-    pub quirks: Vec<crate::compile_state::BinaryQuirk>,
+    pub quirks: BinaryQuirk,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,18 +115,6 @@ impl BatchDecompileResult {
     }
 }
 
-/// Compile Rotom source to raw binary bytes.
-///
-/// Convenience wrapper around [`compile`] that discards warnings and returns
-/// only the emitted bytecode.
-pub fn compile_to_bytes(
-    source: &str,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-) -> Result<Vec<u8>, CompileError> {
-    Ok(compile(source, db, constants)?.bytes)
-}
-
 /// Compilation output including emitted bytes and any warnings.
 pub struct CompiledBytes {
     pub bytes: Vec<u8>,
@@ -139,30 +128,31 @@ pub fn compile(
     source: &str,
     db: &DatabaseV2,
     constants: &ConstantDb,
+    binary_quirks: BinaryQuirk,
 ) -> Result<CompiledBytes, CompileError> {
     let lexer = Lexer::new(source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
-    compile_ast(&file, db, constants, 1)
+    compile_ast(&file, db, constants, binary_quirks)
 }
 
 /// Compile an already-parsed AST to bytes.
 ///
-/// Internal entry point used by the compiler pipeline when the AST is
-/// already available (e.g. after extracting `#include` / `#define`).
-pub(crate) fn compile_ast(
+/// Entry point used when the AST is already available (e.g. after extracting
+/// `#include` / `#define`) or when the caller needs to control
+/// `binary_quirks` for round-trip matching.
+pub fn compile_ast(
     file: &compiler::ast::ScriptFile,
     db: &DatabaseV2,
     constants: &ConstantDb,
-    jump_table_end_marker_count: u8,
+    binary_quirks: BinaryQuirk,
 ) -> Result<CompiledBytes, CompileError> {
     let mut analyzer = Analyzer::with_database(constants, db);
     analyzer.analyze(file)?;
-
     let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, constants);
     let items = lowerer.lower_script_file(file)?;
-
     let mut emitter = Emitter::new(db);
+    let jump_table_end_marker_count = binary_quirks.jump_table_end_marker_count.unwrap_or(1);
     let bytes = emitter.emit_script_file(&items, jump_table_end_marker_count)?;
     Ok(CompiledBytes {
         bytes,
@@ -170,11 +160,11 @@ pub(crate) fn compile_ast(
     })
 }
 
-/// Compile a levelscript source string to binary bytes.
+/// Compile a levelscript decomp source string to binary bytes.
 ///
 /// Accepts the legacy `.s` levelscript syntax and emits the raw binary
 /// levelscript format used by the game engine.
-pub fn compile_levelscript_to_bytes(
+pub fn compile_levelscript_assembly_to_bytes(
     source: &str,
     constants: &ConstantDb,
 ) -> Result<Vec<u8>, CompileError> {
@@ -194,12 +184,23 @@ pub fn compile_levelscript_to_bytes(
 }
 
 /// Compile a levelscript from its JSON representation to binary bytes.
-pub fn compile_levelscript_json_to_bytes(source: &str) -> Result<Vec<u8>, CompileError> {
+///
+/// `levelscript_padding` is appended after normal 4-byte alignment. It is
+/// stored in compile state as a [`BinaryQuirk`] rather than in the JSON
+/// so that users never need to edit padding bytes by hand.
+pub fn compile_levelscript_json_to_bytes(
+    source: &str,
+    binary_quirks: BinaryQuirk,
+) -> Result<Vec<u8>, CompileError> {
     let levelscript = LevelScript::from_json(source).map_err(|e| CompileError::Transpile {
         message: format!("Failed to parse levelscript JSON: {}", e),
     })?;
 
-    Ok(levelscript.to_bytes())
+    let mut bytes = levelscript.to_bytes();
+    if let Some(padding) = binary_quirks.levelscript_padding {
+        bytes.extend(std::iter::repeat_n(0, padding as usize));
+    }
+    Ok(bytes)
 }
 
 /// Returns true when the path follows a known levelscript naming convention.
@@ -231,23 +232,13 @@ pub(crate) fn compile_file_internal(
     db: &DatabaseV2,
     constants: &ConstantDb,
     load_file_constants: bool,
+    binary_quirks: BinaryQuirk,
 ) -> Result<CompiledFile, CompileFileError> {
     let source = std::fs::read_to_string(input).map_err(|e| {
         CompileFileError::IoError(CompileError::Io {
             message: format!("Failed to read input file '{}': {}", input.display(), e),
         })
     })?;
-    compile_file_internal_with_source(input, output, db, constants, load_file_constants, &source)
-}
-
-pub(crate) fn compile_file_internal_with_source(
-    input: &Path,
-    output: &Path,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-    load_file_constants: bool,
-    source: &str,
-) -> Result<CompiledFile, CompileFileError> {
     let extension = input
         .extension()
         .and_then(|e| e.to_str())
@@ -255,11 +246,11 @@ pub(crate) fn compile_file_internal_with_source(
         .to_lowercase();
 
     let is_levelscript = is_levelscript_path(input)
-        || (extension == "s" && transpiler::is_levelscript_source(source));
+        || (extension == "s" && transpiler::is_levelscript_source(&source));
 
     let (bytes, warnings, warning_source) = if extension == "json" {
         (
-            compile_levelscript_json_to_bytes(source).map_err(|e| {
+            compile_levelscript_json_to_bytes(&source, binary_quirks).map_err(|e| {
                 CompileFileError::CompileError {
                     error: e,
                     source: source.to_string(),
@@ -280,7 +271,7 @@ pub(crate) fn compile_file_internal_with_source(
         };
         let constants = file_constants.as_ref().unwrap_or(constants);
         (
-            compile_levelscript_to_bytes(source, constants).map_err(|e| {
+            compile_levelscript_assembly_to_bytes(&source, constants).map_err(|e| {
                 CompileFileError::CompileError {
                     error: e,
                     source: source.to_string(),
@@ -290,11 +281,14 @@ pub(crate) fn compile_file_internal_with_source(
             source.to_string(),
         )
     } else {
-        let (rotom_source, jump_table_end_marker_count) = match extension.as_str() {
-            "rotom" => (source.to_string(), 1),
-            "script" => (transpiler::transpile_dspre(source, Some(db)), 1),
+        let (rotom_source, binary_quirks) = match extension.as_str() {
+            "rotom" => (source.to_string(), BinaryQuirk::default()),
+            "script" => (
+                transpiler::transpile_dspre(&source, Some(db)),
+                BinaryQuirk::default(),
+            ),
             "s" => {
-                let result = transpiler::transpile_decomp(source, Some(db)).map_err(|e| {
+                let result = transpiler::transpile_decomp(&source, Some(db)).map_err(|e| {
                     CompileFileError::CompileError {
                         error: CompileError::Transpile {
                             message: format!("Decomp transpile error at line {}: {}", e.line, e),
@@ -302,7 +296,7 @@ pub(crate) fn compile_file_internal_with_source(
                         source: source.to_string(),
                     }
                 })?;
-                (result.source, result.jump_table_end_marker_count)
+                (result.source, result.binary_quirks)
             }
             _ => {
                 return Err(CompileFileError::IoError(CompileError::Io {
@@ -328,13 +322,12 @@ pub(crate) fn compile_file_internal_with_source(
                 .apply_directives(script_dir, &rotom_source, &file.items)
                 .map_err(CompileFileError::IoError)?;
 
-            let output =
-                compile_ast(&file, db, &cloned, jump_table_end_marker_count).map_err(|e| {
-                    CompileFileError::CompileError {
-                        error: e,
-                        source: rotom_source.clone(),
-                    }
-                })?;
+            let output = compile_ast(&file, db, &cloned, binary_quirks).map_err(|e| {
+                CompileFileError::CompileError {
+                    error: e,
+                    source: rotom_source.clone(),
+                }
+            })?;
             (output.bytes, output.warnings, rotom_source)
         } else {
             let file_constants = if load_file_constants {
@@ -356,13 +349,12 @@ pub(crate) fn compile_file_internal_with_source(
                     error: e,
                     source: rotom_source.clone(),
                 })?;
-            let output =
-                compile_ast(&file, db, constants, jump_table_end_marker_count).map_err(|e| {
-                    CompileFileError::CompileError {
-                        error: e,
-                        source: rotom_source.clone(),
-                    }
-                })?;
+            let output = compile_ast(&file, db, constants, binary_quirks).map_err(|e| {
+                CompileFileError::CompileError {
+                    error: e,
+                    source: rotom_source.clone(),
+                }
+            })?;
             (output.bytes, output.warnings, rotom_source)
         }
     };
@@ -392,30 +384,6 @@ pub(crate) fn compile_file_internal_with_source(
         size,
         source: warning_source,
         warnings,
-    })
-}
-
-/// Compile a single file to binary bytes, handling transpilation if needed.
-///
-/// Supports:
-/// - .rotom (Native Rotoscript)
-/// - .script (legacy DSPRE script)
-/// - .s (Decomp assembly)
-///
-/// # Arguments
-/// * `input` - Path to the input file
-/// * `output` - Path to the output .bin file
-/// * `db` - The command database
-/// * `constants` - The constant database (with decomp constants loaded if needed)
-pub fn compile_file(
-    input: &Path,
-    output: &Path,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-) -> Result<CompiledFile, CompileError> {
-    compile_file_internal(input, output, db, constants, true).map_err(|e| match e {
-        CompileFileError::IoError(err) => err,
-        CompileFileError::CompileError { error, .. } => error,
     })
 }
 
@@ -501,7 +469,14 @@ pub fn compile_path(
             output.to_path_buf()
         };
 
-        match compile_file_internal(input, &output_path, db, constants, true) {
+        match compile_file_internal(
+            input,
+            &output_path,
+            db,
+            constants,
+            true,
+            BinaryQuirk::default(),
+        ) {
             Ok(success) => Ok(BatchCompileResult {
                 successes: vec![success],
                 failures: vec![],
@@ -602,7 +577,11 @@ pub fn compile_path(
 
         let work: Vec<_> = files
             .into_iter()
-            .map(|f| (f.clone(), generate_output_path_compile(&f, output)))
+            .map(|f| crate::compiler::batch_compile::CompileWorkItem {
+                input: f.clone(),
+                output: generate_output_path_compile(&f, output),
+                quirks: BinaryQuirk::default(),
+            })
             .collect();
 
         Ok(compile_batch(&work, db, constants, true, None))
@@ -632,17 +611,19 @@ fn decompile_file_internal(
         error: e,
     })?;
 
-    let quirks = match &script_output {
+    let mut quirks = BinaryQuirk::default();
+    match &script_output {
         ScriptOutput::Normal {
             jump_table_end_marker_count,
             ..
         } if *jump_table_end_marker_count != 1 => {
-            vec![crate::compile_state::BinaryQuirk::JumpTableEndMarkerCount(
-                *jump_table_end_marker_count,
-            )]
+            quirks.jump_table_end_marker_count = Some(*jump_table_end_marker_count);
         }
-        _ => Vec::new(),
-    };
+        ScriptOutput::Levelscript(ls) if ls.padding > 0 => {
+            quirks.levelscript_padding = Some(ls.padding);
+        }
+        _ => {}
+    }
 
     let is_levelscript = matches!(script_output, ScriptOutput::Levelscript(_));
 
@@ -845,8 +826,10 @@ mod warning_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::BinaryQuirk;
+
     use super::{
-        ConstantDb, DatabaseV2, compile_path, compile_to_bytes, decompile_path,
+        ConstantDb, DatabaseV2, compile, compile_path, decompile_path,
         detect_compile_output_collisions, resolve_decompile_output_path,
     };
     use std::fs;
@@ -1007,8 +990,14 @@ mod tests {
 
         let db = load_test_db();
         let constants = ConstantDb::new();
-        let bytes = compile_to_bytes(minimal_script_source(), db, &constants)
-            .expect("failed to compile seed script");
+        let bytes = compile(
+            minimal_script_source(),
+            db,
+            &constants,
+            BinaryQuirk::default(),
+        )
+        .expect("failed to compile seed script")
+        .bytes;
 
         let input_path = temp_dir.join("input.bin");
         let output_path = temp_dir.join("custom_out.rotom");
@@ -1032,8 +1021,14 @@ mod tests {
 
         let db = load_test_db();
         let constants = ConstantDb::new();
-        let bytes = compile_to_bytes(minimal_script_source(), db, &constants)
-            .expect("failed to compile seed script");
+        let bytes = compile(
+            minimal_script_source(),
+            db,
+            &constants,
+            BinaryQuirk::default(),
+        )
+        .expect("failed to compile seed script")
+        .bytes;
 
         fs::write(input_dir.join("0000"), bytes).expect("failed to write extensionless binary");
 
@@ -1081,12 +1076,14 @@ script Main #1:
         assert!(result.is_success(), "compile_path should succeed");
 
         let compiled = fs::read(&output_path).expect("failed to read compiled output");
-        let expected = compile_to_bytes(
+        let expected = compile(
             "script Main #1:\n    Message 7\n    Message 7\n    End\n",
             db,
             &ConstantDb::new(),
+            BinaryQuirk::default(),
         )
-        .expect("expected source should compile");
+        .expect("expected source should compile")
+        .bytes;
         fs::remove_dir_all(&temp_dir).ok();
 
         assert_eq!(compiled, expected);
@@ -1097,7 +1094,7 @@ script Main #1:
         let db = load_test_db();
         let constants = ConstantDb::new();
 
-        let compiled = compile_to_bytes(
+        let compiled = compile(
             "alias 7 as FOO
 alias FOO as BAR
 
@@ -1107,15 +1104,19 @@ script Main #1:
 ",
             db,
             &constants,
+            BinaryQuirk::default(),
         )
-        .expect("symbolic alias chain should compile");
+        .expect("symbolic alias chain should compile")
+        .bytes;
 
-        let expected = compile_to_bytes(
+        let expected = compile(
             "script Main #1:\n    Message 7\n    End\n",
             db,
             &ConstantDb::new(),
+            BinaryQuirk::default(),
         )
-        .expect("expected source should compile");
+        .expect("expected source should compile")
+        .bytes;
 
         assert_eq!(compiled, expected);
     }
@@ -1125,7 +1126,7 @@ script Main #1:
         let db = load_test_db();
         let constants = ConstantDb::new();
 
-        let compiled = compile_to_bytes(
+        let compiled = compile(
             "script DefineAlias #1:
     alias 7 as SHARED
     End
@@ -1136,15 +1137,19 @@ script Main #2:
 ",
             db,
             &constants,
+            BinaryQuirk::default(),
         )
-        .expect("alias from earlier script body should compile");
+        .expect("alias from earlier script body should compile")
+        .bytes;
 
-        let expected = compile_to_bytes(
+        let expected = compile(
             "script DefineAlias #1:\n    End\n\nscript Main #2:\n    Message 7\n    End\n",
             db,
             &ConstantDb::new(),
+            BinaryQuirk::default(),
         )
-        .expect("expected source should compile");
+        .expect("expected source should compile")
+        .bytes;
 
         assert_eq!(compiled, expected);
     }
@@ -1154,7 +1159,7 @@ script Main #2:
         let db = load_test_db();
         let constants = ConstantDb::new();
 
-        let compiled = compile_to_bytes(
+        let compiled = compile(
             "alias 7 as VALUE
 script First #1:
     Message VALUE
@@ -1167,15 +1172,19 @@ script Second #2:
 ",
             db,
             &constants,
+            BinaryQuirk::default(),
         )
-        .expect("top-level alias redefinition should compile");
+        .expect("top-level alias redefinition should compile")
+        .bytes;
 
-        let expected = compile_to_bytes(
+        let expected = compile(
             "script First #1:\n    Message 7\n    End\n\nscript Second #2:\n    Message 9\n    End\n",
             db,
             &ConstantDb::new(),
+            BinaryQuirk::default(),
         )
-        .expect("expected source should compile");
+        .expect("expected source should compile")
+        .bytes;
 
         assert_eq!(compiled, expected);
     }
@@ -1185,7 +1194,7 @@ script Second #2:
         let db = load_test_db();
         let constants = ConstantDb::new();
 
-        let result = compile_to_bytes(
+        let result = compile(
             "script Main #1:
     Message SHARED
     End
@@ -1194,6 +1203,7 @@ alias 7 as SHARED
 ",
             db,
             &constants,
+            BinaryQuirk::default(),
         );
 
         assert!(result.is_err(), "forward alias reference should fail");
@@ -1234,12 +1244,14 @@ script Main #1:
         assert!(result.is_success(), "compile_path should succeed");
 
         let compiled = fs::read(&output_path).expect("failed to read compiled output");
-        let expected = compile_to_bytes(
+        let expected = compile(
             "script Main #1:\n    Message 7\n    End\n",
             db,
             &ConstantDb::new(),
+            BinaryQuirk::default(),
         )
-        .expect("expected source should compile");
+        .expect("expected source should compile")
+        .bytes;
         fs::remove_dir_all(&temp_dir).ok();
 
         assert_eq!(compiled, expected);

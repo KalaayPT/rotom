@@ -8,15 +8,22 @@ use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::database::ConstantDb;
 use crate::progress::CompileProgress;
-use crate::{CompileFailure, CompiledFile, DatabaseV2};
+use crate::{BinaryQuirk, CompileFailure, CompiledFile, DatabaseV2};
 
-/// Compile a list of (`input_path`, `output_path`) pairs in parallel.
+/// A single unit of work for [`compile_batch`].
+pub struct CompileWorkItem {
+    pub input: std::path::PathBuf,
+    pub output: std::path::PathBuf,
+    pub quirks: BinaryQuirk,
+}
+
+/// Compile a list of [`CompileWorkItem`]s in parallel.
 ///
 /// `load_file_constants` is forwarded to each worker; when `true` the worker
 /// clones the shared `ConstantDb` internally for its own script and drops it
 /// after compilation.  No clones are kept at the batch level.
 pub fn compile_batch(
-    work: &[(std::path::PathBuf, std::path::PathBuf)],
+    work: &[CompileWorkItem],
     db: &DatabaseV2,
     constants: &ConstantDb,
     load_file_constants: bool,
@@ -24,21 +31,27 @@ pub fn compile_batch(
 ) -> crate::BatchCompileResult {
     let results: Vec<std::result::Result<CompiledFile, CompileFailure>> = work
         .par_iter()
-        .map(|(input, output)| {
-            let result =
-                crate::compile_file_internal(input, output, db, constants, load_file_constants)
-                    .map_err(|e| match e {
-                        crate::CompileFileError::IoError(error) => CompileFailure {
-                            path: input.clone(),
-                            error,
-                            source: String::new(),
-                        },
-                        crate::CompileFileError::CompileError { error, source } => CompileFailure {
-                            path: input.clone(),
-                            error,
-                            source,
-                        },
-                    });
+        .map(|item| {
+            let result = crate::compile_file_internal(
+                &item.input,
+                &item.output,
+                db,
+                constants,
+                load_file_constants,
+                item.quirks.clone(),
+            )
+            .map_err(|e| match e {
+                crate::CompileFileError::IoError(error) => CompileFailure {
+                    path: item.input.clone(),
+                    error,
+                    source: String::new(),
+                },
+                crate::CompileFileError::CompileError { error, source } => CompileFailure {
+                    path: item.input.clone(),
+                    error,
+                    source,
+                },
+            });
             match &result {
                 Ok(_) => {
                     if let Some(p) = progress {

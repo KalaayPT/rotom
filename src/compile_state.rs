@@ -14,10 +14,16 @@ pub struct CompileState {
     pub compiler_version: String,
     pub entries: HashMap<String, FileState>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum BinaryQuirk {
-    JumpTableEndMarkerCount(u8),
+/// Represents a binary quirk that may be present in a compiled binary file that is an exception to the normal pattern.
+/// Used for byte matching.
+///
+/// A None value indicates that nothing out of the ordinary is present. This implies that jump_table_end_marker_count being None is technically the same as it being Some(1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BinaryQuirk {
+    /// some files have different amounts of jump table end marker bytes
+    pub jump_table_end_marker_count: Option<u8>,
+    /// some levelscript files have extra padding
+    pub levelscript_padding: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,7 +34,7 @@ pub struct FileState {
     pub status: FileStatus,
     pub last_compiled: DateTime<Utc>,
     #[serde(default)]
-    pub quirks: Vec<BinaryQuirk>,
+    pub quirks: BinaryQuirk,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,7 +57,7 @@ impl FileState {
             dependency_hashes,
             status: FileStatus::Compiled,
             last_compiled: Utc::now(),
-            quirks: Vec::new(),
+            quirks: BinaryQuirk::default(),
         }
     }
 
@@ -62,7 +68,7 @@ impl FileState {
             dependency_hashes: HashMap::new(),
             status: FileStatus::Decompiled,
             last_compiled: Utc::now(),
-            quirks: Vec::new(),
+            quirks: BinaryQuirk::default(),
         }
     }
 
@@ -77,7 +83,7 @@ impl FileState {
             dependency_hashes,
             status: FileStatus::Dirty,
             last_compiled: Utc::now(),
-            quirks: Vec::new(),
+            quirks: BinaryQuirk::default(),
         }
     }
 
@@ -92,11 +98,11 @@ impl FileState {
             dependency_hashes,
             status: FileStatus::Transpiled,
             last_compiled: Utc::now(),
-            quirks: Vec::new(),
+            quirks: BinaryQuirk::default(),
         }
     }
 
-    pub fn with_quirks(mut self, quirks: Vec<BinaryQuirk>) -> Self {
+    pub fn with_quirks(mut self, quirks: BinaryQuirk) -> Self {
         self.quirks = quirks;
         self
     }

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Once;
 
 use super::fixture_pins::ALL_PINS;
 
@@ -7,43 +8,49 @@ pub fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-/// Ensure all decomp fixtures are present. Auto-clones via git if missing.
-/// Panics with clear instructions if git is not available or clone fails.
-pub fn ensure_decomp_fixtures() {
-    let root = fixture_root();
-    std::fs::create_dir_all(root.join("decomp")).expect("Failed to create fixtures/decomp");
+static FIXTURE_INIT: Once = Once::new();
 
-    for pin in ALL_PINS {
-        let dest = root.join("decomp").join(pin.name);
-        if dest.exists() {
-            match verify_commit(&dest, pin.commit) {
-                Ok(true) => continue,
-                Ok(false) => {
-                    eprintln!(
-                        "[fixtures] {} commit mismatch — removing and re-cloning",
-                        pin.name
-                    );
-                    std::fs::remove_dir_all(&dest).ok();
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[fixtures] {} unreadable ({}). removing and re-cloning",
-                        pin.name, e
-                    );
-                    std::fs::remove_dir_all(&dest).ok();
+/// Ensure all decomp fixtures are present. Auto-clones via git if missing.
+///
+/// Uses `std::sync::Once` so that even when `cargo test` runs tests in
+/// parallel within the same binary, git operations happen exactly once.
+pub fn ensure_decomp_fixtures() {
+    FIXTURE_INIT.call_once(|| {
+        let root = fixture_root();
+        std::fs::create_dir_all(root.join("decomp")).expect("Failed to create fixtures/decomp");
+
+        for pin in ALL_PINS {
+            let dest = root.join("decomp").join(pin.name);
+            if dest.exists() {
+                match verify_commit(&dest, pin.commit) {
+                    Ok(true) => continue,
+                    Ok(false) => {
+                        eprintln!(
+                            "[fixtures] {} commit mismatch — removing and re-cloning",
+                            pin.name
+                        );
+                        std::fs::remove_dir_all(&dest).ok();
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[fixtures] {} unreadable ({}). removing and re-cloning",
+                            pin.name, e
+                        );
+                        std::fs::remove_dir_all(&dest).ok();
+                    }
                 }
             }
-        }
 
-        println!(
-            "[fixtures] Cloning {} into {}",
-            pin.repo_url,
-            dest.display()
-        );
-        clone_or_die(pin.repo_url, &dest);
-        checkout_or_die(&dest, pin.commit);
-        println!("[fixtures] {} ready at {}", pin.name, pin.commit);
-    }
+            println!(
+                "[fixtures] Cloning {} into {}",
+                pin.repo_url,
+                dest.display()
+            );
+            clone_or_die(pin.repo_url, &dest);
+            checkout_or_die(&dest, pin.commit);
+            println!("[fixtures] {} ready at {}", pin.name, pin.commit);
+        }
+    });
 }
 
 /// Return a DSPRE fixture root when the local fixture tree is present.
