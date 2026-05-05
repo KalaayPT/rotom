@@ -72,7 +72,7 @@ pub fn project_output_path(
 ) -> PathBuf {
     let relative = source_path.strip_prefix(source_root).unwrap_or(source_path);
     match project_type {
-        ProjectTypeConfig::Dspre => {
+        ProjectTypeConfig::Dspre | ProjectTypeConfig::HgEngine => {
             let stem = relative.file_stem().unwrap_or_default();
             match relative.parent() {
                 Some(parent) => binary_root.join(parent).join(stem),
@@ -587,7 +587,7 @@ fn load_project_database_and_constants(
                 .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;
         }
-        ProjectTypeConfig::Generic => {}
+        ProjectTypeConfig::Generic | ProjectTypeConfig::HgEngine => {}
     }
 
     Ok((db, constants, db_hash, constant_cache_rebuilt))

@@ -113,7 +113,7 @@ impl RotomServer {
                     .map_or(uxie::game::GameLanguage::English, |h| h.detect_language());
                 let _ = constants.load_dspre_text_archives(root, language);
             }
-            ProjectTypeConfig::Generic => {}
+            ProjectTypeConfig::Generic | ProjectTypeConfig::HgEngine => {}
         }
 
         Ok(ProjectState {

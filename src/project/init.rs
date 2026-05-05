@@ -422,6 +422,19 @@ fn detect_workspace(root: &Path) -> Result<WorkspaceInfo> {
                 binary_roots,
             }
         }
+        ProjectType::HgEngine => {
+            WorkspaceInfo {
+                project_type: ProjectTypeConfig::HgEngine,
+                game_family: Some(workspace.family),
+                source_roots: vec![".rotom/scripts".to_string()],
+                include_roots: vec![
+                    "include".to_string(),
+                    "armips/include".to_string(),
+                    "asm/include".to_string(),
+                ],
+                binary_roots: vec!["build/a012".to_string()],
+            }
+        }
     })
 }
 

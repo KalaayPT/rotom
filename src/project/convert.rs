@@ -84,7 +84,7 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
                 .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;
         }
-        ProjectTypeConfig::Generic => {}
+        ProjectTypeConfig::Generic | ProjectTypeConfig::HgEngine => {}
     }
 
     let mut plans = Vec::with_capacity(files.len());
@@ -126,7 +126,7 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
                         line: error.line,
                         message: error.to_string(),
                     })?,
-                ProjectTypeConfig::Generic => continue,
+                ProjectTypeConfig::Generic | ProjectTypeConfig::HgEngine => continue,
             };
             if let Some(include_path) = config.global_include_path() {
                 let include_line = format!("#include \"{include_path}\"");
@@ -238,7 +238,7 @@ fn is_convertible_file(path: &Path, project_type: ProjectTypeConfig) -> bool {
             // just to different output formats.
             true
         }
-        ProjectTypeConfig::Generic => false,
+        ProjectTypeConfig::Generic | ProjectTypeConfig::HgEngine => false,
     }
 }
 

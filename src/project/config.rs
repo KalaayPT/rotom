@@ -25,6 +25,8 @@ pub enum ProjectTypeConfig {
     Generic,
     Dspre,
     Decomp,
+    #[serde(rename = "hge")]
+    HgEngine,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
