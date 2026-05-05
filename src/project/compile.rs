@@ -587,7 +587,21 @@ fn load_project_database_and_constants(
                 .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;
         }
-        ProjectTypeConfig::Generic | ProjectTypeConfig::HgEngine => {}
+        ProjectTypeConfig::HgEngine => {
+            let mut ws = Workspace::open(root).map_err(|source| ProjectError::Io {
+                action: "Failed to open HgEngine workspace",
+                path: root.to_path_buf(),
+                source,
+            })?;
+            ws.load_hg_engine_constants()
+                .map_err(|source| ProjectError::Io {
+                    action: "Failed to load HgEngine constants",
+                    path: root.to_path_buf(),
+                    source,
+                })?;
+            let _ = constants.load_decomp_symbols(root, (*ws.symbols).clone());
+        }
+        ProjectTypeConfig::Generic => {}
     }
 
     Ok((db, constants, db_hash, constant_cache_rebuilt))

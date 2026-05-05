@@ -28,6 +28,14 @@ fn param_semantic_family(param_name: &str) -> Option<uxie::ConstantFamily> {
         "trainer" | "trainerid" | "trainer_id" => Some(uxie::ConstantFamily::Trainer),
         "trainerclass" | "trainer_class" => Some(uxie::ConstantFamily::TrainerClass),
         "location" | "mapsec" => Some(uxie::ConstantFamily::Location),
+        "flag" | "shiny_flag" | "var_flag" => Some(uxie::ConstantFamily::Flag),
+        "var" | "variable" | "var_0" | "var_1" | "var_2" | "var_3" | "var_4" | "var_5"
+        | "var_6" | "variable_1" | "variable_2" | "retvar" | "var_dest" | "var_result"
+        | "var_or_addend" | "var_or_trno" | "countdown_variable" => {
+            Some(uxie::ConstantFamily::Variable)
+        }
+        "ability" => Some(uxie::ConstantFamily::Ability),
+        "type" | "type_1" | "type_2" => Some(uxie::ConstantFamily::Type),
         _ => None,
     }
 }

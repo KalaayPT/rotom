@@ -8,24 +8,24 @@ use tower_lsp::lsp_types::{
     CodeLens, CodeLensOptions, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbolResponse, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
-    InlayHint, InlayHintOptions, InitializeParams, InitializeResult, InitializedParams,
-    MessageType, SaveOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintOptions,
+    MessageType, OneOf, SaveOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions, OneOf,
+    TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use crate::code_lens::compute_code_lens;
 use crate::completions::compute_completions;
-use crate::document::{compute_document_symbols, DocumentCache};
 use crate::diagnostics::compute_diagnostics;
+use crate::document::{DocumentCache, compute_document_symbols};
 use crate::goto::compute_goto_definition;
 use crate::hover::compute_hover;
 use crate::inlay_hints::compute_inlay_hints;
 use crate::signature_help::compute_signature_help;
 
 use rotom::database::{ConstantDb, DatabaseV2};
-use rotom::project::config::{find_project_root, load_config, ProjectTypeConfig, RotomConfig};
+use rotom::project::config::{ProjectTypeConfig, RotomConfig, find_project_root, load_config};
 
 /// How long to wait after the last keystroke before re-running diagnostics.
 const DIAGNOSTIC_DEBOUNCE_MS: u64 = 300;
@@ -82,9 +82,8 @@ impl RotomServer {
         let db_path = config
             .database_file(root)
             .ok_or_else(|| "No database configured in rotom.toml".to_string())?;
-        let db = DatabaseV2::load(&db_path).map_err(|e| {
-            format!("Failed to load database {}: {}", db_path.display(), e)
-        })?;
+        let db = DatabaseV2::load(&db_path)
+            .map_err(|e| format!("Failed to load database {}: {}", db_path.display(), e))?;
 
         let mut constants = ConstantDb::new();
         let _ = constants.load_from_db(&db);
@@ -113,7 +112,14 @@ impl RotomServer {
                     .map_or(uxie::game::GameLanguage::English, |h| h.detect_language());
                 let _ = constants.load_dspre_text_archives(root, language);
             }
-            ProjectTypeConfig::Generic | ProjectTypeConfig::HgEngine => {}
+            ProjectTypeConfig::HgEngine => {
+                if let Ok(mut ws) = uxie::Workspace::open(root) {
+                    if ws.load_hg_engine_constants().is_ok() {
+                        let _ = constants.load_decomp_symbols(root, (*ws.symbols).clone());
+                    }
+                }
+            }
+            ProjectTypeConfig::Generic => {}
         }
 
         Ok(ProjectState {
@@ -136,7 +142,9 @@ impl RotomServer {
         let lexer = rotom::compiler::Lexer::new(source);
         let mut parser = rotom::compiler::Parser::new_fallible(lexer);
         let file = parser.parse_script_file().ok()?;
-        let script_dir = file_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let script_dir = file_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
         let _ = file_constants.apply_directives(script_dir, source, &file.items);
 
         Some(file_constants)
@@ -154,13 +162,16 @@ impl RotomServer {
 
         let uri_for_task = uri.clone();
         let client = self.client.clone();
-        let text = self.documents.get(&uri_for_task).map(|doc| doc.text.clone());
+        let text = self
+            .documents
+            .get(&uri_for_task)
+            .map(|doc| doc.text.clone());
         let project_state = self.project_state_for_uri(&uri_for_task);
 
         // Compute file-local constants synchronously before spawning.
-        let file_constants = text.as_ref().and_then(|src| {
-            self.file_constants_for_uri(&uri_for_task, src)
-        });
+        let file_constants = text
+            .as_ref()
+            .and_then(|src| self.file_constants_for_uri(&uri_for_task, src));
 
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(DIAGNOSTIC_DEBOUNCE_MS)).await;
@@ -177,7 +188,9 @@ impl RotomServer {
             };
 
             let diagnostics = compute_diagnostics(&text, db.as_deref(), Some(&constants));
-            client.publish_diagnostics(uri_for_task, diagnostics, None).await;
+            client
+                .publish_diagnostics(uri_for_task, diagnostics, None)
+                .await;
         });
 
         self.pending_diagnostics.insert(uri.clone(), handle);
@@ -210,22 +223,24 @@ impl LanguageServer for RotomServer {
                     completion_item: None,
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
-                document_symbol_provider: Some(
-                    OneOf::Right(
-                        tower_lsp::lsp_types::DocumentSymbolOptions {
-                            label: Some("Rotom".to_string()),
-                            work_done_progress_options: WorkDoneProgressOptions {
-                                work_done_progress: None,
-                            },
+                document_symbol_provider: Some(OneOf::Right(
+                    tower_lsp::lsp_types::DocumentSymbolOptions {
+                        label: Some("Rotom".to_string()),
+                        work_done_progress_options: WorkDoneProgressOptions {
+                            work_done_progress: None,
                         },
-                    ),
-                ),
+                    },
+                )),
                 definition_provider: Some(OneOf::Left(true)),
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
                 signature_help_provider: Some(SignatureHelpOptions {
-                    trigger_characters: Some(vec!["(".to_string(), ",".to_string(), " ".to_string()]),
+                    trigger_characters: Some(vec![
+                        "(".to_string(),
+                        ",".to_string(),
+                        " ".to_string(),
+                    ]),
                     retrigger_characters: Some(vec![",".to_string(), " ".to_string()]),
                     work_done_progress_options: WorkDoneProgressOptions {
                         work_done_progress: None,
@@ -268,11 +283,13 @@ impl LanguageServer for RotomServer {
 
         let db = self.project_state_for_uri(uri).map(|s| s.db);
         let file_constants = self.file_constants_for_uri(uri, &doc.text);
-        let constant_names = file_constants.as_ref().map(|c| {
-            Arc::new(c.constant_names()) as Arc<Vec<String>>
-        });
+        let constant_names = file_constants
+            .as_ref()
+            .map(|c| Arc::new(c.constant_names()) as Arc<Vec<String>>);
 
-        let local_symbols = self.documents.get(uri)
+        let local_symbols = self
+            .documents
+            .get(uri)
             .map(|doc| compute_document_symbols(&doc.text));
 
         let items = compute_completions(
@@ -298,12 +315,7 @@ impl LanguageServer for RotomServer {
         let db = self.project_state_for_uri(uri).map(|s| s.db);
         let file_constants = self.file_constants_for_uri(uri, &doc.text);
 
-        let hover = compute_hover(
-            &doc.text,
-            position,
-            db.as_deref(),
-            file_constants.as_ref(),
-        );
+        let hover = compute_hover(&doc.text, position, db.as_deref(), file_constants.as_ref());
 
         Ok(hover)
     }
@@ -314,7 +326,9 @@ impl LanguageServer for RotomServer {
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
 
-        let symbols = self.documents.get(uri)
+        let symbols = self
+            .documents
+            .get(uri)
             .map(|doc| compute_document_symbols(&doc.text));
         let Some(symbols) = symbols else {
             return Ok(None);
@@ -388,14 +402,14 @@ impl LanguageServer for RotomServer {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        self.documents.insert(uri.clone(), params.text_document.text);
+        self.documents
+            .insert(uri.clone(), params.text_document.text);
         self.publish_diagnostics(&uri);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        self.documents
-            .apply_changes(&uri, params.content_changes);
+        self.documents.apply_changes(&uri, params.content_changes);
         self.publish_diagnostics(&uri);
     }
 
