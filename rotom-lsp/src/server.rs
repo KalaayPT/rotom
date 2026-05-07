@@ -114,9 +114,8 @@ impl RotomServer {
             }
             ProjectTypeConfig::HgEngine => {
                 if let Ok(mut ws) = uxie::Workspace::open(root) {
-                    if ws.load_hg_engine_constants().is_ok() {
-                        let _ = constants.load_decomp_symbols(root, (*ws.symbols).clone());
-                    }
+                    let _ = ws.load_hg_engine_constants();
+                    let _ = constants.load_decomp_symbols(root, (*ws.symbols).clone());
                 }
             }
             ProjectTypeConfig::Generic => {}
@@ -130,14 +129,24 @@ impl RotomServer {
 
     /// Build file-local constants for a URI by cloning project-wide constants
     /// and applying any `#include` / `#define` directives found in the source.
-    fn file_constants_for_uri(&self, uri: &Url, source: &str) -> Option<ConstantDb> {
-        let state = self.project_state_for_uri(uri)?;
-        let mut file_constants = state.constants.clone();
-
+    fn file_constants_for_uri(
+        &self,
+        state: &ProjectState,
+        uri: &Url,
+        source: &str,
+    ) -> Option<ConstantDb> {
         let file_path = uri.to_file_path().ok()?;
+
+        // Only clone and process directives for .rotom files that actually
+        // have include/define statements.
         if file_path.extension().and_then(|s| s.to_str()) != Some("rotom") {
-            return Some(file_constants);
+            return Some(state.constants.clone());
         }
+        if !source.contains("#include") && !source.contains("#define") {
+            return Some(state.constants.clone());
+        }
+
+        let mut file_constants = state.constants.clone();
 
         let lexer = rotom::compiler::Lexer::new(source);
         let mut parser = rotom::compiler::Parser::new_fallible(lexer);
@@ -169,9 +178,10 @@ impl RotomServer {
         let project_state = self.project_state_for_uri(&uri_for_task);
 
         // Compute file-local constants synchronously before spawning.
-        let file_constants = text
-            .as_ref()
-            .and_then(|src| self.file_constants_for_uri(&uri_for_task, src));
+        let file_constants = project_state.as_ref().and_then(|state| {
+            text.as_ref()
+                .and_then(|src| self.file_constants_for_uri(state, &uri_for_task, src))
+        });
 
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(DIAGNOSTIC_DEBOUNCE_MS)).await;
@@ -281,11 +291,11 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let db = self.project_state_for_uri(uri).map(|s| s.db);
-        let file_constants = self.file_constants_for_uri(uri, &doc.text);
-        let constant_names = file_constants
+        let project_state = self.project_state_for_uri(uri);
+        let db = project_state.as_ref().map(|s| s.db.clone());
+        let constant_names = project_state
             .as_ref()
-            .map(|c| Arc::new(c.constant_names()) as Arc<Vec<String>>);
+            .map(|state| Arc::new(state.constants.constant_names()) as Arc<Vec<String>>);
 
         let local_symbols = self
             .documents
@@ -312,8 +322,11 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let db = self.project_state_for_uri(uri).map(|s| s.db);
-        let file_constants = self.file_constants_for_uri(uri, &doc.text);
+        let project_state = self.project_state_for_uri(uri);
+        let db = project_state.as_ref().map(|s| s.db.clone());
+        let file_constants = project_state
+            .as_ref()
+            .and_then(|state| self.file_constants_for_uri(state, uri, &doc.text));
 
         let hover = compute_hover(&doc.text, position, db.as_deref(), file_constants.as_ref());
 

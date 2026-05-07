@@ -3,6 +3,7 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Position as LspPosition, SymbolKind,
 };
 
+use rotom::compiler::lexer::is_identifier_char;
 use rotom::compiler::sourcemap::{Position as SourcePosition, SourceMap};
 use rotom::database::{DatabaseV2, ParamType};
 
@@ -76,11 +77,20 @@ pub fn compute_completions(
                 }
             }
         }
-        // Non-label parameter: suggest constants only.
+        // Non-label parameter: suggest constants and boolean literals.
         Some(false) => {
+            for &kw in &["true", "false"] {
+                if matches_prefix(kw, &prefix) {
+                    items.push(CompletionItem {
+                        label: kw.to_string(),
+                        kind: Some(CompletionItemKind::KEYWORD),
+                        ..Default::default()
+                    });
+                }
+            }
             if let Some(constant_names) = constant_names {
                 for name in constant_names.iter() {
-                    if matches_prefix(name, &prefix) {
+                    if matches_prefix(name, &prefix) && is_identifier_name(name) {
                         items.push(CompletionItem {
                             label: name.clone(),
                             kind: Some(CompletionItemKind::CONSTANT),
@@ -116,11 +126,20 @@ pub fn compute_completions(
                 }
             }
 
-            // Only suggest constants when not typing the first word of a line.
+            // Only suggest constants and boolean literals when not typing the first word.
             if !is_first_word {
+                for &kw in &["true", "false"] {
+                    if matches_prefix(kw, &prefix) {
+                        items.push(CompletionItem {
+                            label: kw.to_string(),
+                            kind: Some(CompletionItemKind::KEYWORD),
+                            ..Default::default()
+                        });
+                    }
+                }
                 if let Some(constant_names) = constant_names {
                     for name in constant_names.iter() {
-                        if matches_prefix(name, &prefix) {
+                        if matches_prefix(name, &prefix) && is_identifier_name(name) {
                             items.push(CompletionItem {
                                 label: name.clone(),
                                 kind: Some(CompletionItemKind::CONSTANT),
@@ -134,6 +153,18 @@ pub fn compute_completions(
     }
 
     items
+}
+
+/// True if `name` is a valid rotom identifier (starts with a letter or
+/// underscore, contains only identifier characters). Filters out junk from
+/// malformed C preprocessor parsing (e.g. function macro names with params).
+fn is_identifier_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| is_identifier_char(c))
 }
 
 /// Return true if the cursor is inside a line comment or block comment.

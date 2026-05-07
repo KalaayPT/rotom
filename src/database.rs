@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use std::sync::Arc;
 use crate::compiler::ParseResult;
 use crate::compiler::diagnostic::{CompileError, database_error};
 pub use uxie::GameFamily;
-use uxie::{GameLanguage, SymbolTable};
 use uxie::c_parser::defines::eval_expr_with_parent;
+use uxie::{GameLanguage, SymbolTable};
 
 pub fn normalize_command_name(name: &str) -> String {
     name.replace('_', "").to_ascii_lowercase()
@@ -972,12 +972,8 @@ impl ConstantDb {
         include_dirs: &[PathBuf],
         include_path: &str,
     ) -> std::io::Result<bool> {
-        if Self::try_load_decomp_events_include_json(
-            table,
-            parent_dir,
-            include_dirs,
-            include_path,
-        )? {
+        if Self::try_load_decomp_events_include_json(table, parent_dir, include_dirs, include_path)?
+        {
             return Ok(true);
         }
 
@@ -1195,15 +1191,13 @@ impl ConstantDb {
 
     /// Return all known constant names for completion/symbol listing.
     pub fn constant_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.constants.keys().cloned().collect();
+        let mut names: HashSet<String> = self.constants.keys().cloned().collect();
         if let Some(symbols) = &self.uxie_symbols {
-            for (name, _) in symbols.get_all_defines() {
-                if !names.contains(&name) {
-                    names.push(name);
-                }
-            }
+            names.extend(symbols.get_all_defines().into_keys());
         }
-        names
+        let mut sorted: Vec<String> = names.into_iter().collect();
+        sorted.sort();
+        sorted
     }
 }
 
