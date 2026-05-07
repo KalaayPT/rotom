@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build (Linux x86-64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone uxie
+        run: git clone --recursive https://github.com/KalaayPT/uxie.git ../uxie
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          NAME="rotom-${{ github.ref_name }}-linux-x86_64"
+          mkdir "$NAME"
+          cp target/release/rotom target/release/rotom-lsp target/release/libnitroarc_ffi.so "$NAME/"
+          tar -czf "${NAME}.tar.gz" "$NAME"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: rotom-${{ github.ref_name }}-linux-x86_64.tar.gz
+          fail_on_unmatched_files: true
+
+  build-windows:
+    name: Build (Windows x86-64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: base-devel mingw-w64-x86_64-gcc
+          path-type: inherit
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clone uxie
+        run: git clone --recursive https://github.com/KalaayPT/uxie.git ../uxie
+
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "rotom-${{ github.ref_name }}-windows-x86_64"
+          New-Item -ItemType Directory $name
+          Copy-Item "target/x86_64-pc-windows-gnu/release/rotom.exe",
+                    "target/x86_64-pc-windows-gnu/release/rotom-lsp.exe",
+                    "target/x86_64-pc-windows-gnu/release/nitroarc_ffi.dll" "$name/"
+          Compress-Archive -Path "$name/*" -DestinationPath "${name}.zip"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: rotom-${{ github.ref_name }}-windows-x86_64.zip
+          fail_on_unmatched_files: true
