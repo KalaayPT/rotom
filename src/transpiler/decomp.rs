@@ -134,28 +134,20 @@ fn render_transpile_body(
 
     while line_idx < lines.len() {
         let raw_trimmed = lines[line_idx].trim();
-        let (statement, inline_comment) = match preprocess_body_line(raw_trimmed) {
+
+        match preprocess_body_line(raw_trimmed) {
             BodyLine::Empty => {
                 if state.seen_script_entry_end {
                     output.push('\n');
                 }
-                line_idx += 1;
-                continue;
             }
-            BodyLine::SkipPreprocessor => {
-                line_idx += 1;
-                continue;
-            }
+            BodyLine::SkipPreprocessor => {}
             BodyLine::PreserveInclude(include_line) => {
                 output.push_str(include_line);
                 output.push('\n');
-                line_idx += 1;
-                continue;
             }
             BodyLine::TranslateDefine { name, value } => {
                 let _ = writeln!(output, "alias {} as {}", value, name);
-                line_idx += 1;
-                continue;
             }
             BodyLine::ErrorFunctionMacro(name) => {
                 return Err(TranspileError {
@@ -169,24 +161,23 @@ fn render_transpile_body(
             BodyLine::FullComment(comment) => {
                 output.push_str(&comment);
                 output.push('\n');
-                line_idx += 1;
-                continue;
             }
             BodyLine::Content {
                 statement,
                 inline_comment,
-            } => (statement, inline_comment),
-        };
+            } => {
+                process_content_line(
+                    statement,
+                    inline_comment.as_deref(),
+                    line_idx + 1,
+                    prepass,
+                    db,
+                    &mut state,
+                    &mut output,
+                )?;
+            }
+        }
 
-        process_content_line(
-            statement,
-            inline_comment.as_deref(),
-            line_idx + 1,
-            prepass,
-            db,
-            &mut state,
-            &mut output,
-        )?;
         line_idx += 1;
     }
 

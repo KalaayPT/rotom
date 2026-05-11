@@ -623,7 +623,7 @@ mod tests {
 
         let config = fs::read_to_string(root.path().join("rotom.toml")).unwrap();
         assert!(config.contains("project_type = \"decomp\""));
-        assert!(config.contains("game_family = \"platinum\""));
+        assert!(config.contains("game_family = \"Platinum\""));
         assert!(config.contains("default_file = \".rotom/command_database/platinum_v2.json\""));
         assert!(!config.contains("provider = "));
     }

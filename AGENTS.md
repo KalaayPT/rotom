@@ -94,6 +94,7 @@ Ask yourself: "Is this logic already in the dependency's domain?" If yes, add th
 - Don't add `_with_options` variants. Use default parameters, builder patterns, or just let callers pass what they need.
 - Don't add helper functions called exactly once. Inline them.
 - When your changes make a module or function dead, delete it — don't leave it lying around.
+- Before defining a new type, search the codebase. If an equivalent type already exists — same shape, same domain — use it directly. Wrapper types that only exist to rename another type are never acceptable.
 
 ## 9. Ask Before Building Infrastructure
 

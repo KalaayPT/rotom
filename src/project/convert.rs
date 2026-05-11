@@ -245,9 +245,9 @@ fn is_convertible_file(path: &Path, project_type: ProjectTypeConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{convert_project, find_convertible_files};
+    use crate::database::GameFamily;
     use crate::project::config::{
-        GameFamilyConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
-        WorkspaceConfig,
+        PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig, WorkspaceConfig,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -282,7 +282,7 @@ mod tests {
             },
             workspace: WorkspaceConfig {
                 project_type: ProjectTypeConfig::Decomp,
-                game_family: Some(GameFamilyConfig::Platinum),
+                game_family: Some(GameFamily::Platinum),
             },
             paths: PathsConfig {
                 database_dir: ".rotom/command_database".to_string(),
@@ -353,11 +353,7 @@ mod tests {
         let root = dir.path();
         let source_dir = root.join("scripts");
         fs::create_dir_all(&source_dir).unwrap();
-        fs::write(
-            source_dir.join("keep.rotom"),
-            "script Main #1:\n    End\n",
-        )
-        .unwrap();
+        fs::write(source_dir.join("keep.rotom"), "script Main #1:\n    End\n").unwrap();
         fs::write(source_dir.join("convert.script"), "=== script 1\nEnd\n").unwrap();
 
         let files = find_convertible_files(root, &dspre_config()).unwrap();

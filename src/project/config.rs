@@ -29,21 +29,11 @@ pub enum ProjectTypeConfig {
     HgEngine,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum GameFamilyConfig {
-    #[serde(rename = "dp")]
-    Dp,
-    #[serde(rename = "platinum")]
-    Platinum,
-    #[serde(rename = "hgss")]
-    Hgss,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceConfig {
     pub project_type: ProjectTypeConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub game_family: Option<GameFamilyConfig>,
+    pub game_family: Option<GameFamily>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,26 +52,6 @@ pub struct PathsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseConfig {
     pub default_file: String,
-}
-
-impl From<GameFamily> for GameFamilyConfig {
-    fn from(value: GameFamily) -> Self {
-        match value {
-            GameFamily::DP => Self::Dp,
-            GameFamily::Platinum => Self::Platinum,
-            GameFamily::HGSS => Self::Hgss,
-        }
-    }
-}
-
-impl GameFamilyConfig {
-    pub fn into_game_family(self) -> GameFamily {
-        match self {
-            Self::Dp => GameFamily::DP,
-            Self::Platinum => GameFamily::Platinum,
-            Self::Hgss => GameFamily::HGSS,
-        }
-    }
 }
 
 impl RotomConfig {
@@ -128,9 +98,7 @@ impl RotomConfig {
     }
 
     pub fn game_family(&self) -> Option<GameFamily> {
-        self.workspace
-            .game_family
-            .map(GameFamilyConfig::into_game_family)
+        self.workspace.game_family
     }
 
     pub fn global_include_path(&self) -> Option<&'static str> {
@@ -191,8 +159,8 @@ fn resolve_config_path(root: &Path, path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        DatabaseConfig, GameFamilyConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig,
-        RotomConfig, WorkspaceConfig, find_project_root, global_include_path,
+        DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
+        WorkspaceConfig, find_project_root, global_include_path,
     };
     use crate::database::GameFamily;
     use std::fs;
@@ -239,7 +207,7 @@ name = "example"
 
 [workspace]
 project_type = "decomp"
-game_family = "platinum"
+game_family = "Platinum"
 
 [paths]
 database_dir = ".rotom/command_database"
@@ -256,10 +224,7 @@ default_file = ".rotom/command_database/platinum_v2.json"
 
         let config: RotomConfig = super::load_config(dir.path()).unwrap();
         assert_eq!(config.workspace.project_type, ProjectTypeConfig::Decomp);
-        assert_eq!(
-            config.workspace.game_family,
-            Some(GameFamilyConfig::Platinum)
-        );
+        assert_eq!(config.workspace.game_family, Some(GameFamily::Platinum));
         assert_eq!(config.project.name, "example");
     }
 
@@ -274,7 +239,7 @@ default_file = ".rotom/command_database/platinum_v2.json"
             },
             workspace: WorkspaceConfig {
                 project_type: ProjectTypeConfig::Decomp,
-                game_family: Some(GameFamilyConfig::Hgss),
+                game_family: Some(GameFamily::HGSS),
             },
             paths: PathsConfig {
                 database_dir: ".rotom/command_database".to_string(),

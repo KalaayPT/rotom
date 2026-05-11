@@ -1,6 +1,6 @@
 use crate::{
     BatchCompileResult, BatchDecompileResult, CompileError, CompileFailure, CompiledFile,
-    ConstantDb, DatabaseV2, DecompileFailure, decompile_file_internal,
+    ConstantDb, DatabaseV2, DecompileFailure, GameFamily, decompile_file_internal,
 };
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
@@ -69,19 +69,24 @@ pub fn project_output_path(
     source_root: &Path,
     binary_root: &Path,
     project_type: ProjectTypeConfig,
+    game_family: Option<GameFamily>,
 ) -> PathBuf {
     let relative = source_path.strip_prefix(source_root).unwrap_or(source_path);
-    match project_type {
-        ProjectTypeConfig::Dspre | ProjectTypeConfig::HgEngine => {
-            let stem = relative.file_stem().unwrap_or_default();
-            match relative.parent() {
-                Some(parent) => binary_root.join(parent).join(stem),
-                None => binary_root.join(stem),
-            }
+    let extensionless = matches!(
+        project_type,
+        ProjectTypeConfig::Dspre | ProjectTypeConfig::HgEngine
+    ) || matches!(
+        (project_type, game_family),
+        (ProjectTypeConfig::Decomp, Some(GameFamily::Platinum))
+    );
+    if extensionless {
+        let stem = relative.file_stem().unwrap_or_default();
+        match relative.parent() {
+            Some(parent) => binary_root.join(parent).join(stem),
+            None => binary_root.join(stem),
         }
-        ProjectTypeConfig::Decomp | ProjectTypeConfig::Generic => {
-            binary_root.join(relative).with_extension("bin")
-        }
+    } else {
+        binary_root.join(relative).with_extension("bin")
     }
 }
 
@@ -633,6 +638,7 @@ fn collect_project_compile_work(
                 &source_root,
                 &binary_root,
                 config.workspace.project_type,
+                config.game_family(),
             );
             work.push((input, output));
         }
@@ -800,12 +806,12 @@ mod tests {
         detect_project_output_collisions, project_output_path, project_root_pairs,
         relative_project_path,
     };
-    use crate::DatabaseV2;
     use crate::compile_state::{COMPILER_VERSION, CompileState, FileStatus};
     use crate::project::config::{
         DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
         WorkspaceConfig,
     };
+    use crate::{DatabaseV2, GameFamily};
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
@@ -842,7 +848,7 @@ mod tests {
             },
             workspace: WorkspaceConfig {
                 project_type: ProjectTypeConfig::Decomp,
-                game_family: Some(crate::project::config::GameFamilyConfig::Platinum),
+                game_family: Some(GameFamily::Platinum),
             },
             paths: PathsConfig {
                 database_dir: ".rotom/command_database".to_string(),
@@ -872,7 +878,8 @@ mod tests {
                 Path::new("/tmp/scripts/0001.rotom"),
                 source_root,
                 binary_root,
-                ProjectTypeConfig::Dspre
+                ProjectTypeConfig::Dspre,
+                None,
             ),
             Path::new("/tmp/build/scripts/0001")
         );
@@ -881,7 +888,18 @@ mod tests {
                 Path::new("/tmp/scripts/sub/0001.rotom"),
                 source_root,
                 binary_root,
-                ProjectTypeConfig::Decomp
+                ProjectTypeConfig::Decomp,
+                Some(GameFamily::Platinum),
+            ),
+            Path::new("/tmp/build/scripts/sub/0001")
+        );
+        assert_eq!(
+            project_output_path(
+                Path::new("/tmp/scripts/sub/0001.rotom"),
+                source_root,
+                binary_root,
+                ProjectTypeConfig::Decomp,
+                Some(GameFamily::HGSS),
             ),
             Path::new("/tmp/build/scripts/sub/0001.bin")
         );

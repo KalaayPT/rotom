@@ -245,6 +245,21 @@ pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<Scrip
     disassemble_bytes(db, bytes)
 }
 
+fn count_jump_table_lines(source: &str) -> usize {
+    let mut n = 0;
+    let mut past_includes = false;
+    for line in source.lines() {
+        let t = line.trim();
+        if t.starts_with(';') || t.starts_with('@') || t.starts_with("//") { continue; }
+        if t.starts_with("#include") { past_includes = true; continue; }
+        if !past_includes { continue; }
+        if t == "ScriptEntryEnd" || t == "ScrDefEnd" { return n + 1; }
+        if t.is_empty() || t.starts_with("ScriptEntry ") || t.starts_with("ScrDef ") { n += 1; }
+        else { break; }
+    }
+    n
+}
+
 /// Reads a file from disk and compiles it, handling translation and preprocessor directives.
 ///
 /// Supports `.rotom`, `.script`, `.s`, and `.json` inputs.
@@ -351,7 +366,22 @@ pub(crate) fn compile_file_internal(
             let constants = file_constants.as_ref().unwrap_or(constants);
 
             let output = compile(&rotom_source, db, constants, binary_quirks)
-                .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?;
+                .map_err(|e| {
+                    if extension.as_str() == "s" {
+                        let n = count_jump_table_lines(&source);
+                        if n > 0 {
+                            let (tm, om) = (SourceMap::new(&rotom_source), SourceMap::new(&source));
+                            let shift = |b: usize| { let p = tm.byte_to_position(b); om.position_to_byte(Position { line: p.line + n as u32, character: p.character }) };
+                            let e = match e {
+                                CompileError::Parse { span, message } => CompileError::Parse { span: shift(span.start)..shift(span.end), message },
+                                CompileError::Analysis { span, message } => CompileError::Analysis { span: shift(span.start)..shift(span.end), message },
+                                e => e,
+                            };
+                            return CompileFailure::with_source(input, &source, e);
+                        }
+                    }
+                    CompileFailure::with_source(input, &rotom_source, e)
+                })?;
             (output.bytes, output.warnings, rotom_source)
         }
     };
