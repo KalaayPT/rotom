@@ -108,6 +108,9 @@ pub enum ProjectError {
         source: minreq::Error,
     },
 
+    #[error("scrcmd-database baseline: {0}")]
+    ScrcmdBaseline(String),
+
     #[error("Failed to unpack command database archive: {source}")]
     Zip {
         #[from]

@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use uxie::{GameLanguage, RomHeader, Workspace};
 
 use super::config::{ProjectTypeConfig, RotomConfig};
+use super::dspre_script_header::dspre_export_baseline_from_script_paths;
+use super::scrcmd_baseline::fetch_vanilla_scrcmd_v1_at_baseline;
 use super::error::{ProjectError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +35,7 @@ pub fn find_convertible_files(root: &Path, config: &RotomConfig) -> Result<Vec<P
     Ok(files)
 }
 
+#[allow(clippy::too_many_lines)] // Complex migration hooks will grow; split when DSPRE migrate path lands.
 pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Result<ConvertReport> {
     let files = find_convertible_files(root, config)?;
     if files.is_empty() {
@@ -42,6 +45,32 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
             backup_dir: None,
             dry_run,
         });
+    }
+
+    if matches!(config.workspace.project_type, ProjectTypeConfig::Dspre)
+        && let Some(baseline) = dspre_export_baseline_from_script_paths(&files)?
+    {
+        eprintln!(
+            "DSPRE script export baseline: {} (from {})",
+            baseline.oldest.format("%Y-%m-%d %H:%M:%S"),
+            baseline.sample_path.display()
+        );
+        if let Some(family) = config.game_family() {
+            let vanilla = fetch_vanilla_scrcmd_v1_at_baseline(family, baseline.oldest)?;
+            let short = vanilla
+                .commit_sha
+                .get(..7)
+                .unwrap_or(vanilla.commit_sha.as_str());
+            eprintln!(
+                "Resolved vanilla scrcmd v1 at commit {short} ({}) — {} bytes",
+                vanilla.repo_path,
+                vanilla.json.len()
+            );
+        } else {
+            eprintln!(
+                "Skipping online scrcmd v1 baseline: add [workspace].game_family to rotom.toml (Platinum, HGSS, or DP)."
+            );
+        }
     }
 
     let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();

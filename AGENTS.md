@@ -60,6 +60,8 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+**Clippy on touched Rust:** After substantive edits, run Clippy on the relevant crate(s), e.g. `cargo clippy -p rotom --all-targets` or `cargo clippy --workspace --all-targets` when multiple members change. Address **new** warnings in **files or modules you changed** (including lints reported for that code). Do not sweep pre-existing warnings in unrelated files unless the task asks for a wider cleanup.
+
 ## 5. Don't Reimplement Upstream Logic
 
 **When a dependency already solves the problem, don't rewrite it.**
@@ -119,4 +121,4 @@ Ask yourself: "Is this logic already in the dependency's domain?" If yes, add th
 
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, clarifying questions come before implementation rather than after mistakes, and touched Rust code is checked with Clippy without dumping unrelated cleanups into the same change.
