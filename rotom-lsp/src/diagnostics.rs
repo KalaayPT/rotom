@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
 use rotom::compiler::{
+    ast::ScriptFile,
     diagnostic::{CompileError, CompileWarning},
     lexer::Lexer,
     parser::Parser,
@@ -16,13 +19,17 @@ use crate::util::byte_span_to_range;
 /// Uses the error-tolerant parser so incomplete code still yields partial
 /// diagnostics rather than a single fatal error. When a database is provided,
 /// also runs semantic analysis for unknown commands, undefined symbols, etc.
+///
+/// When `reuse_directive_parse` is `Some`, uses that AST and recoverable parse errors from an
+/// earlier `.rotom` `#include` / `#define` pass instead of parsing again.
 pub fn compute_diagnostics(
     source: &str,
     db: Option<&DatabaseV2>,
     constants: Option<&ConstantDb>,
+    reuse_directive_parse: Option<(Arc<ScriptFile>, Vec<CompileError>)>,
 ) -> Vec<Diagnostic> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compute_diagnostics_inner(source, db, constants)
+        compute_diagnostics_inner(source, db, constants, reuse_directive_parse)
     }));
 
     if let Ok(diagnostics) = result {
@@ -37,16 +44,23 @@ fn compute_diagnostics_inner(
     source: &str,
     db: Option<&DatabaseV2>,
     constants: Option<&ConstantDb>,
+    reuse_directive_parse: Option<(Arc<ScriptFile>, Vec<CompileError>)>,
 ) -> Vec<Diagnostic> {
-    let lexer = Lexer::new(source);
-    let mut parser = Parser::new_fallible(lexer);
+    let (ast_arc, mut errors) = if let Some((arc, errs)) = reuse_directive_parse {
+        (Some(arc), errs)
+    } else {
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new_fallible(lexer);
+        let script_opt = parser.parse_script_file().ok();
+        let errs = std::mem::take(&mut parser.errors);
+        (script_opt.map(Arc::new), errs)
+    };
 
-    let ast = parser.parse_script_file().ok();
-    let mut errors = std::mem::take(&mut parser.errors);
+    let ast = ast_arc.as_deref();
 
     // Run semantic analysis if we have a parsed AST and a database.
     let mut warnings = Vec::new();
-    if let (Some(ast), Some(db)) = (ast.as_ref(), db) {
+    if let (Some(ast), Some(db)) = (ast, db) {
         let mut analyzer = if let Some(constants) = constants {
             Analyzer::with_database(constants, db)
         } else {
@@ -114,7 +128,7 @@ mod tests {
     #[test]
     fn test_single_parse_error() {
         let source = "script\n"; // missing name and colon
-        let diagnostics = compute_diagnostics(source, None, None);
+        let diagnostics = compute_diagnostics(source, None, None, None);
         assert!(
             !diagnostics.is_empty(),
             "expected at least one diagnostic for malformed script header"
@@ -132,7 +146,7 @@ mod tests {
         let source = r#"script Main #1:
     End
 "#;
-        let diagnostics = compute_diagnostics(source, None, None);
+        let diagnostics = compute_diagnostics(source, None, None, None);
         assert!(diagnostics.is_empty(), "valid source should have no diagnostics");
     }
 
@@ -143,7 +157,7 @@ mod tests {
 script
     End
 "#;
-        let diagnostics = compute_diagnostics(source, None, None);
+        let diagnostics = compute_diagnostics(source, None, None, None);
         // Both malformed script headers should produce diagnostics
         assert!(
             diagnostics.len() >= 2,

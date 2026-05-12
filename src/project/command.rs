@@ -7,7 +7,7 @@ use super::compile::{compile_project, decompile_project};
 use super::config::{find_project_root, load_config};
 use super::convert::{ConvertReport, convert_project};
 use super::error::{ProjectError, Result};
-use super::init::{InitOptions, InitReport, run_init_with_options};
+use super::init::{InitOptions, InitReport, run_init};
 
 pub fn compile_mode(force: bool) -> Result<BatchCompileResult> {
     let root = resolve_project_root(None)?;
@@ -22,7 +22,7 @@ pub fn decompile_mode() -> Result<BatchDecompileResult> {
 }
 
 pub fn init_mode(root: Option<&Path>, non_interactive: bool) -> Result<InitReport> {
-    run_init_with_options(
+    run_init(
         root.map(Path::to_path_buf),
         InitOptions {
             interactive: !non_interactive && std::io::stdin().is_terminal(),

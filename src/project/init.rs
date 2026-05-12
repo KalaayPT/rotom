@@ -46,11 +46,9 @@ struct WorkspaceInfo {
     binary_roots: Vec<String>,
 }
 
-pub fn run_init(root: Option<PathBuf>) -> Result<InitReport> {
-    run_init_with_options(root, InitOptions::default())
-}
-
-pub fn run_init_with_options(root: Option<PathBuf>, options: InitOptions) -> Result<InitReport> {
+/// Initialize a Rotom project under `root`, downloading or embedding the command database,
+/// writing `rotom.toml`, and optionally converting legacy scripts when `options.interactive`.
+pub fn run_init(root: Option<PathBuf>, options: InitOptions) -> Result<InitReport> {
     let InitOptions {
         interactive,
         game_hint,
@@ -422,19 +420,17 @@ fn detect_workspace(root: &Path) -> Result<WorkspaceInfo> {
                 binary_roots,
             }
         }
-        ProjectType::HgEngine => {
-            WorkspaceInfo {
-                project_type: ProjectTypeConfig::HgEngine,
-                game_family: Some(workspace.family),
-                source_roots: vec![".rotom/scripts".to_string()],
-                include_roots: vec![
-                    "include".to_string(),
-                    "armips/include".to_string(),
-                    "asm/include".to_string(),
-                ],
-                binary_roots: vec!["build/a012".to_string()],
-            }
-        }
+        ProjectType::HgEngine => WorkspaceInfo {
+            project_type: ProjectTypeConfig::HgEngine,
+            game_family: Some(workspace.family),
+            source_roots: vec![".rotom/scripts".to_string()],
+            include_roots: vec![
+                "include".to_string(),
+                "armips/include".to_string(),
+                "asm/include".to_string(),
+            ],
+            binary_roots: vec!["build/a012".to_string()],
+        },
     })
 }
 
@@ -449,7 +445,7 @@ fn build_config(root: &Path, workspace: &WorkspaceInfo, default_db: Option<&Path
         },
         workspace: WorkspaceConfig {
             project_type: workspace.project_type,
-            game_family: workspace.game_family.map(Into::into),
+            game_family: workspace.game_family,
         },
         paths: PathsConfig {
             database_dir: COMMAND_DATABASE_DIR.to_string(),
@@ -608,7 +604,7 @@ mod tests {
         );
         let user_dir = make_user_db_dir(root.path(), "Platinum");
 
-        let report = run_init_with_options(
+        let report = run_init(
             Some(root.path().to_path_buf()),
             InitOptions {
                 user_db_dir_override: Some(user_dir),
@@ -640,7 +636,7 @@ mod tests {
         write_database(&user_dir.join("platinum_v2.json"), "Platinum");
         write_database(&user_dir.join("hgss_v2.json"), "HeartGold");
 
-        run_init_with_options(
+        run_init(
             Some(root.path().to_path_buf()),
             InitOptions {
                 user_db_dir_override: Some(user_dir),
@@ -666,7 +662,7 @@ mod tests {
         .unwrap();
         let user_dir = make_user_db_dir(root.path(), "Platinum");
 
-        let report = run_init_with_options(
+        let report = run_init(
             Some(root.path().to_path_buf()),
             InitOptions {
                 interactive: false,
@@ -687,7 +683,7 @@ mod tests {
         let root = tempdir().unwrap();
         let user_dir = make_user_db_dir(root.path(), "Platinum");
 
-        let error = run_init_with_options(
+        let error = run_init(
             Some(root.path().to_path_buf()),
             InitOptions {
                 user_db_dir_override: Some(user_dir),

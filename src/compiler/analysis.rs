@@ -1,7 +1,4 @@
-use dashmap::DashMap;
-use regex::Regex;
-use std::{collections::HashMap, ops::Range, sync::LazyLock};
-use uxie::c_parser::defines::eval_expr_with_parent;
+use std::{collections::HashMap, ops::Range};
 
 use crate::database::{
     Command, ComparisonOperator, ConstantDb, DatabaseV2, ParamDef, ParamType, ResolvedCommandShape,
@@ -11,11 +8,6 @@ use super::{
     ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind},
     diagnostic::{CompileError, CompileWarning, ParseResult, analysis_error},
 };
-
-/// Macro/variant arg-count condition matcher: `1 arg`, `2 args`, `3 arg(s)`, etc.
-static RE_ARG_COUNT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(\d+)\s+args?\(?s?\)?$").expect("static regex pattern is valid")
-});
 
 #[derive(Debug, Clone)]
 pub enum SymbolType {
@@ -765,55 +757,29 @@ impl<'a> Analyzer<'a> {
         args: &[Expression],
         params: &[ParamDef],
     ) -> ParseResult<bool> {
-        if let Some(caps) = RE_ARG_COUNT.captures(condition) {
-            let expected_count: usize = caps[1].parse().unwrap_or(0);
-            return Ok(args.len() == expected_count);
-        }
-        self.evaluate_variant_condition(condition, args, params)
-    }
-
-    fn evaluate_variant_condition(
-        &self,
-        condition: &str,
-        args: &[Expression],
-        params: &[ParamDef],
-    ) -> ParseResult<bool> {
-        let exprs: HashMap<String, String> = HashMap::new();
-        let mut resolved: HashMap<String, i64> = HashMap::new();
-        let cache: DashMap<String, i64> = DashMap::new();
-
-        for (pos, param) in params.iter().enumerate() {
-            if let Some(arg) = args.get(pos)
-                && let Ok(value) = self.resolve_expression_to_int(arg)
-            {
-                resolved.insert(param.name.clone(), i64::from(value));
-            }
-        }
-
-        let parent_resolver = |name: &str| -> Option<i64> {
-            match name {
+        super::macro_condition::evaluate_macro_variant_condition(
+            condition,
+            args,
+            params,
+            |expr| self.resolve_expression_to_int(expr).ok(),
+            |name| match name {
                 "VARS_START" => Some(0x4000),
                 "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
                 "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
-                _ => {
-                    if let Some(SymbolType::Constant(val) | SymbolType::Variable(val)) =
-                        self.resolve_symbol(name)
-                    {
-                        return Some(i64::from(val));
+                _ => match self.resolve_symbol(name) {
+                    Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => {
+                        Some(i64::from(val))
                     }
-                    None
-                }
-            }
-        };
-
-        eval_expr_with_parent(condition, &exprs, &resolved, &cache, &parent_resolver)
-            .map(|value| value != 0)
-            .ok_or_else(|| {
-                analysis_error(
-                    0..0,
-                    format!("Failed to evaluate variant condition '{}'", condition),
-                )
-            })
+                    _ => None,
+                },
+            },
+        )
+        .map_err(|_| {
+            analysis_error(
+                0..0,
+                format!("Failed to evaluate variant condition '{}'", condition),
+            )
+        })
     }
 
     fn resolve_expression_to_int(&self, expr: &Expression) -> ParseResult<i32> {

@@ -7,6 +7,7 @@ pub mod codegen;
 pub mod diagnostic;
 pub mod ir;
 pub mod lexer;
+pub(crate) mod macro_condition;
 pub mod parser;
 pub mod sourcemap;
 pub mod token;

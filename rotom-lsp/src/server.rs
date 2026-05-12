@@ -24,6 +24,7 @@ use crate::hover::compute_hover;
 use crate::inlay_hints::compute_inlay_hints;
 use crate::signature_help::compute_signature_help;
 
+use rotom::compiler::{ast::ScriptFile, diagnostic::CompileError};
 use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::project::config::{ProjectTypeConfig, RotomConfig, find_project_root, load_config};
 
@@ -35,6 +36,13 @@ const DIAGNOSTIC_DEBOUNCE_MS: u64 = 300;
 struct ProjectState {
     db: Arc<DatabaseV2>,
     constants: ConstantDb,
+}
+
+/// File-local constants for a `.rotom` buffer; may carry the directive parse for diagnostics reuse.
+struct RotomFileConstantsPrep {
+    constants: ConstantDb,
+    /// AST and recoverable lexer/parser errors from the same parse used for `#include` / `#define`.
+    directive_parse_for_diagnostics: Option<(Arc<ScriptFile>, Vec<CompileError>)>,
 }
 
 pub struct RotomServer {
@@ -129,21 +137,30 @@ impl RotomServer {
 
     /// Build file-local constants for a URI by cloning project-wide constants
     /// and applying any `#include` / `#define` directives found in the source.
-    fn file_constants_for_uri(
+    ///
+    /// Returns [`None`] when a directive-bearing `.rotom` file fails to parse (constants fall back
+    /// to project defaults elsewhere).
+    fn rotom_file_constants_prep(
         &self,
         state: &ProjectState,
         uri: &Url,
         source: &str,
-    ) -> Option<ConstantDb> {
+    ) -> Option<RotomFileConstantsPrep> {
         let file_path = uri.to_file_path().ok()?;
 
         // Only clone and process directives for .rotom files that actually
         // have include/define statements.
         if file_path.extension().and_then(|s| s.to_str()) != Some("rotom") {
-            return Some(state.constants.clone());
+            return Some(RotomFileConstantsPrep {
+                constants: state.constants.clone(),
+                directive_parse_for_diagnostics: None,
+            });
         }
         if !source.contains("#include") && !source.contains("#define") {
-            return Some(state.constants.clone());
+            return Some(RotomFileConstantsPrep {
+                constants: state.constants.clone(),
+                directive_parse_for_diagnostics: None,
+            });
         }
 
         let mut file_constants = state.constants.clone();
@@ -151,12 +168,16 @@ impl RotomServer {
         let lexer = rotom::compiler::Lexer::new(source);
         let mut parser = rotom::compiler::Parser::new_fallible(lexer);
         let file = parser.parse_script_file().ok()?;
+        let parse_errors = std::mem::take(&mut parser.errors);
         let script_dir = file_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
         let _ = file_constants.apply_directives(script_dir, source, &file.items);
 
-        Some(file_constants)
+        Some(RotomFileConstantsPrep {
+            constants: file_constants,
+            directive_parse_for_diagnostics: Some((Arc::new(file), parse_errors)),
+        })
     }
 
     /// Schedule diagnostics to be published after a debounce delay.
@@ -178,9 +199,9 @@ impl RotomServer {
         let project_state = self.project_state_for_uri(&uri_for_task);
 
         // Compute file-local constants synchronously before spawning.
-        let file_constants = project_state.as_ref().and_then(|state| {
+        let file_prep = project_state.as_ref().and_then(|state| {
             text.as_ref()
-                .and_then(|src| self.file_constants_for_uri(state, &uri_for_task, src))
+                .and_then(|src| self.rotom_file_constants_prep(state, &uri_for_task, src))
         });
 
         let handle = tokio::spawn(async move {
@@ -189,15 +210,26 @@ impl RotomServer {
             let Some(text) = text else {
                 return;
             };
-            let (db, constants) = if let Some(state) = project_state {
-                let c = file_constants.unwrap_or_else(|| state.constants.clone());
-                (Some(state.db), c)
+            let (db, constants, reuse_directive_parse) = if let Some(state) = project_state {
+                match file_prep {
+                    Some(prep) => (
+                        Some(state.db),
+                        prep.constants,
+                        prep.directive_parse_for_diagnostics,
+                    ),
+                    None => (Some(state.db), state.constants.clone(), None),
+                }
             } else {
                 let empty = rotom::database::ConstantDb::new();
-                (None, empty)
+                (None, empty, None)
             };
 
-            let diagnostics = compute_diagnostics(&text, db.as_deref(), Some(&constants));
+            let diagnostics = compute_diagnostics(
+                &text,
+                db.as_deref(),
+                Some(&constants),
+                reuse_directive_parse,
+            );
             client
                 .publish_diagnostics(uri_for_task, diagnostics, None)
                 .await;
@@ -326,7 +358,8 @@ impl LanguageServer for RotomServer {
         let db = project_state.as_ref().map(|s| s.db.clone());
         let file_constants = project_state
             .as_ref()
-            .and_then(|state| self.file_constants_for_uri(state, uri, &doc.text));
+            .and_then(|state| self.rotom_file_constants_prep(state, uri, &doc.text))
+            .map(|prep| prep.constants);
 
         let hover = compute_hover(&doc.text, position, db.as_deref(), file_constants.as_ref());
 

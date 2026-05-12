@@ -7,7 +7,7 @@ use serde::Serialize;
 use super::{render_diagnostic, serialize_range};
 
 /// Unified error type for the compiler
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "details")]
 pub enum CompileError {
     /// Error during lexing/parsing with source location
