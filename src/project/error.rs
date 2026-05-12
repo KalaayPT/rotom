@@ -122,4 +122,18 @@ pub enum ProjectError {
 
     #[error("Project decompile failed: {0}")]
     Decompile(#[from] DecompileError),
+
+    #[error(
+        "DSPRE convert expected paired script binary '{binary}' for '{script}', but the file is missing"
+    )]
+    DspreConvertMissingBinary {
+        script: PathBuf,
+        binary: PathBuf,
+    },
+
+    #[error(
+        "DSPRE script '{}' is not under any configured paths.source_roots entry",
+        script.display()
+    )]
+    DspreScriptOutsideSourceRoots { script: PathBuf },
 }

@@ -485,10 +485,9 @@ fn finish_compile_session(session: &mut CompileSession, current_paths: Vec<Strin
         })
 }
 
-/// Merge successful decompile results into compile state so regenerated source
-/// files are treated as current project inputs rather than immediately appearing
-/// stale on the next compile.
-fn update_decompile_state(
+/// Merge successful decompile outputs into compile state so regenerated sources are not stale on
+/// the next [`compile_project`] pass (matches [`decompile_project`] bookkeeping).
+pub(crate) fn update_decompile_state(
     root: &Path,
     config: &RotomConfig,
     db_hash: u64,
@@ -690,6 +689,34 @@ fn collect_project_decompile_work(
 
     work.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(work)
+}
+
+/// DSPRE extensionless binary path paired with `script_path` (`[paths]` source/binary roots).
+pub(crate) fn dspre_binary_path_for_script(
+    root: &Path,
+    config: &RotomConfig,
+    script_path: &Path,
+) -> Result<PathBuf> {
+    debug_assert!(matches!(
+        config.workspace.project_type,
+        ProjectTypeConfig::Dspre
+    ));
+
+    let pairs = project_root_pairs(root, config)?;
+    for (source_root, binary_root) in pairs {
+        if script_path.starts_with(&source_root) {
+            return Ok(project_output_path(
+                script_path,
+                &source_root,
+                &binary_root,
+                ProjectTypeConfig::Dspre,
+                config.game_family(),
+            ));
+        }
+    }
+    Err(ProjectError::DspreScriptOutsideSourceRoots {
+        script: script_path.to_path_buf(),
+    })
 }
 
 fn project_root_pairs(root: &Path, config: &RotomConfig) -> Result<Vec<(PathBuf, PathBuf)>> {

@@ -610,25 +610,18 @@ pub fn compile_path(
     }
 }
 
-fn decompile_file_internal(
+/// Writes decompiled text for a binary already disassembled into [`ScriptOutput`] (quirks,
+/// [`ir_to_source`], output path stem, disk write—all aligned with [`decompile_file_internal`]).
+///
+/// `input` is the binary path used for diagnostics and for [`DecompileFileResult::input`].
+pub(crate) fn decompile_file_from_ir(
     input: &Path,
+    script_output: ScriptOutput,
     output_file: Option<&Path>,
     output_dir: Option<&Path>,
     db: &DatabaseV2,
     constants: Option<&ConstantDb>,
 ) -> Result<DecompileFileResult, DecompileFailure> {
-    let bytes = std::fs::read(input).map_err(|e| DecompileFailure {
-        path: input.to_path_buf(),
-        error: DecompileError::Io {
-            message: format!("Failed to read input file '{}': {}", input.display(), e),
-        },
-    })?;
-
-    let script_output = decompile_to_ir(bytes, db).map_err(|e| DecompileFailure {
-        path: input.to_path_buf(),
-        error: e,
-    })?;
-
     let mut quirks = BinaryQuirk::default();
     match &script_output {
         ScriptOutput::Normal {
@@ -643,7 +636,7 @@ fn decompile_file_internal(
         _ => {}
     }
 
-    let is_levelscript = matches!(script_output, ScriptOutput::Levelscript(_));
+    let is_levelscript = matches!(&script_output, ScriptOutput::Levelscript(_));
 
     let output_path = resolve_decompile_output_path(input, output_file, output_dir, is_levelscript);
 
@@ -680,6 +673,28 @@ fn decompile_file_internal(
         size,
         quirks,
     })
+}
+
+fn decompile_file_internal(
+    input: &Path,
+    output_file: Option<&Path>,
+    output_dir: Option<&Path>,
+    db: &DatabaseV2,
+    constants: Option<&ConstantDb>,
+) -> Result<DecompileFileResult, DecompileFailure> {
+    let bytes = std::fs::read(input).map_err(|e| DecompileFailure {
+        path: input.to_path_buf(),
+        error: DecompileError::Io {
+            message: format!("Failed to read input file '{}': {}", input.display(), e),
+        },
+    })?;
+
+    let script_output = decompile_to_ir(bytes, db).map_err(|e| DecompileFailure {
+        path: input.to_path_buf(),
+        error: e,
+    })?;
+
+    decompile_file_from_ir(input, script_output, output_file, output_dir, db, constants)
 }
 
 /// Decompile a file or directory of binary scripts to Rotoscript source.
