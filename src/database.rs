@@ -176,14 +176,18 @@ pub struct Command {
     pub expansion: Option<Vec<String>>,
 }
 
-/// The param list the compiler picked for this call.
+/// Result of [`Command::resolve_source_call_shape`].
 ///
-/// The compiler picks a shape, fills in that shape's defaults, then optionally rewrites the
-/// result with `emit_args`.
+/// [`Self::params`] / [`Self::emit_args`] describe the source-level argument shape.
+///
+/// For [`CommandType::Macro`](crate::database::CommandType::Macro), [`Self::macro_expansion`] is
+/// the `$`-substituted template lines for the **same** variant as [`Self::params`], falling back
+/// to the command-level [`Command::expansion`] when the variant does not define its own lines.
 #[derive(Debug, Clone, Copy)]
 pub struct ResolvedCommandShape<'a> {
     pub params: &'a [ParamDef],
     pub emit_args: Option<&'a [String]>,
+    pub macro_expansion: Option<&'a Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -447,6 +451,9 @@ impl Command {
     ///
     /// The returned params are the ones used to check the call. Defaults run on that shape later,
     /// and `emit_args` may rewrite the result afterward.
+    ///
+    /// For macros, [`ResolvedCommandShape::macro_expansion`] lists template lines consistent with
+    /// the chosen variant (falling back to [`Command::expansion`]).
     pub fn resolve_source_call_shape(
         &self,
         first_arg_u8: Option<u8>,
@@ -459,6 +466,10 @@ impl Command {
                         return ResolvedCommandShape {
                             params: variant.source_params_or(&self.params),
                             emit_args: variant.emit_args.as_deref(),
+                            macro_expansion: variant
+                                .expansion
+                                .as_ref()
+                                .or(self.expansion.as_ref()),
                         };
                     }
                 }
@@ -475,6 +486,10 @@ impl Command {
                     return ResolvedCommandShape {
                         params: variant.source_params_or(&self.params),
                         emit_args: variant.emit_args.as_deref(),
+                        macro_expansion: variant
+                            .expansion
+                            .as_ref()
+                            .or(self.expansion.as_ref()),
                     };
                 }
             }
@@ -483,6 +498,7 @@ impl Command {
         ResolvedCommandShape {
             params: &self.params,
             emit_args: None,
+            macro_expansion: self.expansion.as_ref(),
         }
     }
 
@@ -1352,6 +1368,97 @@ mod tests {
         assert_eq!(ParamType::U32.size(), 4);
         assert_eq!(ParamType::Label.size(), 4);
         assert_eq!(ParamType::Var.size(), 2);
+    }
+
+    #[test]
+    fn test_resolve_source_call_shape_macro_expansion_tracks_variant() {
+        let when_one_arg = vec!["branch_one".to_string()];
+        let when_else = vec!["branch_else".to_string()];
+        let fallback_base = vec!["fallback_base".to_string()];
+        let cmd = Command {
+            cmd_type: CommandType::Macro,
+            id: None,
+            legacy_name: None,
+            description: None,
+            params: vec![ParamDef {
+                name: "x".to_string(),
+                param_type: ParamType::Var,
+                const_value: None,
+                default: None,
+                optional: false,
+            }],
+            variants: Some(vec![
+                Variant {
+                    params: vec![],
+                    desc: None,
+                    condition: Some("1 arg".to_string()),
+                    expansion: Some(when_one_arg.clone()),
+                    emit_args: None,
+                },
+                Variant {
+                    params: vec![],
+                    desc: None,
+                    condition: Some("else".to_string()),
+                    expansion: Some(when_else.clone()),
+                    emit_args: None,
+                },
+            ]),
+            expansion: Some(fallback_base.clone()),
+        };
+
+        let one_arg_shape =
+            cmd.resolve_source_call_shape(None, |condition, _| condition == "1 arg");
+        assert_eq!(one_arg_shape.macro_expansion, Some(&when_one_arg));
+
+        let else_shape = cmd.resolve_source_call_shape(None, |_, _| false);
+        assert_eq!(else_shape.macro_expansion, Some(&when_else));
+
+        let cmd_flat = Command {
+            variants: None,
+            expansion: Some(fallback_base.clone()),
+            ..cmd
+        };
+        let base_shape = cmd_flat.resolve_source_call_shape(None, |_, _| false);
+        assert_eq!(base_shape.macro_expansion, Some(&fallback_base));
+    }
+
+    #[test]
+    fn test_resolve_source_call_shape_const_variant_provides_macro_expansion() {
+        let variant_lines = vec!["from_const_variant".to_string()];
+        let base_lines = vec!["from_base".to_string()];
+        let cmd = Command {
+            cmd_type: CommandType::Macro,
+            id: None,
+            legacy_name: None,
+            description: None,
+            params: vec![ParamDef {
+                name: "mode".to_string(),
+                param_type: ParamType::U8,
+                const_value: None,
+                default: None,
+                optional: false,
+            }],
+            variants: Some(vec![Variant {
+                params: vec![ParamDef {
+                    name: "mode".to_string(),
+                    param_type: ParamType::U8,
+                    const_value: Some("2".to_string()),
+                    default: None,
+                    optional: false,
+                }],
+                desc: None,
+                condition: None,
+                expansion: Some(variant_lines.clone()),
+                emit_args: None,
+            }]),
+            expansion: Some(base_lines.clone()),
+        };
+
+        let matched = cmd.resolve_source_call_shape(Some(2), |_, _| panic!("no condition eval"));
+        assert_eq!(matched.macro_expansion, Some(&variant_lines));
+
+        let unmatched = cmd.resolve_source_call_shape(Some(9), |_, _| false);
+        assert_eq!(unmatched.macro_expansion, Some(&base_lines));
     }
 
     #[test]

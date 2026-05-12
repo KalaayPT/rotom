@@ -95,6 +95,7 @@ Ask yourself: "Is this logic already in the dependency's domain?" If yes, add th
 - If you see 5 functions that could be 3, simplify before extending.
 - Don't add `_with_options` and similar variants. Use default parameters, builder patterns, or just let callers pass what they need.
 - Don't add helper functions called exactly once. Inline them.
+- **Never add a module or shared helper for a few lines** that are only used once or twice — especially when call sites still pass closures anyway and gain nothing. Duplicate the snippet inline until several real call sites justify extraction (see §9).
 - When your changes make a module or function dead, delete it — don't leave it lying around.
 - Before defining a new type, search the codebase. If an equivalent type already exists — same shape, same domain — use it directly. Wrapper types that only exist to rename another type are never acceptable.
 

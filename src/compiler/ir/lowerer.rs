@@ -418,17 +418,6 @@ impl<'a> Lowerer<'a> {
         Self::apply_emit_args(shape, &source_args)
     }
 
-    /// Apply defaults to a command or macro after its param list has already been chosen.
-    fn apply_defaults(
-        &self,
-        command: &str,
-        cmd: &Command,
-        args: &[Expression],
-    ) -> ParseResult<Vec<Expression>> {
-        let params = self.select_command_shape(cmd, args).params;
-        Self::apply_defaults_to_params(command, params, args)
-    }
-
     fn apply_defaults_to_params(
         command: &str,
         params: &[ParamDef],
@@ -581,28 +570,7 @@ impl<'a> Lowerer<'a> {
             )));
         }
 
-        let expansion = if let Some(variants) = &cmd.variants {
-            let mut matched_expansion = None;
-            for variant in variants {
-                if let Some(condition) = &variant.condition {
-                    if condition == "else" {
-                        matched_expansion = variant.expansion.as_ref();
-                        break;
-                    }
-
-                    if self.evaluate_condition_with_arg_count(condition, args, params)? {
-                        matched_expansion = variant.expansion.as_ref();
-                        break;
-                    }
-                }
-            }
-
-            matched_expansion.or(cmd.expansion.as_ref())
-        } else {
-            cmd.expansion.as_ref()
-        };
-
-        let expansion = expansion.ok_or_else(|| {
+        let expansion = shape.macro_expansion.ok_or_else(|| {
             lowering_error(format!(
                 "Macro '{}' has no expansion defined (and no matching variant)",
                 macro_name
@@ -1110,18 +1078,22 @@ impl<'a> Lowerer<'a> {
             });
         }
 
-        let args_with_defaults = self.apply_defaults(name, cmd, &final_args)?;
+        let shape = self.select_command_shape(cmd, &final_args);
+        let args_with_defaults = Self::apply_defaults_to_params(name, shape.params, &final_args)?;
 
         if cmd.is_macro() {
+            let expansion = shape.macro_expansion.ok_or_else(|| {
+                lowering_error(format!(
+                    "Macro '{}' has no expansion defined (and no matching variant)",
+                    name
+                ))
+            })?;
+
             let mut param_map: HashMap<String, String> = HashMap::new();
-            for (param, arg) in cmd.params.iter().zip(args_with_defaults.iter()) {
+            for (param, arg) in shape.params.iter().zip(args_with_defaults.iter()) {
                 let formatted = Self::format_arg_for_substitution(arg)?;
                 param_map.insert(param.name.clone(), formatted);
             }
-
-            let expansion = cmd.expansion.as_ref().ok_or_else(|| {
-                lowering_error(format!("Macro '{}' has no expansion defined", name))
-            })?;
 
             for line in expansion {
                 let substituted = Self::substitute_params(line, &param_map);
