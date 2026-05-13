@@ -58,6 +58,8 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - Decompiler pattern matching for `match`/`while`/`if` reconstruction
 - Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT`
 - Fully-featured for loops, will need graph colouring for counting
+- Derive includes for utilized text banks from map headers and GlobalScript table (DSPRE)
+- Resolve GlobalScript IDs to script files and integrate in workspace symbol table
 
 
 ---

@@ -1193,6 +1193,14 @@ impl ConstantDb {
             .and_then(|s| s.resolve_name_in_family(value, family))
     }
 
+    /// The text bank stem loaded for this file by `apply_directives`.
+    ///
+    /// Returns e.g. `"acuity_cavern"` when the file included
+    /// `res/text/bank/acuity_cavern.h`.  `None` if no text bank was included.
+    pub fn text_bank_stem(&self) -> Option<&str> {
+        self.uxie_symbols.as_ref()?.loaded_text_bank_stems().next()
+    }
+
     pub fn len(&self) -> usize {
         let uxie_count = self
             .uxie_symbols

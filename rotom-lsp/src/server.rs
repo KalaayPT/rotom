@@ -31,11 +31,13 @@ use rotom::project::config::{ProjectTypeConfig, RotomConfig, find_project_root, 
 /// How long to wait after the last keystroke before re-running diagnostics.
 const DIAGNOSTIC_DEBOUNCE_MS: u64 = 300;
 
-/// Per-project cached state: loaded database and project-wide constants.
+/// Per-project cached state: loaded database, project-wide constants,
+/// and the uxie workspace for message lookups and script resolution.
 #[derive(Clone)]
 struct ProjectState {
     db: Arc<DatabaseV2>,
     constants: ConstantDb,
+    workspace: Option<Arc<uxie::Workspace>>,
 }
 
 /// File-local constants for a `.rotom` buffer; may carry the directive parse for diagnostics reuse.
@@ -101,7 +103,7 @@ impl RotomServer {
             let _ = constants.load_directory(&database_dir);
         }
 
-        match config.workspace.project_type {
+        let workspace: Option<Arc<uxie::Workspace>> = match config.workspace.project_type {
             ProjectTypeConfig::Decomp => {
                 if let Some(game_family) = config.game_family() {
                     let cache_dir = config.cache_dir(root);
@@ -114,24 +116,30 @@ impl RotomServer {
                         let _ = constants.load_decomp_symbols(root, (*symbols).clone());
                     }
                 }
+                uxie::Workspace::open(root).ok().map(Arc::new)
             }
             ProjectTypeConfig::Dspre => {
                 let language = uxie::RomHeader::open(root)
                     .map_or(uxie::game::GameLanguage::English, |h| h.detect_language());
                 let _ = constants.load_dspre_text_archives(root, language);
+                uxie::Workspace::open(root).ok().map(Arc::new)
             }
             ProjectTypeConfig::HgEngine => {
                 if let Ok(mut ws) = uxie::Workspace::open(root) {
                     let _ = ws.load_hg_engine_constants();
                     let _ = constants.load_decomp_symbols(root, (*ws.symbols).clone());
+                    Some(Arc::new(ws))
+                } else {
+                    None
                 }
             }
-            ProjectTypeConfig::Generic => {}
-        }
+            ProjectTypeConfig::Generic => None,
+        };
 
         Ok(ProjectState {
             db: Arc::new(db),
             constants,
+            workspace,
         })
     }
 
@@ -360,8 +368,20 @@ impl LanguageServer for RotomServer {
             .as_ref()
             .and_then(|state| self.rotom_file_constants_prep(state, uri, &doc.text))
             .map(|prep| prep.constants);
+        let workspace = project_state.as_ref().and_then(|s| s.workspace.clone());
+        let script_file = uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.file_stem()?.to_str().map(str::to_string));
 
-        let hover = compute_hover(&doc.text, position, db.as_deref(), file_constants.as_ref());
+        let hover = compute_hover(
+            &doc.text,
+            position,
+            db.as_deref(),
+            file_constants.as_ref(),
+            workspace.as_deref(),
+            script_file.as_deref(),
+        );
 
         Ok(hover)
     }
