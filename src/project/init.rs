@@ -8,8 +8,11 @@ use super::config::{
     DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig, WorkspaceConfig,
     load_config,
 };
-use super::convert::{convert_project, find_convertible_files, ConvertOptions};
-use super::dspre_db_migration::dspre_workspace_dir_basename_for_rotom;
+use super::convert::{ConvertOptions, convert_project, find_convertible_files};
+use super::dspre_db_migration::{
+    dspre_edited_db_suggests_followplat, dspre_workspace_dir_basename_for_rotom,
+    find_local_scrcmd_v1_path,
+};
 use super::error::{ProjectError, Result};
 
 pub const LATEST_COMMAND_DATABASE_URL: &str = "https://github.com/DS-Pokemon-Rom-Editor/scrcmd-database/releases/latest/download/db-latest.zip";
@@ -110,10 +113,17 @@ pub fn run_init(root: Option<PathBuf>, options: InitOptions) -> Result<InitRepor
     let preferred_family = workspace
         .game_family
         .or_else(|| game_hint.as_ref().and_then(game_family_from_hint));
+    let prefer_following_platinum = matches!(workspace.project_type, ProjectTypeConfig::Dspre)
+        && preferred_family == Some(GameFamily::Platinum)
+        && dspre_init_prefers_following_platinum_v2(&root, &build_config(&root, &workspace, None));
 
     let command_database_dir = root.join(COMMAND_DATABASE_DIR);
-    let project_db_populated =
-        ensure_project_database(&command_database_dir, &user_db_dir, preferred_family)?;
+    let project_db_populated = ensure_project_database(
+        &command_database_dir,
+        &user_db_dir,
+        preferred_family,
+        prefer_following_platinum,
+    )?;
 
     // Only surface "used embedded" when we actually bootstrapped the project DB
     // from the embedded fallback; an already-populated project DB is not affected.
@@ -127,7 +137,12 @@ pub fn run_init(root: Option<PathBuf>, options: InitOptions) -> Result<InitRepor
         };
         Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
     } else {
-        find_default_database_file(&root, &command_database_dir, preferred_family)?
+        find_default_database_file(
+            &root,
+            &command_database_dir,
+            preferred_family,
+            prefer_following_platinum,
+        )?
     };
 
     let config_path = root.join("rotom.toml");
@@ -243,6 +258,7 @@ fn ensure_project_database(
     project_dir: &Path,
     user_dir: &Path,
     family: Option<GameFamily>,
+    prefer_following_platinum: bool,
 ) -> Result<bool> {
     // Leave an existing database alone.
     if project_dir.exists() {
@@ -270,8 +286,14 @@ fn ensure_project_database(
             .cloned()
             .collect();
         if !matched.is_empty() {
-            for src in &matched {
-                copy_db_file(src, project_dir)?;
+            if family == GameFamily::Platinum {
+                if let Some(src) = pick_platinum_v2_variant(&matched, prefer_following_platinum) {
+                    copy_db_file(&src, project_dir)?;
+                }
+            } else {
+                for src in &matched {
+                    copy_db_file(src, project_dir)?;
+                }
             }
             return Ok(false);
         }
@@ -298,27 +320,58 @@ fn is_v2_file_for_family(path: &Path, family: GameFamily) -> bool {
     game_family_from_hint(path.to_string_lossy()) == Some(family)
 }
 
-/// Scan `files` for the one whose JSON `meta.version` (or filename stem)
-/// matches `family`.  Prefers the base family file (e.g. `platinum_v2.json`)
-/// over variant files (e.g. `following_platinum_v2.json`) unless there is no
-/// base file.
-fn find_family_file(files: &[PathBuf], family: GameFamily) -> Option<PathBuf> {
-    let base = files
-        .iter()
-        .find(|f| {
-            is_v2_file_for_family(f, family)
-                && !f
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("following")
+fn pick_platinum_v2_variant(files: &[PathBuf], prefer_following: bool) -> Option<PathBuf> {
+    let following = files.iter().find(|path| {
+        path.file_name()
+            .is_some_and(|name| name == "following_platinum_v2.json")
+    });
+    let stock = files.iter().find(|path| {
+        path.file_name()
+            .is_some_and(|name| name == "platinum_v2.json")
+    });
+    if prefer_following {
+        following.or(stock).cloned()
+    } else {
+        stock.or(following).cloned()
+    }
+}
+
+fn dspre_init_prefers_following_platinum_v2(root: &Path, config: &RotomConfig) -> bool {
+    let Some(family) = config.game_family() else {
+        return false;
+    };
+    let Some(path) = find_local_scrcmd_v1_path(root, family, config) else {
+        return false;
+    };
+    let Some(user_map) = fs::read_to_string(path)
+        .ok()
+        .and_then(|source| serde_json::from_str::<serde_json::Value>(&source).ok())
+        .and_then(|value| {
+            value
+                .get("scrcmd")
+                .and_then(serde_json::Value::as_object)
+                .cloned()
         })
-        .cloned();
-    base.or_else(|| {
-        files
-            .iter()
-            .find(|f| is_v2_file_for_family(f, family))
-            .cloned()
-    })
+    else {
+        return false;
+    };
+    dspre_edited_db_suggests_followplat(&user_map)
+}
+
+/// Scan `files` for the one whose JSON `meta.version` (or filename stem) matches `family`.
+fn find_family_file(
+    files: &[PathBuf],
+    family: GameFamily,
+    prefer_following_platinum: bool,
+) -> Option<PathBuf> {
+    if family == GameFamily::Platinum {
+        return pick_platinum_v2_variant(files, prefer_following_platinum);
+    }
+
+    files
+        .iter()
+        .find(|f| is_v2_file_for_family(f, family))
+        .cloned()
 }
 
 fn copy_db_file(src: &Path, dest_dir: &Path) -> Result<()> {
@@ -552,13 +605,14 @@ fn find_default_database_file(
     root: &Path,
     database_dir: &Path,
     preferred_family: Option<GameFamily>,
+    prefer_following_platinum: bool,
 ) -> Result<Option<PathBuf>> {
     let mut files = Vec::new();
     collect_v2_files(database_dir, &mut files)?;
     files.sort();
 
     if let Some(preferred_family) = preferred_family
-        && let Some(file) = find_family_file(&files, preferred_family)
+        && let Some(file) = find_family_file(&files, preferred_family, prefer_following_platinum)
     {
         return Ok(Some(file.strip_prefix(root).unwrap_or(&file).to_path_buf()));
     }
@@ -795,10 +849,29 @@ mod tests {
         write_database(&user_dir.join("hgss_v2.json"), "HeartGold");
 
         let project_dir = dir.path().join("project");
-        ensure_project_database(&project_dir, &user_dir, Some(GameFamily::Platinum)).unwrap();
+        ensure_project_database(&project_dir, &user_dir, Some(GameFamily::Platinum), false)
+            .unwrap();
 
         assert!(project_dir.join("platinum_v2.json").exists());
         assert!(!project_dir.join("hgss_v2.json").exists());
+    }
+
+    #[test]
+    fn ensure_project_database_copies_only_following_platinum_variant_when_requested() {
+        let dir = tempdir().unwrap();
+        let user_dir = dir.path().join("user");
+        fs::create_dir_all(&user_dir).unwrap();
+        write_database(&user_dir.join("platinum_v2.json"), "Platinum");
+        write_database(
+            &user_dir.join("following_platinum_v2.json"),
+            "Following Platinum",
+        );
+
+        let project_dir = dir.path().join("project");
+        ensure_project_database(&project_dir, &user_dir, Some(GameFamily::Platinum), true).unwrap();
+
+        assert!(!project_dir.join("platinum_v2.json").exists());
+        assert!(project_dir.join("following_platinum_v2.json").exists());
     }
 
     #[test]
@@ -810,7 +883,7 @@ mod tests {
         write_database(&user_dir.join("hgss_v2.json"), "HeartGold");
 
         let project_dir = dir.path().join("project");
-        ensure_project_database(&project_dir, &user_dir, None).unwrap();
+        ensure_project_database(&project_dir, &user_dir, None, false).unwrap();
 
         assert!(project_dir.join("platinum_v2.json").exists());
         assert!(project_dir.join("hgss_v2.json").exists());
@@ -829,7 +902,7 @@ mod tests {
 
         // Even though the user dir has HGSS and family says HGSS, the project
         // dir is non-empty so we must not touch it.
-        ensure_project_database(&project_dir, &user_dir, Some(GameFamily::HGSS)).unwrap();
+        ensure_project_database(&project_dir, &user_dir, Some(GameFamily::HGSS), false).unwrap();
 
         assert!(project_dir.join("platinum_v2.json").exists());
         assert!(!project_dir.join("hgss_v2.json").exists());
