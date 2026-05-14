@@ -160,7 +160,7 @@ pub fn convert_project(
     }
 
     let dspre_migration = matches!(config.workspace.project_type, ProjectTypeConfig::Dspre);
-    let db_path_opt = config.database_file(root);
+    let mut db_path_opt = config.database_file(root);
     if dspre_migration && db_path_opt.is_none() {
         return Err(ProjectError::MissingDefaultDatabase);
     }
@@ -281,6 +281,22 @@ pub fn convert_project(
     } else {
         None
     };
+
+    // When the v1 baseline resolved to Following Platinum, use its v2 DB.
+    if let (Some(vanilla), Some(family)) = (&vanilla_opt, config.game_family())
+        && family == GameFamily::Platinum
+        && vanilla.repo_path.to_ascii_lowercase().contains("following")
+        && let Some(current) = &db_path_opt
+    {
+        let follow = config.database_dir(root).join("following_platinum_v2.json");
+        if follow.is_file() && follow != *current {
+            eprintln!(
+                "Switching to Following Platinum v2 database ({}).",
+                follow.display()
+            );
+            db_path_opt = Some(follow);
+        }
+    }
 
     let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();
     let backup_dir = root.join(".rotom/backups").join(timestamp);

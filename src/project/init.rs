@@ -263,11 +263,18 @@ fn ensure_project_database(
     collect_v2_files(user_dir, &mut user_files)?;
     user_files.sort();
 
-    if let Some(family) = family
-        && let Some(src) = find_family_file(&user_files, family)
-    {
-        copy_db_file(&src, project_dir)?;
-        return Ok(false);
+    if let Some(family) = family {
+        let matched: Vec<PathBuf> = user_files
+            .iter()
+            .filter(|f| is_v2_file_for_family(f, family))
+            .cloned()
+            .collect();
+        if !matched.is_empty() {
+            for src in &matched {
+                copy_db_file(src, project_dir)?;
+            }
+            return Ok(false);
+        }
     }
 
     // No family match (or unknown family): copy everything.
@@ -277,28 +284,41 @@ fn ensure_project_database(
     Ok(false)
 }
 
-/// Scan `files` for the one whose JSON `meta.version` (or filename stem)
-/// matches `family`.
-fn find_family_file(files: &[PathBuf], family: GameFamily) -> Option<PathBuf> {
-    // Prefer matching by reading the meta.version field — more reliable than
-    // guessing from the filename alone.
-    for file in files {
-        if let Ok(contents) = fs::read_to_string(file)
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
-            && let Some(version) = json
-                .get("meta")
-                .and_then(|m| m.get("version"))
-                .and_then(|v| v.as_str())
-            && game_family_from_hint(version) == Some(family)
-        {
-            return Some(file.clone());
-        }
+fn is_v2_file_for_family(path: &Path, family: GameFamily) -> bool {
+    if let Ok(contents) = fs::read_to_string(path)
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
+        && let Some(version) = json
+            .get("meta")
+            .and_then(|m| m.get("version"))
+            .and_then(|v| v.as_str())
+        && game_family_from_hint(version) == Some(family)
+    {
+        return true;
     }
-    // Fall back to filename matching.
-    files
+    game_family_from_hint(path.to_string_lossy()) == Some(family)
+}
+
+/// Scan `files` for the one whose JSON `meta.version` (or filename stem)
+/// matches `family`.  Prefers the base family file (e.g. `platinum_v2.json`)
+/// over variant files (e.g. `following_platinum_v2.json`) unless there is no
+/// base file.
+fn find_family_file(files: &[PathBuf], family: GameFamily) -> Option<PathBuf> {
+    let base = files
         .iter()
-        .find(|f| game_family_from_hint(f.to_string_lossy()) == Some(family))
-        .cloned()
+        .find(|f| {
+            is_v2_file_for_family(f, family)
+                && !f
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("following")
+        })
+        .cloned();
+    base.or_else(|| {
+        files
+            .iter()
+            .find(|f| is_v2_file_for_family(f, family))
+            .cloned()
+    })
 }
 
 fn copy_db_file(src: &Path, dest_dir: &Path) -> Result<()> {
@@ -567,7 +587,9 @@ fn collect_v2_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
                 source,
             })?
             .path();
-        if path.is_file()
+        if path.is_dir() {
+            collect_v2_files(&path, out)?;
+        } else if path.is_file()
             && path
                 .file_name()
                 .and_then(|name| name.to_str())
