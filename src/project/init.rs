@@ -8,7 +8,8 @@ use super::config::{
     DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig, WorkspaceConfig,
     load_config,
 };
-use super::convert::{convert_project, find_convertible_files};
+use super::convert::{convert_project, find_convertible_files, ConvertOptions};
+use super::dspre_db_migration::dspre_workspace_dir_basename_for_rotom;
 use super::error::{ProjectError, Result};
 
 pub const LATEST_COMMAND_DATABASE_URL: &str = "https://github.com/DS-Pokemon-Rom-Editor/scrcmd-database/releases/latest/download/db-latest.zip";
@@ -346,7 +347,15 @@ fn maybe_convert_existing_sources(
     if answer.is_empty() || answer == "y" || answer == "yes" {
         Ok((
             convertible_files_detected,
-            convert_project(root, config, false)?.converted,
+            convert_project(
+                root,
+                config,
+                ConvertOptions {
+                    dry_run: false,
+                    non_interactive: !interactive,
+                },
+            )?
+            .converted,
         ))
     } else {
         Ok((convertible_files_detected, 0))
@@ -434,15 +443,23 @@ fn detect_workspace(root: &Path) -> Result<WorkspaceInfo> {
     })
 }
 
+/// Builds the `RotomConfig` persisted as `rotom.toml` during [`run_init`].
+///
+/// DSPRE projects: `[project].name` is derived from the workspace directory with a **`_DSPRE_contents`**
+/// suffix removed when present so it matches DSPRE’s short edited-database folder names.
 fn build_config(root: &Path, workspace: &WorkspaceInfo, default_db: Option<&Path>) -> RotomConfig {
+    let dirname = root.file_name().map_or_else(
+        || "rotom-project".to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let project_name = if workspace.project_type == ProjectTypeConfig::Dspre {
+        dspre_workspace_dir_basename_for_rotom(&dirname)
+    } else {
+        dirname
+    };
     RotomConfig {
         format_version: 1,
-        project: ProjectMetadata {
-            name: root.file_name().map_or_else(
-                || "rotom-project".to_string(),
-                |name| name.to_string_lossy().to_string(),
-            ),
-        },
+        project: ProjectMetadata { name: project_name },
         workspace: WorkspaceConfig {
             project_type: workspace.project_type,
             game_family: workspace.game_family,

@@ -172,7 +172,11 @@ impl<'a> Disassembler<'a> {
                     continue;
                 }
 
-                let aligned_gap_start = (gap_start + 3) & !3;
+                let aligned_gap_start = if gap_start.is_multiple_of(2) {
+                    gap_start
+                } else {
+                    gap_start + 1
+                };
                 if self.has_movement_sequence_at(aligned_gap_start, gap_end) {
                     continue;
                 }
@@ -184,7 +188,11 @@ impl<'a> Disassembler<'a> {
                         break;
                     }
 
-                    let aligned_stop = (stop + 3) & !3;
+                    let aligned_stop = if stop.is_multiple_of(2) {
+                        stop
+                    } else {
+                        stop + 1
+                    };
                     if self.has_movement_sequence_at(aligned_stop, gap_end) {
                         break;
                     }
@@ -448,7 +456,7 @@ impl<'a> Disassembler<'a> {
                         && target < self.bytes.len()
                         && !self.symbols.contains_key(&target)
                     {
-                        if Self::is_action_reference(name) && target % 4 == 0 {
+                        if Self::is_action_reference(name) && target.is_multiple_of(2) {
                             missed_actions.push(target);
                         } else if target >= code_start {
                             missed_targets.push(target);
@@ -509,7 +517,7 @@ impl<'a> Disassembler<'a> {
                 if Self::is_action_reference(name)
                     && let Some(action_offset) = self.extract_action_offset(pc, cmd)
                     && action_offset < self.bytes.len()
-                    && action_offset % 4 == 0
+                    && action_offset.is_multiple_of(2)
                 {
                     self.action_offsets.insert(action_offset);
                 }
@@ -549,7 +557,7 @@ impl<'a> Disassembler<'a> {
 
             if self.action_offsets.contains(&chunk_start) {
                 let (action_opt, actual_end) =
-                    self.disassemble_action_with_span(chunk_start, chunk_end)?;
+                    self.disassemble_action_with_span(chunk_start, chunk_end);
                 if let Some(action) = action_opt {
                     items.push(TopLevelItem::Action(action));
                 }
@@ -645,7 +653,7 @@ impl<'a> Disassembler<'a> {
             return Ok(Vec::new());
         }
 
-        let (mut items, movement_end) = self.scan_gap_for_movements(gap_start, gap_end)?;
+        let (mut items, movement_end) = self.scan_gap_for_movements(gap_start, gap_end);
 
         if movement_end < gap_end {
             let tail_size = gap_end - movement_end;
@@ -672,7 +680,7 @@ impl<'a> Disassembler<'a> {
         &mut self,
         gap_start: usize,
         gap_end: usize,
-    ) -> DecompileResult<(Vec<TopLevelItem>, usize)> {
+    ) -> (Vec<TopLevelItem>, usize) {
         let mut items = Vec::new();
         let mut current_start = gap_start;
 
@@ -680,10 +688,10 @@ impl<'a> Disassembler<'a> {
             if let Some(term_pos) = self.find_next_terminator(current_start, gap_end) {
                 let movement_end = term_pos + 4;
 
-                let action_start = if current_start.is_multiple_of(4) {
+                let action_start = if current_start.is_multiple_of(2) {
                     current_start
                 } else {
-                    (current_start + 3) & !3
+                    current_start + 1
                 };
 
                 if action_start <= term_pos {
@@ -701,7 +709,7 @@ impl<'a> Disassembler<'a> {
                         );
                     }
 
-                    if let Some(action) = self.disassemble_action(action_start, movement_end)? {
+                    if let Some(action) = self.disassemble_action(action_start, movement_end) {
                         items.push(TopLevelItem::Action(action));
                     }
                 }
@@ -712,29 +720,31 @@ impl<'a> Disassembler<'a> {
             }
         }
 
-        Ok((items, current_start))
+        (items, current_start)
     }
 
     fn find_next_terminator(&self, start: usize, end: usize) -> Option<usize> {
         const END_MOVEMENT_PATTERN: [u8; 4] = [0xFE, 0x00, 0x00, 0x00];
 
-        if start + 4 > self.bytes.len() || start >= end {
+        if start >= end || start + 4 > self.bytes.len() {
             return None;
         }
 
+        // Align to 4 bytes and step by 4: movement cells are 4 bytes each, so the terminator
+        // is always at a 4-byte multiple from the movement start.  Movements can start at
+        // 2-byte-aligned positions but for unreferenced gap scanning we use the conservative
+        // 4-byte stride; referenced movements are handled via action_offsets directly.
         let aligned_start = (start + 3) & !3;
-        let search_end = end.min(self.bytes.len() - 3);
+        let search_end = end.min(self.bytes.len().saturating_sub(3));
         for pos in (aligned_start..search_end).step_by(4) {
-            if pos + 4 <= self.bytes.len() {
-                let window = &self.bytes[pos..pos + 4];
-                if window == END_MOVEMENT_PATTERN {
-                    return Some(pos);
-                }
+            if self.bytes[pos..pos + 4] == END_MOVEMENT_PATTERN {
+                return Some(pos);
             }
         }
         None
     }
 
+    #[allow(clippy::too_many_lines)] // movement-blob detection adds lines; splitting would obscure the single-pass decode logic
     fn disassemble_function_with_span(
         &self,
         start: usize,
@@ -790,7 +800,7 @@ impl<'a> Disassembler<'a> {
             let opcode = u16::from_le_bytes([self.bytes[pc], self.bytes[pc + 1]]);
 
             if let Some((name, cmd)) = self.db.get_script_cmd_by_id(opcode) {
-                let (args, bytes_consumed) = self.decode_command_args(pc + 2, cmd)?;
+                let (args, bytes_consumed) = self.decode_command_args(pc, cmd, name)?;
 
                 let is_hard_terminator = Self::is_hard_terminator_name(name);
                 let is_soft_terminator = Self::is_soft_terminator_name(name);
@@ -837,11 +847,7 @@ impl<'a> Disassembler<'a> {
             .map(|(f, _)| f)
     }
 
-    fn disassemble_action_with_span(
-        &self,
-        start: usize,
-        end: usize,
-    ) -> DecompileResult<(Option<IrAction>, usize)> {
+    fn disassemble_action_with_span(&self, start: usize, end: usize) -> (Option<IrAction>, usize) {
         let mut instructions: Vec<IrOpcode> = Vec::new();
         let mut pc = start;
 
@@ -881,27 +887,27 @@ impl<'a> Disassembler<'a> {
         }
 
         if instructions.is_empty() {
-            return Ok((None, pc));
+            return (None, pc);
         }
 
-        Ok((Some(IrAction { name, instructions }), pc))
+        (Some(IrAction { name, instructions }), pc)
     }
 
     #[allow(dead_code)]
-    fn disassemble_action(&self, start: usize, end: usize) -> DecompileResult<Option<IrAction>> {
-        self.disassemble_action_with_span(start, end)
-            .map(|(a, _)| a)
+    fn disassemble_action(&self, start: usize, end: usize) -> Option<IrAction> {
+        self.disassemble_action_with_span(start, end).0
     }
 
     fn decode_command_args(
         &self,
-        start: usize,
+        opcode_pc: usize,
         cmd: &Command,
+        cmd_name: &str,
     ) -> DecompileResult<(Vec<Arg>, usize)> {
-        let params = self.get_variant_params_at(start, cmd);
+        let params = self.get_variant_params_at(opcode_pc + 2, cmd);
 
         let mut binary_args: Vec<Arg> = Vec::new();
-        let mut offset = start;
+        let mut offset = opcode_pc + 2;
 
         for param in params {
             let size = param.param_type.size();
@@ -939,8 +945,48 @@ impl<'a> Disassembler<'a> {
                         {
                             binary_args.push(Arg::Pointer(info.name.clone()));
                         } else {
+                            let opcode_word = if opcode_pc + 2 <= self.bytes.len() {
+                                u16::from_le_bytes([
+                                    self.bytes[opcode_pc],
+                                    self.bytes[opcode_pc + 1],
+                                ])
+                            } else {
+                                0
+                            };
+                            let bin_len = self.bytes.len();
+                            let ctx_lo = offset.saturating_sub(8);
+                            let ctx_hi = (offset + 12).min(bin_len);
+                            let snippet = if ctx_lo < ctx_hi {
+                                self.bytes[ctx_lo..ctx_hi]
+                                    .iter()
+                                    .map(|b| format!("{b:02x}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            } else {
+                                String::new()
+                            };
+                            let cmd_id =
+                                cmd.id.map(|id| format!(" cmd_id={id}")).unwrap_or_default();
                             return Err(invalid_format(format!(
-                                "Unresolved relative jump target 0x{target:04X} (rel {rel}) at offset 0x{offset:04X}"
+                                "Unresolved relative_jump while decoding '{}'{} @ opcode offset {:#x} \
+(opcode u16 {:#06x}; operand @ {:#x}; {} bytes): rel {}; target {:#x}; in_bounds={}; sym={}; act={}; cmd_bd={}; \
+If target >> file size, variant/param layout likely does not match this binary + DatabaseV2.\n\
+snippet [{}..{}]: {}",
+                                cmd_name,
+                                cmd_id,
+                                opcode_pc,
+                                opcode_word,
+                                offset,
+                                bin_len,
+                                rel,
+                                target,
+                                target < bin_len,
+                                self.symbols.contains_key(&target),
+                                target_is_action,
+                                target_is_script_boundary,
+                                ctx_lo,
+                                ctx_hi,
+                                snippet,
                             )));
                         }
                         offset += size;
@@ -960,7 +1006,7 @@ impl<'a> Disassembler<'a> {
             offset += size;
         }
 
-        let bytes_consumed = offset - start;
+        let bytes_consumed = offset - (opcode_pc + 2);
         let final_args = Self::omit_trailing_defaults(&binary_args, params);
         Ok((final_args, bytes_consumed))
     }
@@ -1136,7 +1182,7 @@ impl<'a> Disassembler<'a> {
             if has_code_label_ahead {
                 return false;
             }
-            let aligned_pc = (pc + 3) & !3;
+            let aligned_pc = if pc.is_multiple_of(2) { pc } else { pc + 1 };
             self.has_movement_sequence_at(aligned_pc, end)
         }
     }
@@ -1172,4 +1218,48 @@ impl<'a> Disassembler<'a> {
 pub fn disassemble_bytes(db: &DatabaseV2, bytes: Vec<u8>) -> DecompileResult<ScriptOutput> {
     let mut disasm = Disassembler::new(db, bytes);
     disasm.disassemble()
+}
+
+#[cfg(test)]
+mod opcode_collision_tests {
+    use crate::compiler::ir::{IrOpcode, TopLevelItem};
+    use crate::database::DatabaseV2;
+    use crate::decompiler::{ScriptOutput, disassemble_bytes};
+
+    /// Minimal normal script where id `22 / 0x0016` is movement (`WalkFasterWest` + `EndMovement`), not `GoTo`.
+    #[test]
+    fn movement_id_22_is_not_decoded_as_goto_inside_movement_cells() {
+        let mut bin = Vec::new();
+        // Jump table slot 0: abs_offset = rel + 4 = 8 → first script byte at offset 8
+        bin.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]);
+        bin.extend_from_slice(&super::JUMP_TABLE_END_MARKER);
+        // code_start == 6: Nop aligns stream so movement begins on a multiple of 4
+        bin.extend_from_slice(&[0x00, 0x00]);
+        bin.extend_from_slice(&[0x16, 0x00, 0x01, 0x00]); // WalkFasterWest × 1
+        bin.extend_from_slice(&[0xFE, 0x00, 0x00, 0x00]); // EndMovement
+        bin.extend_from_slice(&[0x02, 0x00]); // End script_cmd
+
+        let db = DatabaseV2::test_platinum();
+        let out = disassemble_bytes(db, bin).expect("disassemble");
+
+        let ScriptOutput::Normal { items, .. } = out else {
+            panic!("expected normal script output");
+        };
+
+        assert!(
+            items.iter().any(|t| matches!(t, TopLevelItem::Action(_))),
+            "expected a movement Action; got {items:#?}",
+        );
+
+        assert!(
+            !items.iter().any(|t| matches!(
+                t,
+                TopLevelItem::Function(f) if f.instructions.iter().any(|op| matches!(
+                    op,
+                    IrOpcode::Command { name, .. } if name == "GoTo"
+                )),
+            )),
+            "GoTo script cmd must not be emitted where movement id 22 is intended",
+        );
+    }
 }

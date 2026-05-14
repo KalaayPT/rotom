@@ -11,6 +11,7 @@ use rotom::project::command::{
     compile_mode as compile_project_mode, convert_mode, decompile_mode as decompile_project_mode,
     init_mode,
 };
+use rotom::project::convert::ConvertOptions;
 use rotom::project::error::ProjectError;
 
 #[derive(Debug, ClapParser)]
@@ -93,6 +94,10 @@ enum Commands {
         /// Preview conversions without writing files
         #[arg(long)]
         dry_run: bool,
+
+        /// No prompts
+        #[arg(long)]
+        non_interactive: bool,
     },
 }
 
@@ -127,7 +132,11 @@ fn main() {
             root,
             non_interactive,
         } => handle_init_command(root.as_deref(), *non_interactive),
-        Commands::Convert { root, dry_run } => handle_convert_command(root.as_deref(), *dry_run),
+        Commands::Convert {
+            root,
+            dry_run,
+            non_interactive,
+        } => handle_convert_command(root.as_deref(), *dry_run, *non_interactive),
     }
 }
 
@@ -244,8 +253,16 @@ fn handle_init_command(root: Option<&std::path::Path>, non_interactive: bool) {
     }
 }
 
-fn handle_convert_command(root: Option<&std::path::Path>, dry_run: bool) {
-    match convert_mode(root, dry_run) {
+fn handle_convert_command(
+    root: Option<&std::path::Path>,
+    dry_run: bool,
+    non_interactive: bool,
+) {
+    let options = ConvertOptions {
+        dry_run,
+        non_interactive,
+    };
+    match convert_mode(root, options) {
         Ok(report) => {
             if dry_run {
                 println!("Planned {} conversion(s):", report.plans.len());

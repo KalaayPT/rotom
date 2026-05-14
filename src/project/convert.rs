@@ -1,18 +1,33 @@
 use crate::{
-    ConstantDb, DatabaseV2, DecompileFileResult, ScriptOutput, decompile_to_ir, is_levelscript_path,
-    transpiler,
+    ConstantDb, DatabaseV2, DecompileFileResult, ScriptOutput, decompile_to_ir,
+    is_levelscript_path, transpiler,
 };
-use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
-use uxie::{GameLanguage, RomHeader, Workspace};
+
+use chrono::Utc;
+use serde_json::Value;
+use uxie::{GameFamily, GameLanguage, RomHeader, Workspace};
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::compile::{dspre_binary_path_for_script, update_decompile_state};
 use super::config::{ProjectTypeConfig, RotomConfig};
+use super::dspre_db_migration::{
+    dspre_edited_db_suggests_followplat, dspre_merge_shape_diff_score, find_local_scrcmd_v1_path,
+    maybe_reconcile_scrcmd_v1_into_v2,
+};
 use super::dspre_script_header::dspre_export_baseline_from_script_paths;
 use super::error::{ProjectError, Result};
-use super::scrcmd_baseline::fetch_vanilla_scrcmd_v1_at_baseline;
+use super::scrcmd_baseline::{
+    VanillaScrcmdV1, fetch_following_platinum_scrcmd_v1_at_commit,
+    fetch_vanilla_scrcmd_v1_at_baseline,
+};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConvertOptions {
+    pub dry_run: bool,
+    pub non_interactive: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversionPlan {
@@ -58,7 +73,7 @@ fn convert_one_dspre_script_placeholder(
     if !binary_path.exists() {
         return Err(ProjectError::DspreConvertMissingBinary {
             script: script_placeholder.to_path_buf(),
-            binary: binary_path.clone(),
+            binary: binary_path,
         });
     }
 
@@ -67,15 +82,19 @@ fn convert_one_dspre_script_placeholder(
         path: binary_path.clone(),
         source,
     })?;
-    let script_output = decompile_to_ir(bytes, db).map_err(ProjectError::from)?;
-    let output = match &script_output {
+    let script_output = decompile_to_ir(bytes, db).map_err(|e| ProjectError::DspreDecompile {
+        script: script_placeholder.to_path_buf(),
+        binary: binary_path.clone(),
+        source: e,
+    })?;
+    let output_path = match &script_output {
         ScriptOutput::Levelscript(_) => script_placeholder.with_extension("json"),
-        _ => script_placeholder.with_extension("rotom"),
+        ScriptOutput::Normal { .. } => script_placeholder.with_extension("rotom"),
     };
 
     let plan = ConversionPlan {
         input: script_placeholder.to_path_buf(),
-        output: output.clone(),
+        output: output_path,
         backup: backup.to_path_buf(),
     };
 
@@ -108,7 +127,11 @@ fn convert_one_dspre_script_placeholder(
         db,
         Some(constants),
     )
-    .map_err(|failure| ProjectError::Decompile(failure.error))?;
+    .map_err(|failure| ProjectError::DspreDecompile {
+        script: script_placeholder.to_path_buf(),
+        binary: binary_path,
+        source: failure.error,
+    })?;
 
     fs::remove_file(script_placeholder).map_err(|source| ProjectError::Io {
         action: "Failed to remove",
@@ -119,19 +142,40 @@ fn convert_one_dspre_script_placeholder(
     Ok((plan, Some(decompiled)))
 }
 
+/// Legacy DSPRE `.script` / decomp `.s` → `.rotom` / levelscript JSON. DSPRE: may merge edited scrcmd v1 descriptions into v2 DB before loading it.
 #[allow(clippy::too_many_lines)] // Complex migration hooks will grow; split when DSPRE migrate path lands.
-pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Result<ConvertReport> {
+pub fn convert_project(
+    root: &Path,
+    config: &RotomConfig,
+    options: ConvertOptions,
+) -> Result<ConvertReport> {
     let files = find_convertible_files(root, config)?;
     if files.is_empty() {
         return Ok(ConvertReport {
             converted: 0,
             plans: Vec::new(),
             backup_dir: None,
-            dry_run,
+            dry_run: options.dry_run,
         });
     }
 
-    if matches!(config.workspace.project_type, ProjectTypeConfig::Dspre)
+    let dspre_migration = matches!(config.workspace.project_type, ProjectTypeConfig::Dspre);
+    let db_path_opt = config.database_file(root);
+    if dspre_migration && db_path_opt.is_none() {
+        return Err(ProjectError::MissingDefaultDatabase);
+    }
+
+    // Resolve user scrcmd path once — used for Platinum baseline selection and reconciliation.
+    let user_path_opt: Option<PathBuf> = if dspre_migration {
+        config
+            .game_family()
+            .and_then(|family| find_local_scrcmd_v1_path(root, family, config))
+    } else {
+        None
+    };
+
+    let vanilla_opt: Option<VanillaScrcmdV1> = if dspre_migration
+        && user_path_opt.is_some()
         && let Some(baseline) = dspre_export_baseline_from_script_paths(&files)?
     {
         eprintln!(
@@ -140,32 +184,124 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
             baseline.sample_path.display()
         );
         if let Some(family) = config.game_family() {
-            let vanilla = fetch_vanilla_scrcmd_v1_at_baseline(family, baseline.oldest)?;
-            let short = vanilla
-                .commit_sha
-                .get(..7)
-                .unwrap_or(vanilla.commit_sha.as_str());
-            eprintln!(
-                "Resolved vanilla scrcmd v1 at commit {short} ({}) — {} bytes",
-                vanilla.repo_path,
-                vanilla.json.len()
-            );
+            let vanilla = match family {
+                GameFamily::Platinum => {
+                    match fetch_vanilla_scrcmd_v1_at_baseline(GameFamily::Platinum, baseline.oldest)
+                    {
+                        Ok(stock) => {
+                            // Try Following Platinum when the user's edited scrcmd fits it better.
+                            let user_scrcmd = user_path_opt
+                                .as_ref()
+                                .and_then(|p| fs::read_to_string(p).ok())
+                                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                                .and_then(|v| v.get("scrcmd").and_then(Value::as_object).cloned());
+                            if let Some(ref user_map) = user_scrcmd {
+                                match fetch_following_platinum_scrcmd_v1_at_commit(
+                                    &stock.commit_sha,
+                                ) {
+                                    Ok(Some(follow)) => {
+                                        let stock_root = serde_json::from_str::<Value>(&stock.json);
+                                        let follow_root =
+                                            serde_json::from_str::<Value>(&follow.json);
+                                        if let (Ok(sr), Ok(fr)) = (stock_root, follow_root)
+                                            && let (Some(sm), Some(fm)) = (
+                                                sr.get("scrcmd").and_then(Value::as_object),
+                                                fr.get("scrcmd").and_then(Value::as_object),
+                                            )
+                                        {
+                                            let w_std = dspre_merge_shape_diff_score(user_map, sm);
+                                            let w_follow =
+                                                dspre_merge_shape_diff_score(user_map, fm);
+                                            let suggests =
+                                                dspre_edited_db_suggests_followplat(user_map);
+                                            if w_follow < w_std || (w_follow == w_std && suggests) {
+                                                eprintln!(
+                                                    "Following Platinum scrcmd baseline chosen (merge-shape diff vs edited DB: follow={w_follow}, stock={w_std}; tie-break followplat_hint={suggests})."
+                                                );
+                                                Some(follow)
+                                            } else {
+                                                Some(stock)
+                                            }
+                                        } else {
+                                            Some(stock)
+                                        }
+                                    }
+                                    Ok(None) => Some(stock),
+                                    Err(e) => {
+                                        eprintln!(
+                                            "Warning: could not fetch Following Platinum scrcmd baseline ({e}); using stock Platinum baseline."
+                                        );
+                                        Some(stock)
+                                    }
+                                }
+                            } else {
+                                Some(stock)
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: could not resolve vanilla scrcmd v1 baseline ({e}); skipping edited scrcmd v1 merge."
+                            );
+                            None
+                        }
+                    }
+                }
+                GameFamily::HGSS | GameFamily::DP => {
+                    match fetch_vanilla_scrcmd_v1_at_baseline(family, baseline.oldest) {
+                        Ok(vanilla) => Some(vanilla),
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: could not resolve vanilla scrcmd v1 baseline ({e}); skipping edited scrcmd v1 merge."
+                            );
+                            None
+                        }
+                    }
+                }
+            };
+            if let Some(vanilla) = vanilla {
+                let short = vanilla
+                    .commit_sha
+                    .get(..7)
+                    .unwrap_or(vanilla.commit_sha.as_str());
+                eprintln!(
+                    "Resolved vanilla scrcmd v1 at commit {short} ({}) — {} bytes",
+                    vanilla.repo_path,
+                    vanilla.json.len()
+                );
+                Some(vanilla)
+            } else {
+                None
+            }
         } else {
             eprintln!(
                 "Skipping online scrcmd v1 baseline: add [workspace].game_family to rotom.toml (Platinum, HGSS, or DP)."
             );
+            None
         }
-    }
-
-    let dspre_migration = matches!(config.workspace.project_type, ProjectTypeConfig::Dspre);
-    if dspre_migration && config.database_file(root).is_none() {
-        return Err(ProjectError::MissingDefaultDatabase);
-    }
+    } else {
+        None
+    };
 
     let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();
     let backup_dir = root.join(".rotom/backups").join(timestamp);
 
-    let db_path_opt = config.database_file(root);
+    if dspre_migration {
+        let v2_path = db_path_opt
+            .as_ref()
+            .expect("[database].default_file required for DSPRE convert");
+        if let Some(family) = config.game_family() {
+            let _ = maybe_reconcile_scrcmd_v1_into_v2(
+                root,
+                config,
+                vanilla_opt.as_ref(),
+                family,
+                v2_path,
+                options,
+                user_path_opt.as_deref(),
+            )?;
+        }
+    }
+
     let (db, dspre_db_hash): (_, Option<u64>) = if dspre_migration {
         let path = db_path_opt.expect("[database].default_file required for DSPRE convert");
         let db_hash = fs::read(&path)
@@ -235,7 +371,7 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
                 config,
                 &input,
                 &backup,
-                dry_run,
+                options.dry_run,
                 db_loaded,
                 &constants,
             )?;
@@ -296,7 +432,7 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
             backup: backup.clone(),
         });
 
-        if dry_run {
+        if options.dry_run {
             continue;
         }
 
@@ -335,21 +471,16 @@ pub fn convert_project(root: &Path, config: &RotomConfig, dry_run: bool) -> Resu
         }
     }
 
-    if !dry_run && !dspre_from_binary_successes.is_empty() {
+    if !options.dry_run && !dspre_from_binary_successes.is_empty() {
         let db_hash = dspre_db_hash.expect("DSPRE convert records DB hash above");
-        update_decompile_state(
-            root,
-            config,
-            db_hash,
-            &dspre_from_binary_successes,
-        )?;
+        update_decompile_state(root, config, db_hash, &dspre_from_binary_successes)?;
     }
 
     Ok(ConvertReport {
-        converted: if dry_run { 0 } else { plans.len() },
+        converted: if options.dry_run { 0 } else { plans.len() },
         plans,
         backup_dir: Some(backup_dir),
-        dry_run,
+        dry_run: options.dry_run,
     })
 }
 
@@ -407,7 +538,7 @@ fn is_convertible_file(path: &Path, project_type: ProjectTypeConfig) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_project, find_convertible_files};
+    use super::{ConvertOptions, convert_project, find_convertible_files};
     use crate::compile_file_internal;
     use crate::database::GameFamily;
     use crate::project::config::{
@@ -510,7 +641,15 @@ mod tests {
         dspre_fixture_script_and_matching_binary(root, &[], "test");
 
         let config = dspre_config();
-        let report = convert_project(root, &config, true).unwrap();
+        let report = convert_project(
+            root,
+            &config,
+            ConvertOptions {
+                dry_run: true,
+                non_interactive: true,
+            },
+        )
+        .unwrap();
 
         assert_eq!(report.converted, 0);
         assert_eq!(report.plans.len(), 1);
@@ -533,7 +672,15 @@ mod tests {
         dspre_fixture_script_and_matching_binary(root, &["sub"], "test");
 
         let config = dspre_config();
-        let report = convert_project(root, &config, false).unwrap();
+        let report = convert_project(
+            root,
+            &config,
+            ConvertOptions {
+                dry_run: false,
+                non_interactive: true,
+            },
+        )
+        .unwrap();
 
         let source_dir = root.join("scripts/sub");
         assert_eq!(report.converted, 1);
@@ -570,7 +717,15 @@ mod tests {
         )
         .unwrap();
 
-        let report = convert_project(root, &decomp_config(), false).unwrap();
+        let report = convert_project(
+            root,
+            &decomp_config(),
+            ConvertOptions {
+                dry_run: false,
+                non_interactive: true,
+            },
+        )
+        .unwrap();
         let converted = fs::read_to_string(source_dir.join("test.rotom")).unwrap();
 
         assert_eq!(report.converted, 1);

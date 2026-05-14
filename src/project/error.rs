@@ -131,6 +131,19 @@ pub enum ProjectError {
         binary: PathBuf,
     },
 
+    /// Decompilation failed after resolving the DSPRE script ↔ binary pairing.
+    #[error(
+        "{source}\nDSPRE paths: '{}' (plaintext) ← '{}' (paired binary)",
+        script.display(),
+        binary.display(),
+    )]
+    DspreDecompile {
+        script: PathBuf,
+        binary: PathBuf,
+        #[source]
+        source: DecompileError,
+    },
+
     #[error(
         "DSPRE script '{}' is not under any configured paths.source_roots entry",
         script.display()

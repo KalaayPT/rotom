@@ -3,6 +3,8 @@
 //!
 //! Picks the newest commit on the repo’s **default branch** that touched the file whose commit
 //! time is still **at or before** the DSPRE export baseline (see `docs/dspre-onboarding-migration-plan.md` Phase 1).
+//! The commits request uses the API's `until` filter so normal runs need one REST request instead of
+//! walking commit-list pages.
 
 use chrono::{DateTime, Local, Utc};
 use serde::Deserialize;
@@ -12,10 +14,9 @@ use super::error::{ProjectError, Result};
 
 const GITHUB_API: &str = "https://api.github.com";
 const SCRCMD_REPO: &str = "DS-Pokemon-Rom-Editor/scrcmd-database";
-const COMMITS_PER_PAGE: usize = 100;
-const MAX_COMMIT_PAGES: u32 = 100;
+const COMMITS_PER_PAGE: usize = 1;
 
-/// Resolved vanilla v1 database JSON and the commit it came from (for logging and later phases).
+/// Resolved vanilla v1 database JSON and the commit it came from (for logging and comparison with edited project v1).
 #[derive(Debug, Clone)]
 pub struct VanillaScrcmdV1 {
     pub json: String,
@@ -32,6 +33,30 @@ pub const fn scrcmd_v1_repo_filename(family: GameFamily) -> &'static str {
         GameFamily::HGSS => "hgss_scrcmd_database.json",
         GameFamily::DP => "diamond_pearl_scrcmd_database.json",
     }
+}
+
+/// v1 script DB for **Following Platinum** (DSPRE extended opcode set), relative to repo root — fetched at the same commit SHA as `platinum_scrcmd_database.json`.
+pub const FOLLOWING_PLATINUM_SCRCMD_V1_REPO_PATH: &str =
+    "custom_databases/following_platinum_scrcmd_database.json";
+
+/// Fetches `custom_databases/following_platinum_scrcmd_database.json` at `commit_sha` (same commit
+/// as `platinum_scrcmd_database.json`). Returns `Ok(None)` on 404 or invalid JSON.
+pub fn fetch_following_platinum_scrcmd_v1_at_commit(
+    commit_sha: &str,
+) -> Result<Option<VanillaScrcmdV1>> {
+    let Some(raw) =
+        try_fetch_repo_file_at_commit(FOLLOWING_PLATINUM_SCRCMD_V1_REPO_PATH, commit_sha)?
+    else {
+        return Ok(None);
+    };
+    if verify_json_object(&raw).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(VanillaScrcmdV1 {
+        json: raw,
+        commit_sha: commit_sha.to_owned(),
+        repo_path: FOLLOWING_PLATINUM_SCRCMD_V1_REPO_PATH,
+    }))
 }
 
 /// Fetches `repo_path` at the newest commit on the default branch whose committer date is ≤
@@ -54,45 +79,41 @@ pub fn fetch_vanilla_scrcmd_v1_at_baseline(
     })
 }
 
-fn resolve_commit_sha_at_or_before(path: &str, baseline_utc: DateTime<Utc>) -> Result<String> {
+/// Resolves the latest default-branch commit for `path` whose commit date is not after `baseline_utc`.
+pub fn resolve_commit_sha_at_or_before(path: &str, baseline_utc: DateTime<Utc>) -> Result<String> {
     let user_agent = format!("rotom/{}", env!("CARGO_PKG_VERSION"));
+    let url = github_commits_url_for_baseline(path, baseline_utc);
+    let body = http_get_github_api(&url, &user_agent)?;
+    let commits: Vec<GhListCommit> = serde_json::from_str(&body).map_err(|e| {
+        ProjectError::ScrcmdBaseline(format!(
+            "failed to parse GitHub commits JSON for '{path}': {e}"
+        ))
+    })?;
 
-    for page in 1..=MAX_COMMIT_PAGES {
-        let url = format!(
-            "{GITHUB_API}/repos/{SCRCMD_REPO}/commits?path={path}&per_page={COMMITS_PER_PAGE}&page={page}"
-        );
-        let body = http_get_github_api(&url, &user_agent)?;
-        let commits: Vec<GhListCommit> = serde_json::from_str(&body).map_err(|e| {
-            ProjectError::ScrcmdBaseline(format!(
-                "failed to parse GitHub commits JSON for '{path}' (page {page}): {e}"
-            ))
-        })?;
+    let Some(commit) = commits.first() else {
+        return Err(ProjectError::ScrcmdBaseline(format!(
+            "GitHub returned no commits for path '{path}' in {SCRCMD_REPO} at or before {}",
+            baseline_utc.format("%Y-%m-%d %H:%M:%S UTC")
+        )));
+    };
 
-        if commits.is_empty() {
-            if page == 1 {
-                return Err(ProjectError::ScrcmdBaseline(format!(
-                    "GitHub returned no commits for path '{path}' in {SCRCMD_REPO}"
-                )));
-            }
-            break;
-        }
-
-        for c in &commits {
-            let commit_time = parse_github_commit_time(c)?;
-            if commit_time <= baseline_utc {
-                return Ok(c.sha.clone());
-            }
-        }
-
-        if commits.len() < COMMITS_PER_PAGE {
-            break;
-        }
+    let commit_time = parse_github_commit_time(commit)?;
+    if commit_time <= baseline_utc {
+        return Ok(commit.sha.clone());
     }
 
     Err(ProjectError::ScrcmdBaseline(format!(
         "no commit on the default branch for '{path}' at or before {}",
         baseline_utc.format("%Y-%m-%d %H:%M:%S UTC")
     )))
+}
+
+/// Builds the commits URL used to ask for only the newest commit at or before the baseline.
+fn github_commits_url_for_baseline(path: &str, baseline_utc: DateTime<Utc>) -> String {
+    let until = baseline_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    format!(
+        "{GITHUB_API}/repos/{SCRCMD_REPO}/commits?path={path}&per_page={COMMITS_PER_PAGE}&until={until}"
+    )
 }
 
 fn parse_github_commit_time(c: &GhListCommit) -> Result<DateTime<Utc>> {
@@ -103,9 +124,7 @@ fn parse_github_commit_time(c: &GhListCommit) -> Result<DateTime<Utc>> {
         .and_then(|p| p.date.as_deref())
         .or_else(|| c.commit.author.as_ref().and_then(|p| p.date.as_deref()))
         .ok_or_else(|| {
-            ProjectError::ScrcmdBaseline(
-                "GitHub commit missing author/committer date".to_string(),
-            )
+            ProjectError::ScrcmdBaseline("GitHub commit missing author/committer date".to_string())
         })?;
     DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.with_timezone(&Utc))
@@ -116,17 +135,55 @@ fn parse_github_commit_time(c: &GhListCommit) -> Result<DateTime<Utc>> {
         })
 }
 
-fn fetch_repo_file_at_commit(path: &str, sha: &str) -> Result<String> {
+pub fn fetch_repo_file_at_commit(path: &str, sha: &str) -> Result<String> {
     let url = format!("https://raw.githubusercontent.com/{SCRCMD_REPO}/{sha}/{path}");
     let user_agent = format!("rotom/{}", env!("CARGO_PKG_VERSION"));
     http_get_raw(&url, &user_agent)
 }
 
+/// Like [`fetch_repo_file_at_commit`], but returns `Ok(None)` when the object is missing at `sha` (HTTP 404).
+pub fn try_fetch_repo_file_at_commit(path: &str, sha: &str) -> Result<Option<String>> {
+    let url = format!("https://raw.githubusercontent.com/{SCRCMD_REPO}/{sha}/{path}");
+    let user_agent = format!("rotom/{}", env!("CARGO_PKG_VERSION"));
+    let response = minreq::get(&url)
+        .with_header("User-Agent", user_agent)
+        .with_timeout(60)
+        .send()
+        .map_err(|e| ProjectError::ScrcmdBaseline(format!("HTTP GET failed for {url}: {e}")))?;
+
+    let status = response.status_code;
+    if status == 404 {
+        return Ok(None);
+    }
+    if !(200..300).contains(&status) {
+        let body = response
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(500)
+            .collect::<String>();
+        return Err(ProjectError::ScrcmdBaseline(format!(
+            "HTTP {status} for {url}: {body}"
+        )));
+    }
+    Ok(Some(response.as_str().unwrap_or("").to_string()))
+}
+
+/// Fetches REST API JSON, using `GITHUB_TOKEN` or `GH_TOKEN` when available for higher limits.
 fn http_get_github_api(url: &str, user_agent: &str) -> Result<String> {
-    let response = minreq::get(url)
+    let mut request = minreq::get(url)
         .with_header("User-Agent", user_agent)
         .with_header("Accept", "application/vnd.github+json")
-        .with_timeout(60)
+        .with_timeout(60);
+    if let Some(token) = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("GH_TOKEN").ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+    {
+        request = request.with_header("Authorization", format!("Bearer {token}"));
+    }
+    let response = request
         .send()
         .map_err(|e| ProjectError::ScrcmdBaseline(format!("HTTP GET failed for {url}: {e}")))?;
 
@@ -163,11 +220,10 @@ fn check_status(response: &minreq::Response, url: &str) -> Result<()> {
     Ok(())
 }
 
-fn verify_json_object(raw: &str) -> Result<()> {
-    let v: serde_json::Value =
-        serde_json::from_str(raw).map_err(|e| ProjectError::ScrcmdBaseline(format!(
-            "fetched file text is not valid JSON: {e}"
-        )))?;
+pub fn verify_json_object(raw: &str) -> Result<()> {
+    let v: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
+        ProjectError::ScrcmdBaseline(format!("fetched file text is not valid JSON: {e}"))
+    })?;
     if !v.is_object() {
         return Err(ProjectError::ScrcmdBaseline(
             "fetched scrcmd JSON root is not an object".to_string(),
@@ -214,6 +270,17 @@ mod tests {
     }
 
     #[test]
+    fn github_commits_url_uses_until_filter_and_single_result() {
+        let baseline = Utc.with_ymd_and_hms(2026, 5, 9, 15, 45, 1).unwrap();
+        let url = github_commits_url_for_baseline("platinum_scrcmd_database.json", baseline);
+
+        assert_eq!(
+            url,
+            "https://api.github.com/repos/DS-Pokemon-Rom-Editor/scrcmd-database/commits?path=platinum_scrcmd_database.json&per_page=1&until=2026-05-09T15:45:01Z"
+        );
+    }
+
+    #[test]
     fn pick_sha_takes_first_commit_not_after_baseline_newest_first() {
         let commits = vec![
             (
@@ -248,7 +315,8 @@ mod tests {
         use crate::GameFamily;
         use chrono::Local;
 
-        let v = fetch_vanilla_scrcmd_v1_at_baseline(GameFamily::Platinum, Local::now()).expect("fetch");
+        let v =
+            fetch_vanilla_scrcmd_v1_at_baseline(GameFamily::Platinum, Local::now()).expect("fetch");
         assert!(v.json.len() > 10_000);
         assert!(v.commit_sha.len() >= 7);
     }
