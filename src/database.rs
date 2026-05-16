@@ -90,7 +90,7 @@ impl ComparisonOperator {
             Self::Different => "DIFFERENT",
         }
     }
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "LESS" => Some(Self::Less),
             "EQUAL" => Some(Self::Equal),
@@ -808,15 +808,25 @@ impl ConstantDb {
             })?;
 
             if archive.key == 12973 {
-                total += symbols
-                    .load_dspre_sound_archive_constants(&path, language)
-                    .map_err(|e| CompileError::Database {
-                        message: format!(
-                            "Failed to load DSPRE sound archive constants from '{}': {}",
-                            path.display(),
-                            e
-                        ),
-                    })?;
+                // German Diamond Rev5 has 829 placeholder ("----------") entries at
+                // key 12973, matching neither Platinum (1013) nor HGSS (1372). Skip
+                // unrecognised row counts and fall back to bundled DB sound constants.
+                // TODO: research sound archives across all regional/revision variants —
+                // other versions may have populated archives under a different ID or
+                // with a different row count that needs its own offset mapping.
+                match symbols.load_dspre_sound_archive_constants(&path, language) {
+                    Ok(n) => total += n,
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {}
+                    Err(e) => {
+                        return Err(CompileError::Database {
+                            message: format!(
+                                "Failed to load DSPRE sound archive constants from '{}': {}",
+                                path.display(),
+                                e
+                            ),
+                        });
+                    }
+                }
                 continue;
             }
 
@@ -1109,7 +1119,7 @@ impl ConstantDb {
         include_dirs: &[PathBuf],
         include_path: &str,
     ) -> std::io::Result<bool> {
-        if !include_path.contains("res/field/events/") || !include_path.ends_with(".h") {
+        if !include_path.contains("res/field/events/") || !include_path.to_ascii_lowercase().ends_with(".h") {
             return Ok(false);
         }
 
@@ -1880,9 +1890,7 @@ mod tests {
         );
 
         let mut constants = ConstantDb::new();
-        let language = RomHeader::open(root)
-            .map(|h| h.detect_language())
-            .unwrap_or(GameLanguage::English);
+        let language = RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
         constants
             .load_dspre_text_archives(root, language)
             .expect("failed to load platinum DSPRE text archives");
@@ -1918,9 +1926,7 @@ mod tests {
         );
 
         let mut constants = ConstantDb::new();
-        let language = RomHeader::open(root)
-            .map(|h| h.detect_language())
-            .unwrap_or(GameLanguage::English);
+        let language = RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
         constants
             .load_dspre_text_archives(root, language)
             .expect("failed to load hgss DSPRE text archives");
@@ -1970,9 +1976,7 @@ mod tests {
             );
 
             let mut constants = ConstantDb::new();
-            let language = RomHeader::open(root)
-                .map(|h| h.detect_language())
-                .unwrap_or(GameLanguage::English);
+            let language = RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
             constants
                 .load_dspre_text_archives(root, language)
                 .expect("failed to load DSPRE trainer archive");

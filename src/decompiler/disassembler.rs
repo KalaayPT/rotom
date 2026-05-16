@@ -353,7 +353,7 @@ impl<'a> Disassembler<'a> {
         }
 
         for (&offset, slot_ids) in &self.script_slots {
-            let name = format!("script_{}", slot_ids[0]);
+            let name = format!("script_{}", slot_ids[0] + 1);
             self.symbols.insert(
                 offset,
                 LabelInfo {
@@ -756,7 +756,7 @@ impl<'a> Disassembler<'a> {
         let headers = if let Some(info) = self.symbols.get(&start) {
             match &info.kind {
                 LabelKind::Script { slot_ids } => {
-                    let base_name = format!("script_{}", slot_ids[0]);
+                    let base_name = format!("script_{}", slot_ids[0] + 1);
                     slot_ids
                         .iter()
                         .map(|&slot_id| FunctionHeader {

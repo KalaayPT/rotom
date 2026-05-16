@@ -31,7 +31,7 @@ sha2 = "0.10"
 minreq = { version = "2.14.1", features = ["https-rustls"] }
 thiserror = "2.0"
 toml = "0.8.19"
-uxie = "0.6.12"
+uxie = "0.6.13"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 indicatif = { version = "0.18.4", features = ["rayon"] }

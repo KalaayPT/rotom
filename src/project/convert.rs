@@ -82,6 +82,53 @@ fn convert_one_dspre_script_placeholder(
         path: binary_path.clone(),
         source,
     })?;
+    if bytes.is_empty() {
+        // DSPRE sometimes emits 0-byte binaries for unreferenced script slots. There is
+        // nothing to disassemble, but we still emit a stub .rotom so the slot
+        // is accounted for and can be repurposed if needed.
+        let output_path = script_placeholder.with_extension("rotom");
+        let plan = ConversionPlan {
+            input: script_placeholder.to_path_buf(),
+            output: output_path.clone(),
+            backup: backup.to_path_buf(),
+        };
+        if dry_run {
+            return Ok((plan, None));
+        }
+        if let Some(parent) = backup.parent() {
+            fs::create_dir_all(parent).map_err(|source| ProjectError::Io {
+                action: "Failed to create directory",
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        fs::copy(script_placeholder, backup).map_err(|source| ProjectError::Io {
+            action: "Failed to back up",
+            path: backup.to_path_buf(),
+            source,
+        })?;
+        let stub = "// This script file had an empty (0-byte) binary in the original ROM.\n\
+                    // It is not referenced by any map header and can be repurposed.\n";
+        fs::write(&output_path, stub).map_err(|source| ProjectError::Io {
+            action: "Failed to write stub",
+            path: output_path.clone(),
+            source,
+        })?;
+        fs::remove_file(script_placeholder).map_err(|source| ProjectError::Io {
+            action: "Failed to remove",
+            path: script_placeholder.to_path_buf(),
+            source,
+        })?;
+        return Ok((
+            plan,
+            Some(crate::DecompileFileResult {
+                input: binary_path,
+                output: output_path,
+                size: 0,
+                quirks: crate::BinaryQuirk::default(),
+            }),
+        ));
+    }
     let script_output = decompile_to_ir(bytes, db).map_err(|e| ProjectError::DspreDecompile {
         script: script_placeholder.to_path_buf(),
         binary: binary_path.clone(),
@@ -121,7 +168,7 @@ fn convert_one_dspre_script_placeholder(
 
     let decompiled = crate::decompile_file_from_ir(
         &binary_path,
-        script_output,
+        &script_output,
         None,
         Some(&out_dir),
         db,
@@ -362,9 +409,7 @@ pub fn convert_project(
             }
         }
         ProjectTypeConfig::Dspre => {
-            let language = RomHeader::open(root)
-                .map(|h| h.detect_language())
-                .unwrap_or(GameLanguage::English);
+            let language = RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
             let _ = constants
                 .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;
@@ -564,6 +609,7 @@ mod tests {
     use crate::{BinaryQuirk, ConstantDb, DatabaseV2};
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn dspre_fixture_script_and_matching_binary(
@@ -592,6 +638,10 @@ mod tests {
         }
         fs::create_dir_all(&bin_dir).unwrap();
         let binary_path = bin_dir.join(stem);
+        let workspace = Arc::new(uxie::Workspace::new(
+            std::path::PathBuf::new(),
+            uxie::game::Game::Platinum,
+        ));
         compile_file_internal(
             &rotom_staging,
             &binary_path,
@@ -599,6 +649,7 @@ mod tests {
             &constants,
             false,
             BinaryQuirk::default(),
+            &workspace,
         )
         .unwrap();
         let _ = fs::remove_file(&rotom_staging);

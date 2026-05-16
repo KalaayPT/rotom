@@ -336,7 +336,7 @@ impl<'a> Analyzer<'a> {
                     self.collect_alias_references_in_expression(arg);
                 }
             }
-            ExpressionKind::Number(_) | ExpressionKind::Error => {}
+            ExpressionKind::Number(_) | ExpressionKind::Error | ExpressionKind::String(_) => {}
         }
     }
 
@@ -549,7 +549,7 @@ impl<'a> Analyzer<'a> {
         }
 
         // 3. Fallback: Check condition identifiers (EQUAL, LESS, etc.)
-        if let Some(cond) = ComparisonOperator::from_str(name) {
+        if let Some(cond) = ComparisonOperator::parse(name) {
             return Some(SymbolType::Constant(cond as i32));
         }
 
@@ -861,13 +861,15 @@ impl<'a> Analyzer<'a> {
                     format!("Could not resolve '{}' as a constant expression", expr_text),
                 ))
             }
-            ExpressionKind::Label(_) | ExpressionKind::Error => Err(analysis_error(
-                expr.span.clone(),
-                format!(
-                    "Unsupported expression {:?} in integer expression",
-                    expr.node
-                ),
-            )),
+            ExpressionKind::Label(_) | ExpressionKind::Error | ExpressionKind::String(_) => {
+                Err(analysis_error(
+                    expr.span.clone(),
+                    format!(
+                        "Unsupported expression {:?} in integer expression",
+                        expr.node
+                    ),
+                ))
+            }
         }
     }
 
@@ -936,6 +938,7 @@ impl<'a> Analyzer<'a> {
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
             }
+            ExpressionKind::String(s) => Ok(s.clone()),
             ExpressionKind::Error => Err(analysis_error(
                 expr.span.clone(),
                 "Invalid expression in constant evaluation".to_string(),
@@ -958,22 +961,22 @@ impl<'a> Analyzer<'a> {
                     *n, param_type, &arg.span, command, param_name, arg_index,
                 )?;
             }
-            ExpressionKind::Label(_) => {
+            ExpressionKind::Label(_)
                 if !matches!(
                     param_type,
                     ParamType::Label | ParamType::ScriptId | ParamType::MovementId
-                ) {
-                    return Err(analysis_error(
-                        arg.span.clone(),
-                        format!(
-                            "Argument {} ('{}') for '{}' expects {:?}, got a label reference",
-                            arg_index + 1,
-                            param_name,
-                            command,
-                            param_type
-                        ),
-                    ));
-                }
+                ) =>
+            {
+                return Err(analysis_error(
+                    arg.span.clone(),
+                    format!(
+                        "Argument {} ('{}') for '{}' expects {:?}, got a label reference",
+                        arg_index + 1,
+                        param_name,
+                        command,
+                        param_type
+                    ),
+                ));
             }
             ExpressionKind::Identifier(name) => {
                 if let Some(SymbolType::Constant(value)) = self.resolve_symbol(name) {
@@ -1054,6 +1057,18 @@ impl<'a> Analyzer<'a> {
                     self.validate_autovar_call(function, args, &expr.span)?;
                 } else {
                     self.resolve_expression_to_int(expr).map(|_| ())?;
+                }
+            }
+            ExpressionKind::String(s) => {
+                let encoding_errors = uxie::validate_message(s);
+                if !encoding_errors.is_empty() {
+                    return Err(analysis_error(
+                        expr.span.clone(),
+                        format!(
+                            "Encoding error in string:\n{}",
+                            encoding_errors[0].span_marker()
+                        ),
+                    ));
                 }
             }
         }

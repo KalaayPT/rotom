@@ -81,12 +81,33 @@ fn extract_generated_line(header: &str) -> Option<&str> {
     None
 }
 
-/// Parses a DSPRE `Generated:` value on the **local** clock: try **day/month/year** first, then
-/// **month/day/year** (typical US), both with 24-hour time. Returns `None` if neither fits.
+/// Parses a DSPRE `Generated:` value on the **local** clock.
+///
+/// DSPRE uses C# `DateTime.ToString()` which follows the Windows thread culture:
+/// - en-US:  `5/16/2026 2:29:26 PM`    — slash, month/day/year, 12-hour AM/PM
+/// - en-GB and most slash locales:
+///   `09/05/2026 15:45:01`      — slash, day/month/year, 24-hour
+/// - de-DE and other dot locales:
+///   `16.05.2026 14:29:26`      — dot, day.month.year, 24-hour
+///
+/// We branch on the separator and AM/PM marker so there is no ambiguous fallback
+/// ordering between day/month and month/day.
 fn parse_generated_local_datetime(s: &str) -> Option<DateTime<Local>> {
-    let naive = NaiveDateTime::parse_from_str(s, "%d/%m/%Y %H:%M:%S")
-        .or_else(|_| NaiveDateTime::parse_from_str(s, "%m/%d/%Y %H:%M:%S"))
-        .ok()?;
+    let upper = s.to_ascii_uppercase();
+    let naive = if upper.ends_with("AM") || upper.ends_with("PM") {
+        // en-US: month/day/year, 12-hour
+        NaiveDateTime::parse_from_str(s, "%m/%d/%Y %I:%M:%S %p").ok()?
+    } else if s.contains('.') {
+        // de-DE and other dot-separator locales: day.month.year, 24-hour
+        // No European locale uses month.day order with dots, so no ambiguity.
+        NaiveDateTime::parse_from_str(s, "%d.%m.%Y %H:%M:%S").ok()?
+    } else {
+        // Slash locales (en-GB, fr-FR, es-ES, …): day/month/year, 24-hour.
+        // Fall back to month/day for any edge-case 24-hour slash locales.
+        NaiveDateTime::parse_from_str(s, "%d/%m/%Y %H:%M:%S")
+            .or_else(|_| NaiveDateTime::parse_from_str(s, "%m/%d/%Y %H:%M:%S"))
+            .ok()?
+    };
     match Local.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => Some(dt),
         _ => None,
@@ -128,6 +149,34 @@ End
         let src = "/*\n * Generated: 06/15/2025 12:00:00\n*/\n";
         let dt = parse_dspre_generated_timestamp(src).unwrap();
         assert_eq!((dt.year(), dt.month(), dt.day()), (2025, 6, 15));
+    }
+
+    #[test]
+    fn parse_dspre_generated_timestamp_12h_am_pm() {
+        // DSPRE on en-US locale (and some others) writes 12-hour AM/PM timestamps.
+        // Observed in German Diamond Rev5: "5/16/2026 2:29:26 PM"
+        let src = "/*\n * Generated: 5/16/2026 2:29:26 PM\n*/\n";
+        let dt = parse_dspre_generated_timestamp(src).unwrap();
+        assert_eq!((dt.year(), dt.month(), dt.day()), (2026, 5, 16));
+        assert_eq!((dt.hour(), dt.minute(), dt.second()), (14, 29, 26));
+    }
+
+    #[test]
+    fn parse_dspre_generated_timestamp_12h_am() {
+        // Month > 12 in day-first position forces month/day interpretation.
+        let src = "/*\n * Generated: 3/15/2025 9:05:00 AM\n*/\n";
+        let dt = parse_dspre_generated_timestamp(src).unwrap();
+        assert_eq!((dt.year(), dt.month(), dt.day()), (2025, 3, 15));
+        assert_eq!((dt.hour(), dt.minute(), dt.second()), (9, 5, 0));
+    }
+
+    #[test]
+    fn parse_dspre_generated_timestamp_de_de_dot_separator() {
+        // de-DE locale: dd.MM.yyyy HH:mm:ss
+        let src = "/*\n * Generated: 16.05.2026 14:29:26\n*/\n";
+        let dt = parse_dspre_generated_timestamp(src).unwrap();
+        assert_eq!((dt.year(), dt.month(), dt.day()), (2026, 5, 16));
+        assert_eq!((dt.hour(), dt.minute(), dt.second()), (14, 29, 26));
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! - Autovar commands in conditions (commands with destVar that default to `VAR_RESULT`)
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::autovar::{VAR_RESULT, autovar_param_index};
 use crate::compiler::analysis::{SymbolTable, SymbolType};
@@ -22,7 +23,7 @@ use super::{Arg, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
 /// Maximum depth for macro expansion to prevent infinite recursion
 const MAX_MACRO_DEPTH: usize = 10;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Lowerer<'a> {
     label_counter: usize,
     output: Vec<IrOpcode>,
@@ -31,9 +32,23 @@ pub struct Lowerer<'a> {
     db: &'a DatabaseV2,
     constants: Option<&'a crate::database::ConstantDb>,
     break_targets: Vec<String>,
+    workspace: Arc<uxie::Workspace>,
+    /// File stem of the script being compiled, used to resolve the text archive
+    /// for string literal arguments (e.g. `"0003"` for DSPRE, `"acuity_cavern"` for decomp).
+    source_stem: String,
 }
 
 impl<'a> Lowerer<'a> {
+    fn empty_workspace() -> Arc<uxie::Workspace> {
+        static EMPTY: std::sync::OnceLock<Arc<uxie::Workspace>> = std::sync::OnceLock::new();
+        Arc::clone(EMPTY.get_or_init(|| {
+            Arc::new(uxie::Workspace::new(
+                std::path::PathBuf::new(),
+                uxie::game::Game::Platinum,
+            ))
+        }))
+    }
+
     pub fn new(symbols: &'a SymbolTable, db: &'a DatabaseV2) -> Self {
         Self {
             label_counter: 0,
@@ -43,6 +58,8 @@ impl<'a> Lowerer<'a> {
             db,
             constants: None,
             break_targets: Vec::new(),
+            workspace: Self::empty_workspace(),
+            source_stem: String::new(),
         }
     }
 
@@ -59,6 +76,33 @@ impl<'a> Lowerer<'a> {
             db,
             constants: Some(constants),
             break_targets: Vec::new(),
+            workspace: Self::empty_workspace(),
+            source_stem: String::new(),
+        }
+    }
+
+    /// Construct a lowerer for a specific project file with full workspace context.
+    ///
+    /// `source_stem` is the file stem of the script being compiled (e.g. `"0003"`
+    /// for DSPRE, `"acuity_cavern"` for decomp). It is used to resolve which text
+    /// archive string literal arguments should be written to.
+    pub fn for_file(
+        symbols: &'a SymbolTable,
+        db: &'a DatabaseV2,
+        constants: &'a crate::database::ConstantDb,
+        workspace: Arc<uxie::Workspace>,
+        source_stem: String,
+    ) -> Self {
+        Self {
+            label_counter: 0,
+            output: Vec::new(),
+            global_symbols: symbols,
+            active_aliases: HashMap::new(),
+            db,
+            constants: Some(constants),
+            break_targets: Vec::new(),
+            workspace,
+            source_stem,
         }
     }
 
@@ -608,7 +652,7 @@ impl<'a> Lowerer<'a> {
                 "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
                 "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
                 _ => {
-                    if let Some(cond) = ComparisonOperator::from_str(name) {
+                    if let Some(cond) = ComparisonOperator::parse(name) {
                         return Some(i64::from(cond as i32));
                     }
                     if let Some(&val) = self.active_aliases.get(name) {
@@ -721,7 +765,9 @@ impl<'a> Lowerer<'a> {
     fn format_arg_for_substitution(expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Ok(name.clone()),
+            ExpressionKind::Identifier(s)
+            | ExpressionKind::Label(s)
+            | ExpressionKind::String(s) => Ok(s.clone()),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = Self::format_arg_for_substitution(id)?;
                 let op_str = match operator {
@@ -800,7 +846,9 @@ impl<'a> Lowerer<'a> {
     fn format_expression_for_constant_eval(expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Ok(name.clone()),
+            ExpressionKind::Identifier(s)
+            | ExpressionKind::Label(s)
+            | ExpressionKind::String(s) => Ok(s.clone()),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = Self::format_expression_for_constant_eval(id)?;
                 let op = match operator {
@@ -1138,7 +1186,7 @@ impl<'a> Lowerer<'a> {
                     return Ok(Arg::Value(val));
                 }
 
-                if let Some(cond) = ComparisonOperator::from_str(name) {
+                if let Some(cond) = ComparisonOperator::parse(name) {
                     return Ok(Arg::Value(cond as i32));
                 }
 
@@ -1149,6 +1197,27 @@ impl<'a> Lowerer<'a> {
             }
             ExpressionKind::Number(val) => Ok(Arg::Value(*val)),
             ExpressionKind::Label(name) => Ok(Arg::Pointer(name.clone())),
+            ExpressionKind::String(s) => {
+                let archive_id = self
+                    .workspace
+                    .text_archive_for_script_file(&self.source_stem)
+                    .ok_or_else(|| {
+                        lowering_error(format!(
+                            "cannot resolve text archive for '{}': string literals require \
+                                 a project workspace with script-to-archive mapping",
+                            self.source_stem
+                        ))
+                    })?;
+                let index = self
+                    .workspace
+                    .find_or_add_message(archive_id, s)
+                    .map_err(|e| {
+                        lowering_error(format!(
+                            "failed to write message to archive {archive_id}: {e}"
+                        ))
+                    })?;
+                Ok(Arg::Value(i32::from(index)))
+            }
             ExpressionKind::Infix {
                 left,
                 operator,
@@ -2661,7 +2730,7 @@ TestLabel:
                         {
                             match &args[1] {
                                 Arg::Value(v) => Some(*v),
-                                _ => None,
+                                Arg::Pointer(_) => None,
                             }
                         }
                         _ => None,
@@ -2691,18 +2760,18 @@ script Test #1:
         let lowerer = Lowerer::with_constants(&symbols, db, &constants);
 
         let expr = Expression {
-            span: 0..0,
             node: ExpressionKind::Infix {
                 left: Box::new(Expression {
-                    span: 0..0,
                     node: ExpressionKind::Number(80),
+                    span: 0..0,
                 }),
                 operator: TokenType::Plus,
                 right: Box::new(Expression {
-                    span: 0..0,
                     node: ExpressionKind::Number(1),
+                    span: 0..0,
                 }),
             },
+            span: 0..0,
         };
 
         let resolved = lowerer.resolve_arg_to_int(&expr).unwrap();

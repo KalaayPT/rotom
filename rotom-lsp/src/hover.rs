@@ -105,7 +105,7 @@ pub fn compute_hover(
     {
         let value_str = match &alias_value.node {
             ExpressionKind::Number(n) => format!("{n}"),
-            ExpressionKind::Identifier(id) => id.clone(),
+            ExpressionKind::Identifier(id) | ExpressionKind::String(id) => id.clone(),
             ExpressionKind::Label(l) => format!(".{l}"),
             ExpressionKind::Prefix { operator, id } => {
                 format!("{operator:?} {}", format_expr(id))
@@ -194,9 +194,15 @@ fn append_message_text(
 ) {
     let Some(ast) = ast else { return };
     let Some(workspace) = workspace else { return };
-    let Some(text) =
-        resolve_message_text(byte_offset, msg_index, ast, workspace, script_file_name, db, constants)
-    else {
+    let Some(text) = resolve_message_text(
+        byte_offset,
+        msg_index,
+        ast,
+        workspace,
+        script_file_name,
+        db,
+        constants,
+    ) else {
         return;
     };
     content.push_str("\n\n> ");
@@ -282,9 +288,7 @@ fn resolve_archive_from_first_arg(
             // Named variable — look for a preceding GetStdMsgNaix assignment.
             resolve_text_archive_by_get_std_msg_naix(all_items, offset, expr)
         }
-        ExpressionKind::Identifier(id) => {
-            workspace.symbols.resolve_constant(id)?.try_into().ok()
-        }
+        ExpressionKind::Identifier(id) => workspace.symbols.resolve_constant(id)?.try_into().ok(),
         _ => None,
     }
 }
@@ -420,7 +424,7 @@ fn find_command_at_offset(
 fn format_expr(expr: &rotom::compiler::ast::Expression) -> String {
     match &expr.node {
         ExpressionKind::Number(n) => n.to_string(),
-        ExpressionKind::Identifier(id) => id.clone(),
+        ExpressionKind::Identifier(id) | ExpressionKind::String(id) => id.clone(),
         ExpressionKind::Label(l) => format!(".{l}"),
         ExpressionKind::Prefix { operator, id } => format!("{operator:?} {}", format_expr(id)),
         ExpressionKind::Infix {
@@ -488,12 +492,18 @@ fn format_command_hover(name: &str, cmd: &Command) -> String {
     lines.push(format!("# {name}"));
 
     let type_label = match cmd.cmd_type {
-        rotom::database::CommandType::Macro => "(macro)",
-        rotom::database::CommandType::Movement => "(movement)",
-        rotom::database::CommandType::ScriptCmd => "(command)",
-        rotom::database::CommandType::LevelscriptCmd => "(levelscript command)",
+        rotom::database::CommandType::Macro => "(macro)".to_string(),
+        rotom::database::CommandType::Movement => match cmd.id {
+            Some(id) => format!("(movement id: {id})"),
+            None => "(movement)".to_string(),
+        },
+        rotom::database::CommandType::ScriptCmd => match cmd.id {
+            Some(id) => format!("(command id: {id:#04x})"),
+            None => "(command)".to_string(),
+        },
+        rotom::database::CommandType::LevelscriptCmd => "(levelscript command)".to_string(),
     };
-    lines.push(type_label.to_string());
+    lines.push(type_label);
 
     if let Some(legacy) = &cmd.legacy_name
         && name != legacy
@@ -599,15 +609,17 @@ mod tests {
         // "script T #1:\n    " = 0-17
         // "GetStdMsgNaix 0, VAR_SPECIAL_RESULT\n" at 17; "0" is at 31, "VAR_SPECIAL_RESULT" at 34
         // "    MsgBoxExtern VAR_SPECIAL_RESULT, 51\n" follows
-        let source =
-            "script T #1:\n    GetStdMsgNaix 0, VAR_SPECIAL_RESULT\n    MsgBoxExtern VAR_SPECIAL_RESULT, 51\n";
+        let source = "script T #1:\n    GetStdMsgNaix 0, VAR_SPECIAL_RESULT\n    MsgBoxExtern VAR_SPECIAL_RESULT, 51\n";
         let Some(ast) = parse_source(source) else {
             panic!("parse failed")
         };
         // Locate the offset of "51" to simulate hovering on it.
         let offset_51 = source.find(", 51").unwrap() + 2;
         let result = find_command_at_offset(&ast.items, offset_51);
-        assert!(result.is_some(), "find_command_at_offset should find MsgBoxExtern");
+        assert!(
+            result.is_some(),
+            "find_command_at_offset should find MsgBoxExtern"
+        );
         let (cmd, args, idx) = result.unwrap();
         assert_eq!(cmd, "MsgBoxExtern");
         assert_eq!(idx, 1);
@@ -618,7 +630,11 @@ mod tests {
         // Now check that resolve_text_archive_by_get_std_msg_naix returns Some(0)
         let var_expr = &args[0];
         let archive_id = resolve_text_archive_by_get_std_msg_naix(&ast.items, offset_51, var_expr);
-        assert_eq!(archive_id, Some(0), "should resolve archive 0 from GetStdMsgNaix");
+        assert_eq!(
+            archive_id,
+            Some(0),
+            "should resolve archive 0 from GetStdMsgNaix"
+        );
     }
 
     // ── find_command_at_offset ──

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{Parser as ClapParser, Subcommand};
 
@@ -7,6 +8,7 @@ use rotom::compile_path;
 use rotom::compiler::diagnostic::{CompileError, print_error, print_warning};
 use rotom::database::{ConstantDb, DatabaseV2, GameFamilyExt, game_family_from_hint};
 use rotom::decompile_path;
+use rotom::project::config::find_project_root;
 use rotom::project::command::{
     compile_mode as compile_project_mode, convert_mode, decompile_mode as decompile_project_mode,
     init_mode,
@@ -366,7 +368,15 @@ fn compile(
         println!("Output to: {}", output_path.display());
     }
 
-    let result = compile_path(input, &output_path, &db, &constants)?;
+    let workspace = Arc::new(
+        find_project_root(input)
+            .and_then(|root| uxie::Workspace::open(&root).ok())
+            .unwrap_or_else(|| {
+                let game = db.game_family().unwrap_or(uxie::GameFamily::Platinum).default_game();
+                uxie::Workspace::new(PathBuf::new(), game)
+            }),
+    );
+    let result = compile_path(input, &output_path, &db, &constants, &workspace)?;
 
     report_compile_result(&result, json, false, Some(start_total.elapsed()))?;
 

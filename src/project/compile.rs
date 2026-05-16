@@ -104,6 +104,12 @@ pub fn compile_project(
     let state = &session.state;
     let force_compile = session.force_compile;
     let db = &session.db;
+    let workspace = std::sync::Arc::new(
+        Workspace::open(root).unwrap_or_else(|_| {
+            let game = config.game_family().unwrap_or(GameFamily::Platinum).default_game();
+            Workspace::new(root.to_path_buf(), game)
+        }),
+    );
 
     let total_files = work.len();
     let progress = indicatif::ProgressBar::new(total_files as u64);
@@ -172,8 +178,7 @@ pub fn compile_project(
                     .iter()
                     .all(|(dep_path, &stored_hash)| {
                         fs::read(root.join(dep_path))
-                            .map(|bytes| xxh3_64(&bytes) == stored_hash)
-                            .unwrap_or(false)
+                            .is_ok_and(|bytes| xxh3_64(&bytes) == stored_hash)
                     })
             {
                 progress.inc(1);
@@ -224,7 +229,7 @@ pub fn compile_project(
             let binary_quirks = state
                 .entries
                 .get(&relative_path)
-                .map(|e| e.quirks.clone())
+                .map(|e| e.quirks)
                 .unwrap_or_default();
             let compile_result = crate::compile_file_internal(
                 input,
@@ -233,6 +238,7 @@ pub fn compile_project(
                 constants_for_compile,
                 false,
                 binary_quirks,
+                &workspace,
             );
             progress.inc(1);
 
@@ -276,7 +282,7 @@ pub fn compile_project(
                     .state
                     .entries
                     .get(&relative_path)
-                    .map(|e| e.quirks.clone())
+                    .map(|e| e.quirks)
                     .unwrap_or_default();
                 let file_state = FileState::compiled(source_hash, existing, dependency_hashes)
                     .with_quirks(quirks);
@@ -294,7 +300,7 @@ pub fn compile_project(
                     .state
                     .entries
                     .get(&relative_path)
-                    .map(|e| e.quirks.clone())
+                    .map(|e| e.quirks)
                     .unwrap_or_default();
                 let file_state =
                     FileState::compiled(source_hash, output_hash.unwrap_or(0), dependency_hashes)
@@ -317,6 +323,11 @@ pub fn compile_project(
         }
     }
 
+    workspace.flush_pending_messages().map_err(|source| ProjectError::Io {
+        action: "Failed to flush text archives after compilation",
+        path: root.to_path_buf(),
+        source,
+    })?;
     finish_compile_session(&mut session, current_paths)?;
 
     Ok(BatchCompileResult {
@@ -584,9 +595,7 @@ fn load_project_database_and_constants(
             constant_cache_rebuilt = rebuilt;
         }
         ProjectTypeConfig::Dspre => {
-            let language = RomHeader::open(root)
-                .map(|h| h.detect_language())
-                .unwrap_or(GameLanguage::English);
+            let language = RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
             let _ = constants
                 .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;

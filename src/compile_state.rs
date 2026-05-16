@@ -17,8 +17,8 @@ pub struct CompileState {
 /// Represents a binary quirk that may be present in a compiled binary file that is an exception to the normal pattern.
 /// Used for byte matching.
 ///
-/// A None value indicates that nothing out of the ordinary is present. This implies that jump_table_end_marker_count being None is technically the same as it being Some(1).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// A `None` value indicates that nothing out of the ordinary is present. This implies that `jump_table_end_marker_count` being `None` is technically the same as it being `Some(1)`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BinaryQuirk {
     /// some files have different amounts of jump table end marker bytes
     pub jump_table_end_marker_count: Option<u8>,
@@ -102,6 +102,7 @@ impl FileState {
         }
     }
 
+    #[must_use]
     pub fn with_quirks(mut self, quirks: BinaryQuirk) -> Self {
         self.quirks = quirks;
         self

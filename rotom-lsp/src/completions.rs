@@ -29,8 +29,8 @@ pub fn compute_completions(
         character: position.character,
     });
 
-    // Skip completions inside comments.
-    if is_in_comment(source, byte_offset) {
+    // Skip completions inside comments or string literals.
+    if is_in_comment(source, byte_offset) || is_in_string(source, byte_offset) {
         return vec![];
     }
 
@@ -165,6 +165,25 @@ fn is_identifier_name(name: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| is_identifier_char(c))
+}
+
+/// Return true if the cursor is inside a string literal.
+fn is_in_string(source: &str, byte_offset: usize) -> bool {
+    let before = &source[..byte_offset];
+    let mut in_string = false;
+    let mut chars = before.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_string {
+            if c == '\\' {
+                chars.next(); // skip escaped character
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
+        }
+    }
+    in_string
 }
 
 /// Return true if the cursor is inside a line comment or block comment.

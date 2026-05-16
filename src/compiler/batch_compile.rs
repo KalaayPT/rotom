@@ -5,6 +5,7 @@
 //! path mapping (directory extension-swap, project config, etc.).
 
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
+use std::sync::Arc;
 
 use crate::database::ConstantDb;
 use crate::progress::CompileProgress;
@@ -28,6 +29,7 @@ pub fn compile_batch(
     constants: &ConstantDb,
     load_file_constants: bool,
     progress: Option<&CompileProgress>,
+    workspace: &Arc<uxie::Workspace>,
 ) -> crate::BatchCompileResult {
     let results: Vec<std::result::Result<CompiledFile, CompileFailure>> = work
         .par_iter()
@@ -38,7 +40,8 @@ pub fn compile_batch(
                 db,
                 constants,
                 load_file_constants,
-                item.quirks.clone(),
+                item.quirks,
+                workspace,
             );
             match &result {
                 Ok(_) => {

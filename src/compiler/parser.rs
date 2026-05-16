@@ -58,32 +58,31 @@ impl<'a> Parser<'a> {
         self.current_token.kind == *kind
     }
     pub fn current_token_is_keyword(&self) -> bool {
-        let kind = self.current_token.kind.clone();
-        match kind {
+        matches!(
+            self.current_token.kind,
             TokenType::Script
-            | TokenType::Action
-            | TokenType::Alias
-            | TokenType::True
-            | TokenType::False
-            | TokenType::If
-            | TokenType::Then
-            | TokenType::Else
-            | TokenType::EndIf
-            | TokenType::While
-            | TokenType::EndWhile
-            | TokenType::Match
-            | TokenType::With
-            | TokenType::Case
-            | TokenType::EndMatch
-            | TokenType::Break
-            | TokenType::End
-            | TokenType::Return
-            | TokenType::Jump
-            | TokenType::And
-            | TokenType::Or
-            | TokenType::As => true,
-            _ => false,
-        }
+                | TokenType::Action
+                | TokenType::Alias
+                | TokenType::True
+                | TokenType::False
+                | TokenType::If
+                | TokenType::Then
+                | TokenType::Else
+                | TokenType::EndIf
+                | TokenType::While
+                | TokenType::EndWhile
+                | TokenType::Match
+                | TokenType::With
+                | TokenType::Case
+                | TokenType::EndMatch
+                | TokenType::Break
+                | TokenType::End
+                | TokenType::Return
+                | TokenType::Jump
+                | TokenType::And
+                | TokenType::Or
+                | TokenType::As
+        )
     }
 
     /// Check if we're at a top-level delimiter (next script, label, action, or EOF)
@@ -152,12 +151,13 @@ impl<'a> Parser<'a> {
                     }
                     items.push(stmt);
                 }
-                StatementKind::Action { .. } => items.push(stmt),
+                StatementKind::Action { .. }
+                | StatementKind::Include { .. }
+                | StatementKind::Define { .. } => items.push(stmt),
                 StatementKind::AliasStatement { .. } => {
                     aliases.push(stmt.clone());
                     items.push(stmt);
                 }
-                StatementKind::Include { .. } | StatementKind::Define { .. } => items.push(stmt),
                 _ if self.recover => items.push(stmt),
                 _ => unreachable!("top_level_stmt should prevent other statements or errors"),
             }
@@ -427,7 +427,10 @@ impl<'a> Parser<'a> {
                 break;
             }
             // If we hit a top-level keyword the block was never properly closed.
-            if matches!(self.current_token.kind, TokenType::Script | TokenType::Action) {
+            if matches!(
+                self.current_token.kind,
+                TokenType::Script | TokenType::Action
+            ) {
                 break;
             }
             if self.current_token_is(&TokenType::Newline) {
@@ -728,6 +731,11 @@ impl<'a> Parser<'a> {
             }
             TokenType::Identifier(name) => {
                 let kind = ExpressionKind::Identifier(name.clone());
+                self.advance();
+                kind
+            }
+            TokenType::String(s) => {
+                let kind = ExpressionKind::String(s.clone());
                 self.advance();
                 kind
             }
@@ -1532,7 +1540,10 @@ script Second #2:
         let file = parser.parse_script_file().unwrap();
         let errors = std::mem::take(&mut parser.errors);
 
-        assert!(!errors.is_empty(), "expected at least one error for missing endwhile");
+        assert!(
+            !errors.is_empty(),
+            "expected at least one error for missing endwhile"
+        );
         let functions: Vec<_> = file
             .items
             .iter()
@@ -1581,12 +1592,19 @@ script Test #1:
         let lexer = Lexer::new(source);
         let mut parser = Parser::new(lexer);
         let file = parser.parse_script_file().unwrap();
-        assert!(parser.errors.is_empty(), "expected no errors for preprocessor directives");
+        assert!(
+            parser.errors.is_empty(),
+            "expected no errors for preprocessor directives"
+        );
         let functions: Vec<_> = file
             .items
             .iter()
             .filter(|s| matches!(s.node, StatementKind::Function { .. }))
             .collect();
-        assert_eq!(functions.len(), 1, "expected one script after preprocessor directives");
+        assert_eq!(
+            functions.len(),
+            1,
+            "expected one script after preprocessor directives"
+        );
     }
 }

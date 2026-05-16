@@ -42,9 +42,7 @@ impl<'a> Lexer<'a> {
         Some(char)
     }
     fn peek_next(&self) -> Option<char> {
-        let mut cloned = self.chars.clone();
-        cloned.next()?;
-        cloned.next()
+        self.chars.clone().nth(1)
     }
     fn skip_whitespace_and_comments(&mut self) {
         loop {
@@ -123,10 +121,15 @@ impl<'a> Lexer<'a> {
             Some('"') => {
                 let mut value = String::new();
                 while let Some(c) = self.read_char() {
-                    if c == '"' {
+                    if c == '\\' && self.chars.peek() == Some(&'"') {
+                        // \" → chatot alias ["] for the curly-quote character (charmap 0x01B4)
+                        value.push_str("[\"]");
+                        self.read_char();
+                    } else if c == '"' {
                         break;
+                    } else {
+                        value.push(c);
                     }
-                    value.push(c);
                 }
                 TokenType::String(value)
             }
@@ -653,5 +656,31 @@ mod tests {
             TokenType::Newline,
         ];
         assert_eq!(tokens, expected_tokens);
+    }
+
+    #[test]
+    fn string_literal_plain() {
+        let mut lexer = Lexer::new(r#""hello world""#);
+        assert_eq!(lexer.next_token().kind, TokenType::String("hello world".to_string()));
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn string_literal_escaped_quote_emits_bracket_alias() {
+        // \" inside a string must produce the chatot alias ["] for U+201C,
+        // not a raw ASCII double-quote (which has no charmap entry).
+        let mut lexer = Lexer::new(r#""say \" something""#);
+        assert_eq!(lexer.next_token().kind, TokenType::String(r#"say ["] something"#.to_string()));
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn string_literal_escaped_quote_terminates_correctly() {
+        // The character after \" must still be part of the same string, not
+        // start a new token.
+        let mut lexer = Lexer::new(r#""a\"b" End"#);
+        assert_eq!(lexer.next_token().kind, TokenType::String(r#"a["]b"#.to_string()));
+        assert_eq!(lexer.next_token().kind, TokenType::End);
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 }

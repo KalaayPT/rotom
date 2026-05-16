@@ -42,6 +42,7 @@ pub use progress::CompileProgress;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Serialize)]
 pub struct CompiledFile {
@@ -158,10 +159,19 @@ pub fn compile(
     constants: &ConstantDb,
     binary_quirks: BinaryQuirk,
 ) -> Result<CompiledBytes, CompileError> {
+    static EMPTY: OnceLock<Arc<uxie::Workspace>> = OnceLock::new();
+    // No file context — family is irrelevant since project_path is empty and
+    // find_text_archive_path returns None for any archive ID.
+    let workspace = EMPTY.get_or_init(|| {
+        Arc::new(uxie::Workspace::new(
+            std::path::PathBuf::new(),
+            uxie::game::Game::Platinum,
+        ))
+    });
     let lexer = Lexer::new(source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
-    emit_script_file(&file, db, constants, binary_quirks)
+    emit_script_file(&file, db, constants, binary_quirks, workspace, "")
 }
 
 /// Runs semantic analysis, lowers to IR, and emits binary bytes for a parsed script.
@@ -170,10 +180,18 @@ fn emit_script_file(
     db: &DatabaseV2,
     constants: &ConstantDb,
     binary_quirks: BinaryQuirk,
+    workspace: &Arc<uxie::Workspace>,
+    source_stem: &str,
 ) -> Result<CompiledBytes, CompileError> {
     let mut analyzer = Analyzer::with_database(constants, db);
     analyzer.analyze(file)?;
-    let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, constants);
+    let mut lowerer = Lowerer::for_file(
+        &analyzer.symbols,
+        db,
+        constants,
+        workspace.clone(),
+        source_stem.to_string(),
+    );
     let items = lowerer.lower_script_file(file)?;
     let mut emitter = Emitter::new(db);
     let jump_table_end_marker_count = binary_quirks.jump_table_end_marker_count.unwrap_or(1);
@@ -200,9 +218,7 @@ pub fn compile_levelscript_assembly_to_bytes(
 
     let mut bytes = result.levelscript.to_bytes();
 
-    for _ in 0..result.extra_padding {
-        bytes.push(0);
-    }
+    bytes.extend(std::iter::repeat_n(0u8, result.extra_padding as usize));
 
     Ok(bytes)
 }
@@ -250,12 +266,24 @@ fn count_jump_table_lines(source: &str) -> usize {
     let mut past_includes = false;
     for line in source.lines() {
         let t = line.trim();
-        if t.starts_with(';') || t.starts_with('@') || t.starts_with("//") { continue; }
-        if t.starts_with("#include") { past_includes = true; continue; }
-        if !past_includes { continue; }
-        if t == "ScriptEntryEnd" || t == "ScrDefEnd" { return n + 1; }
-        if t.is_empty() || t.starts_with("ScriptEntry ") || t.starts_with("ScrDef ") { n += 1; }
-        else { break; }
+        if t.starts_with(';') || t.starts_with('@') || t.starts_with("//") {
+            continue;
+        }
+        if t.starts_with("#include") {
+            past_includes = true;
+            continue;
+        }
+        if !past_includes {
+            continue;
+        }
+        if t == "ScriptEntryEnd" || t == "ScrDefEnd" {
+            return n + 1;
+        }
+        if t.is_empty() || t.starts_with("ScriptEntry ") || t.starts_with("ScrDef ") {
+            n += 1;
+        } else {
+            break;
+        }
     }
     n
 }
@@ -270,6 +298,7 @@ pub(crate) fn compile_file_internal(
     constants: &ConstantDb,
     load_file_constants: bool,
     binary_quirks: BinaryQuirk,
+    workspace: &std::sync::Arc<uxie::Workspace>,
 ) -> Result<CompiledFile, CompileFailure> {
     let source = std::fs::read_to_string(input).map_err(|e| {
         CompileFailure::io_error(
@@ -291,7 +320,7 @@ pub(crate) fn compile_file_internal(
             compile_levelscript_json_to_bytes(&source, binary_quirks)
                 .map_err(|e| CompileFailure::with_source(input, &source, e))?,
             Vec::new(),
-            source.to_string(),
+            source.clone(),
         )
     } else if is_levelscript && extension == "s" {
         let file_constants = if load_file_constants {
@@ -308,11 +337,11 @@ pub(crate) fn compile_file_internal(
             compile_levelscript_assembly_to_bytes(&source, constants)
                 .map_err(|e| CompileFailure::with_source(input, &source, e))?,
             Vec::new(),
-            source.to_string(),
+            source.clone(),
         )
     } else {
         let (rotom_source, binary_quirks) = match extension.as_str() {
-            "rotom" => (source.to_string(), BinaryQuirk::default()),
+            "rotom" => (source.clone(), BinaryQuirk::default()),
             "script" => (
                 transpiler::transpile_dspre(&source, Some(db)),
                 BinaryQuirk::default(),
@@ -337,6 +366,12 @@ pub(crate) fn compile_file_internal(
             }
         };
 
+        let source_stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+
         if extension == "rotom" && load_file_constants {
             let lexer = compiler::Lexer::new(&rotom_source);
             let mut parser = compiler::Parser::new(lexer);
@@ -350,8 +385,9 @@ pub(crate) fn compile_file_internal(
                 .apply_directives(script_dir, &rotom_source, &file.items)
                 .map_err(|e| CompileFailure::with_path(input, e))?;
 
-            let output = emit_script_file(&file, db, &cloned, binary_quirks)
-                .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?;
+            let output =
+                emit_script_file(&file, db, &cloned, binary_quirks, workspace, &source_stem)
+                    .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?;
             (output.bytes, output.warnings, rotom_source)
         } else {
             let file_constants = if load_file_constants {
@@ -365,23 +401,46 @@ pub(crate) fn compile_file_internal(
             };
             let constants = file_constants.as_ref().unwrap_or(constants);
 
-            let output = compile(&rotom_source, db, constants, binary_quirks)
-                .map_err(|e| {
-                    if extension.as_str() == "s" {
-                        let n = count_jump_table_lines(&source);
-                        if n > 0 {
-                            let (tm, om) = (SourceMap::new(&rotom_source), SourceMap::new(&source));
-                            let shift = |b: usize| { let p = tm.byte_to_position(b); om.position_to_byte(Position { line: p.line + n as u32, character: p.character }) };
-                            let e = match e {
-                                CompileError::Parse { span, message } => CompileError::Parse { span: shift(span.start)..shift(span.end), message },
-                                CompileError::Analysis { span, message } => CompileError::Analysis { span: shift(span.start)..shift(span.end), message },
-                                e => e,
-                            };
-                            return CompileFailure::with_source(input, &source, e);
+            let file = {
+                let lexer = compiler::Lexer::new(&rotom_source);
+                let mut parser = compiler::Parser::new(lexer);
+                parser
+                    .parse_script_file()
+                    .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?
+            };
+            let output =
+                emit_script_file(&file, db, constants, binary_quirks, workspace, &source_stem)
+                    .map_err(|e| {
+                        if extension.as_str() == "s" {
+                            let n = count_jump_table_lines(&source);
+                            if n > 0 {
+                                let (tm, om) =
+                                    (SourceMap::new(&rotom_source), SourceMap::new(&source));
+                                let shift = |b: usize| {
+                                    let p = tm.byte_to_position(b);
+                                    om.position_to_byte(Position {
+                                        line: p.line + n as u32,
+                                        character: p.character,
+                                    })
+                                };
+                                let e = match e {
+                                    CompileError::Parse { span, message } => CompileError::Parse {
+                                        span: shift(span.start)..shift(span.end),
+                                        message,
+                                    },
+                                    CompileError::Analysis { span, message } => {
+                                        CompileError::Analysis {
+                                            span: shift(span.start)..shift(span.end),
+                                            message,
+                                        }
+                                    }
+                                    e => e,
+                                };
+                                return CompileFailure::with_source(input, &source, e);
+                            }
                         }
-                    }
-                    CompileFailure::with_source(input, &rotom_source, e)
-                })?;
+                        CompileFailure::with_source(input, &rotom_source, e)
+                    })?;
             (output.bytes, output.warnings, rotom_source)
         }
     };
@@ -490,6 +549,7 @@ pub fn compile_path(
     output: &Path,
     db: &DatabaseV2,
     constants: &ConstantDb,
+    workspace: &Arc<uxie::Workspace>,
 ) -> Result<BatchCompileResult, CompileError> {
     if input.is_file() {
         let output_path = if output.is_dir() {
@@ -505,7 +565,13 @@ pub fn compile_path(
             constants,
             true,
             BinaryQuirk::default(),
+            workspace,
         );
+        workspace
+            .flush_pending_messages()
+            .map_err(|e| CompileError::Io {
+                message: format!("Failed to flush text archives: {e}"),
+            })?;
         Ok(match result {
             Ok(success) => BatchCompileResult {
                 successes: vec![success],
@@ -602,7 +668,13 @@ pub fn compile_path(
             })
             .collect();
 
-        Ok(compile_batch(&work, db, constants, true, None))
+        let result = compile_batch(&work, db, constants, true, None, workspace);
+        workspace
+            .flush_pending_messages()
+            .map_err(|e| CompileError::Io {
+                message: format!("Failed to flush text archives: {e}"),
+            })?;
+        Ok(result)
     } else {
         Err(CompileError::Io {
             message: format!("Input path does not exist: {}", input.display()),
@@ -616,7 +688,7 @@ pub fn compile_path(
 /// `input` is the binary path used for diagnostics and for [`DecompileFileResult::input`].
 pub(crate) fn decompile_file_from_ir(
     input: &Path,
-    script_output: ScriptOutput,
+    script_output: &ScriptOutput,
     output_file: Option<&Path>,
     output_dir: Option<&Path>,
     db: &DatabaseV2,
@@ -640,7 +712,7 @@ pub(crate) fn decompile_file_from_ir(
 
     let output_path = resolve_decompile_output_path(input, output_file, output_dir, is_levelscript);
 
-    let source_text = ir_to_source(&script_output, db, constants);
+    let source_text = ir_to_source(script_output, db, constants);
     let size = source_text.len();
 
     if let Some(parent) = output_path.parent() {
@@ -694,7 +766,7 @@ fn decompile_file_internal(
         error: e,
     })?;
 
-    decompile_file_from_ir(input, script_output, output_file, output_dir, db, constants)
+    decompile_file_from_ir(input, &script_output, output_file, output_dir, db, constants)
 }
 
 /// Decompile a file or directory of binary scripts to Rotoscript source.
@@ -857,6 +929,7 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
@@ -970,8 +1043,17 @@ mod tests {
         let db = load_test_db();
         let constants = ConstantDb::new();
 
-        let result = compile_path(&input_path, &output_path, db, &constants)
-            .expect("compile_path should return a batch result");
+        let result = compile_path(
+            &input_path,
+            &output_path,
+            db,
+            &constants,
+            &Arc::new(uxie::Workspace::new(
+                std::path::PathBuf::new(),
+                uxie::game::Game::Platinum,
+            )),
+        )
+        .expect("compile_path should return a batch result");
         assert!(result.is_success(), "compile_path should succeed");
         assert_eq!(result.successes.len(), 1);
         assert_eq!(result.successes[0].output, output_path);
@@ -991,7 +1073,16 @@ mod tests {
         let db = load_test_db();
         let constants = ConstantDb::new();
 
-        let result = compile_path(&input_dir, &output_file, db, &constants);
+        let result = compile_path(
+            &input_dir,
+            &output_file,
+            db,
+            &constants,
+            &Arc::new(uxie::Workspace::new(
+                std::path::PathBuf::new(),
+                uxie::game::Game::Platinum,
+            )),
+        );
         fs::remove_dir_all(&temp_dir).ok();
 
         assert!(
@@ -1094,8 +1185,17 @@ script Main #1:
             .load_decomp_project(&temp_dir)
             .expect("failed to load test decomp project");
 
-        let result = compile_path(&input_path, &output_path, db, &constants)
-            .expect("compile_path should return a batch result");
+        let result = compile_path(
+            &input_path,
+            &output_path,
+            db,
+            &constants,
+            &Arc::new(uxie::Workspace::new(
+                std::path::PathBuf::new(),
+                uxie::game::Game::Platinum,
+            )),
+        )
+        .expect("compile_path should return a batch result");
         assert!(result.is_success(), "compile_path should succeed");
 
         let compiled = fs::read(&output_path).expect("failed to read compiled output");
@@ -1262,8 +1362,17 @@ script Main #1:
             .load_decomp_project(&temp_dir)
             .expect("failed to load test decomp project");
 
-        let result = compile_path(&input_path, &output_path, db, &constants)
-            .expect("compile_path should return a batch result");
+        let result = compile_path(
+            &input_path,
+            &output_path,
+            db,
+            &constants,
+            &Arc::new(uxie::Workspace::new(
+                std::path::PathBuf::new(),
+                uxie::game::Game::Platinum,
+            )),
+        )
+        .expect("compile_path should return a batch result");
         assert!(result.is_success(), "compile_path should succeed");
 
         let compiled = fs::read(&output_path).expect("failed to read compiled output");
@@ -1302,8 +1411,17 @@ script Main #1:
             .load_decomp_project(&temp_dir)
             .expect("failed to load test decomp project");
 
-        let result = compile_path(&input_path, &output_path, db, &constants)
-            .expect("compile_path should return a batch result");
+        let result = compile_path(
+            &input_path,
+            &output_path,
+            db,
+            &constants,
+            &Arc::new(uxie::Workspace::new(
+                std::path::PathBuf::new(),
+                uxie::game::Game::Platinum,
+            )),
+        )
+        .expect("compile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 
         assert_eq!(result.failures.len(), 1);
