@@ -688,10 +688,25 @@ impl<'a> Disassembler<'a> {
             if let Some(term_pos) = self.find_next_terminator(current_start, gap_end) {
                 let movement_end = term_pos + 4;
 
-                let action_start = if current_start.is_multiple_of(2) {
-                    current_start
-                } else {
-                    current_start + 1
+                // Walk backward from term_pos in 4-byte steps to find the first
+                // movement cell, skipping any alignment padding before the sequence.
+                let action_start = {
+                    let mut pos = term_pos;
+                    loop {
+                        if pos < current_start + 4 {
+                            break;
+                        }
+                        let prev = pos - 4;
+                        let opcode =
+                            u16::from_le_bytes([self.bytes[prev], self.bytes[prev + 1]]);
+                        if self.db.get_movement_by_id(opcode).is_none()
+                            || opcode == END_MOVEMENT_OPCODE
+                        {
+                            break;
+                        }
+                        pos = prev;
+                    }
+                    pos
                 };
 
                 if action_start <= term_pos {
@@ -730,18 +745,24 @@ impl<'a> Disassembler<'a> {
             return None;
         }
 
-        // Align to 4 bytes and step by 4: movement cells are 4 bytes each, so the terminator
-        // is always at a 4-byte multiple from the movement start.  Movements can start at
-        // 2-byte-aligned positions but for unreferenced gap scanning we use the conservative
-        // 4-byte stride; referenced movements are handled via action_offsets directly.
-        let aligned_start = (start + 3) & !3;
+        // Movement cells are 4 bytes (2-byte opcode + 2-byte param), so EndMovement is
+        // always at a 4-byte stride from the movement start. Movements can begin at either
+        // 4-byte or 4-byte+2-byte-aligned positions, so we search both stride phases and
+        // return the earliest match.
         let search_end = end.min(self.bytes.len().saturating_sub(3));
-        for pos in (aligned_start..search_end).step_by(4) {
-            if self.bytes[pos..pos + 4] == END_MOVEMENT_PATTERN {
-                return Some(pos);
+        let aligned = if start.is_multiple_of(2) { start } else { start + 1 };
+        let mut earliest: Option<usize> = None;
+        for base in [aligned, aligned + 2] {
+            for pos in (base..search_end).step_by(4) {
+                if self.bytes[pos..pos + 4] == END_MOVEMENT_PATTERN {
+                    if earliest.is_none_or(|e| pos < e) {
+                        earliest = Some(pos);
+                    }
+                    break;
+                }
             }
         }
-        None
+        earliest
     }
 
     #[allow(clippy::too_many_lines)] // movement-blob detection adds lines; splitting would obscure the single-pass decode logic
@@ -1226,31 +1247,11 @@ mod opcode_collision_tests {
     use crate::database::DatabaseV2;
     use crate::decompiler::{ScriptOutput, disassemble_bytes};
 
-    /// Minimal normal script where id `22 / 0x0016` is movement (`WalkFasterWest` + `EndMovement`), not `GoTo`.
-    #[test]
-    fn movement_id_22_is_not_decoded_as_goto_inside_movement_cells() {
-        let mut bin = Vec::new();
-        // Jump table slot 0: abs_offset = rel + 4 = 8 → first script byte at offset 8
-        bin.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]);
-        bin.extend_from_slice(&super::JUMP_TABLE_END_MARKER);
-        // code_start == 6: Nop aligns stream so movement begins on a multiple of 4
-        bin.extend_from_slice(&[0x00, 0x00]);
-        bin.extend_from_slice(&[0x16, 0x00, 0x01, 0x00]); // WalkFasterWest × 1
-        bin.extend_from_slice(&[0xFE, 0x00, 0x00, 0x00]); // EndMovement
-        bin.extend_from_slice(&[0x02, 0x00]); // End script_cmd
-
-        let db = DatabaseV2::test_platinum();
-        let out = disassemble_bytes(db, bin).expect("disassemble");
-
-        let ScriptOutput::Normal { items, .. } = out else {
-            panic!("expected normal script output");
-        };
-
+    fn assert_no_goto_and_has_action(items: &[TopLevelItem]) {
         assert!(
             items.iter().any(|t| matches!(t, TopLevelItem::Action(_))),
             "expected a movement Action; got {items:#?}",
         );
-
         assert!(
             !items.iter().any(|t| matches!(
                 t,
@@ -1261,5 +1262,48 @@ mod opcode_collision_tests {
             )),
             "GoTo script cmd must not be emitted where movement id 22 is intended",
         );
+    }
+
+    /// Movement immediately after the script End, no padding between them.
+    #[test]
+    fn movement_id_22_is_not_decoded_as_goto_no_padding() {
+        let mut bin = Vec::new();
+        // rel=2, abs=6 → script at code_start
+        bin.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+        bin.extend_from_slice(&super::JUMP_TABLE_END_MARKER); // code_start=6
+        bin.extend_from_slice(&[0x02, 0x00]); // End at 6-7
+        bin.extend_from_slice(&[0x16, 0x00, 0x01, 0x00]); // WalkFasterWest at 8-11
+        bin.extend_from_slice(&[0xFE, 0x00, 0x00, 0x00]); // EndMovement at 12-15
+
+        let db = DatabaseV2::test_platinum();
+        let ScriptOutput::Normal { items, .. } =
+            disassemble_bytes(db, bin).expect("disassemble")
+        else {
+            panic!("expected normal script output");
+        };
+        assert_no_goto_and_has_action(&items);
+    }
+
+    /// Movement preceded by 2 bytes of alignment padding in the gap.  Opcode 22
+    /// (`WalkFasterWest`) is also a valid script `GoTo` id, so the disassembler
+    /// must not try to decode it as a script command in this context.
+    #[test]
+    fn movement_id_22_is_not_decoded_as_goto_with_alignment_padding() {
+        let mut bin = Vec::new();
+        // rel=2, abs=6 → script at code_start
+        bin.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+        bin.extend_from_slice(&super::JUMP_TABLE_END_MARKER); // code_start=6
+        bin.extend_from_slice(&[0x02, 0x00]); // End at 6-7
+        bin.extend_from_slice(&[0x00, 0x00]); // 2-byte alignment padding at 8-9
+        bin.extend_from_slice(&[0x16, 0x00, 0x01, 0x00]); // WalkFasterWest at 10-13
+        bin.extend_from_slice(&[0xFE, 0x00, 0x00, 0x00]); // EndMovement at 14-17
+
+        let db = DatabaseV2::test_platinum();
+        let ScriptOutput::Normal { items, .. } =
+            disassemble_bytes(db, bin).expect("disassemble")
+        else {
+            panic!("expected normal script output");
+        };
+        assert_no_goto_and_has_action(&items);
     }
 }
