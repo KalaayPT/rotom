@@ -128,7 +128,7 @@ fn normal_script_to_source(
                 }
             }
             TopLevelItem::Action(action) => {
-                let _ = writeln!(output, "action {}", action.name);
+                let _ = writeln!(output, "action {}:", action.name);
 
                 for instr in &action.instructions {
                     match instr {

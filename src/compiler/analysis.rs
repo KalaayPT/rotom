@@ -393,7 +393,7 @@ impl<'a> Analyzer<'a> {
         }
         Ok(())
     }
-    fn validate_action_body(&self, action: &Statement) -> ParseResult<()> {
+    fn validate_action_body(&mut self, action: &Statement) -> ParseResult<()> {
         if let StatementKind::Action { body, .. } = &action.node {
             for stmt in body {
                 match &stmt.node {
@@ -601,7 +601,7 @@ impl<'a> Analyzer<'a> {
 
     /// Validate that a Call expression is to an autovar-compatible command
     fn validate_autovar_call(
-        &self,
+        &mut self,
         function: &Expression,
         args: &[Expression],
         span: &Range<usize>,
@@ -654,7 +654,7 @@ impl<'a> Analyzer<'a> {
 
     /// Validate a match statement subject (must be a variable or autovar call)
     fn validate_match_subject(
-        &self,
+        &mut self,
         subject: &Expression,
         stmt_span: &Range<usize>,
     ) -> ParseResult<()> {
@@ -938,7 +938,11 @@ impl<'a> Analyzer<'a> {
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
             }
-            ExpressionKind::String(s) => Ok(s.clone()),
+            ExpressionKind::String(segs) => Ok(segs
+                .iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")),
             ExpressionKind::Error => Err(analysis_error(
                 expr.span.clone(),
                 "Invalid expression in constant evaluation".to_string(),
@@ -1034,7 +1038,7 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
-    pub fn validate_expression(&self, expr: &Expression) -> ParseResult<()> {
+    pub fn validate_expression(&mut self, expr: &Expression) -> ParseResult<()> {
         match &expr.node {
             ExpressionKind::Number(_) | ExpressionKind::Label(_) | ExpressionKind::Error => {}
             ExpressionKind::Identifier(name) => {
@@ -1052,6 +1056,32 @@ impl<'a> Analyzer<'a> {
             ExpressionKind::Prefix { id, .. } => {
                 self.validate_expression(id)?;
             }
+            ExpressionKind::Call { function, args }
+                if matches!(&function.node, ExpressionKind::Identifier(n) if n == "format")
+                    && args.len() == 1
+                    && matches!(&args[0].node, ExpressionKind::String(_)) =>
+            {
+                let ExpressionKind::String(segs) = &args[0].node else {
+                    unreachable!()
+                };
+                // format() handles all word-wrapping itself, so line-width
+                // warnings are never meaningful here regardless of segment count.
+                let flat = segs
+                    .iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let encoding_errors = uxie::validate_message(&flat);
+                if !encoding_errors.is_empty() {
+                    return Err(analysis_error(
+                        args[0].span.clone(),
+                        format!(
+                            "Encoding error in format() string:\n{}",
+                            encoding_errors[0].span_marker()
+                        ),
+                    ));
+                }
+            }
             ExpressionKind::Call { function, args } => {
                 if self.is_command_call(expr) {
                     self.validate_autovar_call(function, args, &expr.span)?;
@@ -1059,8 +1089,25 @@ impl<'a> Analyzer<'a> {
                     self.resolve_expression_to_int(expr).map(|_| ())?;
                 }
             }
-            ExpressionKind::String(s) => {
-                let encoding_errors = uxie::validate_message(s);
+            ExpressionKind::String(segs) => {
+                for (i, (seg, seg_start)) in segs.iter().enumerate() {
+                    // A measurement failure means the segment is malformed; the
+                    // encoding check below reports that properly, so just skip
+                    // the width warning here.
+                    if uxie::format_line_is_too_long(seg).unwrap_or(false) {
+                        self.warnings
+                            .push(super::diagnostic::CompileWarning::MessageLineTooLong {
+                                span: *seg_start..*seg_start + seg.len(),
+                                line_index: i + 1,
+                            });
+                    }
+                }
+                let flat = segs
+                    .iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let encoding_errors = uxie::validate_message(&flat);
                 if !encoding_errors.is_empty() {
                     return Err(analysis_error(
                         expr.span.clone(),
@@ -1546,7 +1593,7 @@ script TestFunc #1:
 
     #[test]
     fn test_analyzer_detects_undefined_symbol() {
-        let analyzer = Analyzer::new();
+        let mut analyzer = Analyzer::new();
         let expr = Expression {
             node: ExpressionKind::Identifier("undefined_var".to_string()),
             span: 0..15,
@@ -1621,7 +1668,7 @@ script MainFunc #1:
 .done:
     End
 
-action TestMovement
+action TestMovement:
     WalkNormalNorth 3
     EndMovement
 ";
@@ -1678,7 +1725,7 @@ script Dummy #1:
 script Dummy #1:
     End
 
-action BadAction
+action BadAction:
     if 0x8000 == 1 then
         WalkNorth
     endif

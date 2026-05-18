@@ -98,7 +98,7 @@ pub enum ExpressionKind {
         function: Box<Expression>,
         args: Vec<Expression>,
     },
-    String(String),
+    String(Vec<(String, usize)>),
     /// A placeholder for an expression that could not be parsed.
     ///
     /// Used by the error-tolerant parser to preserve AST structure around

@@ -76,6 +76,17 @@ pub fn compute_hover(
         }
     }
 
+    // Built-in language keywords.
+    if let Some(hover) = builtin_hover(&word) {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: hover,
+            }),
+            range: None,
+        });
+    }
+
     // Try constants (may be augmented with message text below).
     let constant_value = constants.as_ref().and_then(|c| c.get(&word));
     if let Some(value) = constant_value {
@@ -105,7 +116,12 @@ pub fn compute_hover(
     {
         let value_str = match &alias_value.node {
             ExpressionKind::Number(n) => format!("{n}"),
-            ExpressionKind::Identifier(id) | ExpressionKind::String(id) => id.clone(),
+            ExpressionKind::Identifier(id) => id.clone(),
+            ExpressionKind::String(segs) => segs
+                .iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
             ExpressionKind::Label(l) => format!(".{l}"),
             ExpressionKind::Prefix { operator, id } => {
                 format!("{operator:?} {}", format_expr(id))
@@ -424,7 +440,12 @@ fn find_command_at_offset(
 fn format_expr(expr: &rotom::compiler::ast::Expression) -> String {
     match &expr.node {
         ExpressionKind::Number(n) => n.to_string(),
-        ExpressionKind::Identifier(id) | ExpressionKind::String(id) => id.clone(),
+        ExpressionKind::Identifier(id) => id.clone(),
+        ExpressionKind::String(segs) => segs
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
         ExpressionKind::Label(l) => format!(".{l}"),
         ExpressionKind::Prefix { operator, id } => format!("{operator:?} {}", format_expr(id)),
         ExpressionKind::Infix {
@@ -536,6 +557,30 @@ fn format_command_hover(name: &str, cmd: &Command) -> String {
     }
 
     lines.join("\n")
+}
+
+/// Return hover markdown for built-in rotom language constructs, or `None` if
+/// the word is not a built-in.
+fn builtin_hover(word: &str) -> Option<String> {
+    match word {
+        "format" => Some(
+            "# format\n\
+             \n\
+             (built-in)\n\
+             \n\
+             Word-wraps a message string to fit the dialog box, inserting line breaks \
+             automatically based on glyph widths.\n\
+             \n\
+             Each real newline in the source string defines a **segment boundary**. \
+             Segments longer than the dialog width are word-wrapped within. \
+             Explicit escape sequences (`\\n`, `\\r`, `\\f`) are always preserved as-is.\n\
+             \n\
+             ## Parameters\n\
+             - `string` — the message text"
+                .to_string(),
+        ),
+        _ => None,
+    }
 }
 
 fn format_param_desc(p: &rotom::database::ParamDef) -> String {

@@ -38,9 +38,10 @@ pub fn compute_completions(
 
     // Detect if we're typing a command parameter and which one.
     // Returns:
-    // - Some(true)  = label-type param (Jump, Call, etc.) → show local symbols
-    // - Some(false) = non-label param → show constants only
-    // - None        = not in param context → show commands + constants
+    // - Some((true, _))  = label-type param → show local symbols
+    // - Some((false, true)) = MsgId param → show format() + constants
+    // - Some((false, false)) = other param → show constants only
+    // - None = not in param context → show commands + constants
     let param_context = db.and_then(|db| {
         let (command_name, param_index) = extract_command_context(source, byte_offset)?;
         let cmd = db.get_command(&command_name).ok()?;
@@ -48,7 +49,9 @@ pub fn compute_completions(
             return None;
         }
         let param = cmd.params.get(param_index as usize)?;
-        Some(param.param_type == ParamType::Label || param.name == "relative_jump")
+        let is_label = param.param_type == ParamType::Label || param.name == "relative_jump";
+        let is_msg = param.name == "text_slot";
+        Some((is_label, is_msg))
     });
 
     // Check if we're typing the first word of a statement (start of line).
@@ -60,7 +63,7 @@ pub fn compute_completions(
 
     match param_context {
         // Label parameter context: only suggest local symbols (flattened from groups).
-        Some(true) => {
+        Some((true, _)) => {
             if let Some(local_symbols) = local_symbols {
                 for group in local_symbols {
                     if let Some(children) = &group.children {
@@ -77,8 +80,16 @@ pub fn compute_completions(
                 }
             }
         }
-        // Non-label parameter: suggest constants and boolean literals.
-        Some(false) => {
+        // Non-label parameter: suggest constants, boolean literals, and format() for MsgId params.
+        Some((false, is_msg)) => {
+            if is_msg && matches_prefix("format", &prefix) {
+                items.push(CompletionItem {
+                    label: "format".to_string(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some("format(string)".to_string()),
+                    ..Default::default()
+                });
+            }
             for &kw in &["true", "false"] {
                 if matches_prefix(kw, &prefix) {
                     items.push(CompletionItem {
@@ -218,7 +229,9 @@ fn extract_prefix(source: &str, byte_offset: usize) -> String {
     let before = &source[..byte_offset.min(source.len())];
     let start = before
         .rfind(|c: char| !rotom::compiler::lexer::is_identifier_char(c))
-        .map_or(0, |i| i + before[i..].chars().next().map_or(1, char::len_utf8));
+        .map_or(0, |i| {
+            i + before[i..].chars().next().map_or(1, char::len_utf8)
+        });
     before[start..].to_string()
 }
 
@@ -260,18 +273,30 @@ mod tests {
     #[test]
     fn test_extract_prefix_basic() {
         let source = "    Mess";
-        let pos = LspPosition { line: 0, character: 8 };
+        let pos = LspPosition {
+            line: 0,
+            character: 8,
+        };
         let map = SourceMap::new(source);
-        let byte = map.position_to_byte(SourcePosition { line: pos.line, character: pos.character });
+        let byte = map.position_to_byte(SourcePosition {
+            line: pos.line,
+            character: pos.character,
+        });
         assert_eq!(extract_prefix(source, byte), "Mess");
     }
 
     #[test]
     fn test_extract_prefix_empty() {
         let source = "    ";
-        let pos = LspPosition { line: 0, character: 4 };
+        let pos = LspPosition {
+            line: 0,
+            character: 4,
+        };
         let map = SourceMap::new(source);
-        let byte = map.position_to_byte(SourcePosition { line: pos.line, character: pos.character });
+        let byte = map.position_to_byte(SourcePosition {
+            line: pos.line,
+            character: pos.character,
+        });
         assert_eq!(extract_prefix(source, byte), "");
     }
 
@@ -286,9 +311,15 @@ mod tests {
     fn test_is_in_comment_line_comment() {
         let source = "script Test #1:\n    // Message 1\n    End\n";
         let map = SourceMap::new(source);
-        let byte = map.position_to_byte(SourcePosition { line: 1, character: 10 });
+        let byte = map.position_to_byte(SourcePosition {
+            line: 1,
+            character: 10,
+        });
         assert!(is_in_comment(source, byte));
-        let byte = map.position_to_byte(SourcePosition { line: 1, character: 3 });
+        let byte = map.position_to_byte(SourcePosition {
+            line: 1,
+            character: 3,
+        });
         assert!(!is_in_comment(source, byte));
     }
 
@@ -296,11 +327,20 @@ mod tests {
     fn test_is_in_comment_block_comment() {
         let source = "script Test #1:\n    /* block\n    comment */ Message 1\n    End\n";
         let map = SourceMap::new(source);
-        let byte = map.position_to_byte(SourcePosition { line: 1, character: 10 });
+        let byte = map.position_to_byte(SourcePosition {
+            line: 1,
+            character: 10,
+        });
         assert!(is_in_comment(source, byte));
-        let byte = map.position_to_byte(SourcePosition { line: 2, character: 5 });
+        let byte = map.position_to_byte(SourcePosition {
+            line: 2,
+            character: 5,
+        });
         assert!(is_in_comment(source, byte));
-        let byte = map.position_to_byte(SourcePosition { line: 2, character: 18 });
+        let byte = map.position_to_byte(SourcePosition {
+            line: 2,
+            character: 18,
+        });
         assert!(!is_in_comment(source, byte));
     }
 }

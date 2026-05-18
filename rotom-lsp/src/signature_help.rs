@@ -23,6 +23,11 @@ pub fn compute_signature_help(
     });
 
     let (command_name, param_index) = extract_command_context(source, byte_offset)?;
+
+    if let Some(sig) = builtin_signature_help(&command_name, param_index) {
+        return Some(sig);
+    }
+
     let cmd = db.get_command(&command_name).ok()?;
 
     Some(build_signature_help(&command_name, cmd, param_index))
@@ -66,6 +71,32 @@ fn word_ending_at(text: &str) -> Option<String> {
         None
     } else {
         Some(word.to_string())
+    }
+}
+
+fn builtin_signature_help(name: &str, active_param: u32) -> Option<SignatureHelp> {
+    match name {
+        "format" => Some(SignatureHelp {
+            signatures: vec![SignatureInformation {
+                label: "format(string)".to_string(),
+                documentation: Some(tower_lsp::lsp_types::Documentation::String(
+                    "Word-wraps a message string to fit the dialog box. \
+                     Each source newline defines a segment boundary; \
+                     segments wider than the dialog are word-wrapped within."
+                        .to_string(),
+                )),
+                parameters: Some(vec![ParameterInformation {
+                    label: ParameterLabel::Simple("string".to_string()),
+                    documentation: Some(tower_lsp::lsp_types::Documentation::String(
+                        "The message text to format.".to_string(),
+                    )),
+                }]),
+                active_parameter: Some(active_param),
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(active_param),
+        }),
+        _ => None,
     }
 }
 

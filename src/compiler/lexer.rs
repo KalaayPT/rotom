@@ -119,19 +119,27 @@ impl<'a> Lexer<'a> {
                 _ => TokenType::Hash,
             },
             Some('"') => {
-                let mut value = String::new();
+                // current_pos is now just past the opening "; that's where content starts.
+                let mut segments: Vec<(String, usize)> = vec![(String::new(), self.current_pos)];
                 while let Some(c) = self.read_char() {
                     if c == '\\' && self.chars.peek() == Some(&'"') {
                         // \" → chatot alias ["] for the curly-quote character (charmap 0x01B4)
-                        value.push_str("[\"]");
+                        segments.last_mut().unwrap().0.push_str("[\"]");
                         self.read_char();
                     } else if c == '"' {
                         break;
+                    } else if c == '\n' {
+                        // Real newline: start a new segment, stripping any continuation indent
+                        // so editor auto-indent doesn't pollute the string content.
+                        while matches!(self.chars.peek(), Some(' ' | '\t')) {
+                            self.read_char();
+                        }
+                        segments.push((String::new(), self.current_pos));
                     } else {
-                        value.push(c);
+                        segments.last_mut().unwrap().0.push(c);
                     }
                 }
-                TokenType::String(value)
+                TokenType::String(segments)
             }
             Some(',') => TokenType::Comma,
             Some('.') => {
@@ -658,10 +666,17 @@ mod tests {
         assert_eq!(tokens, expected_tokens);
     }
 
+    fn seg_contents(kind: TokenType) -> Vec<String> {
+        match kind {
+            TokenType::String(segs) => segs.into_iter().map(|(s, _)| s).collect(),
+            _ => panic!("expected String token"),
+        }
+    }
+
     #[test]
     fn string_literal_plain() {
         let mut lexer = Lexer::new(r#""hello world""#);
-        assert_eq!(lexer.next_token().kind, TokenType::String("hello world".to_string()));
+        assert_eq!(seg_contents(lexer.next_token().kind), vec!["hello world"]);
         assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 
@@ -670,8 +685,57 @@ mod tests {
         // \" inside a string must produce the chatot alias ["] for U+201C,
         // not a raw ASCII double-quote (which has no charmap entry).
         let mut lexer = Lexer::new(r#""say \" something""#);
-        assert_eq!(lexer.next_token().kind, TokenType::String(r#"say ["] something"#.to_string()));
+        assert_eq!(seg_contents(lexer.next_token().kind), vec![r#"say ["] something"#]);
         assert_eq!(lexer.next_token().kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn string_literal_multiline_produces_two_segments() {
+        // Real newlines split the string into segments so each can be
+        // measured independently for dialog width warnings.
+        let src = "\"hello\nworld\"";
+        let mut lexer = Lexer::new(src);
+        assert_eq!(seg_contents(lexer.next_token().kind), vec!["hello", "world"]);
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn string_literal_multiline_strips_continuation_indent() {
+        // Leading whitespace on the continuation line is consumed, so editor
+        // auto-indent doesn't pollute the segment content.
+        let src = "\"first line\n    second line\"";
+        let mut lexer = Lexer::new(src);
+        assert_eq!(seg_contents(lexer.next_token().kind), vec!["first line", "second line"]);
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn string_literal_explicit_escape_before_newline_preserved() {
+        // An explicit chatot escape (\r) before a real newline ends the current
+        // segment; the escape stays with that segment.
+        let src = "\"line one\\r\n    line two\"";
+        let mut lexer = Lexer::new(src);
+        assert_eq!(seg_contents(lexer.next_token().kind), vec![r"line one\r", "line two"]);
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn string_literal_multiline_segment_offsets_are_recorded() {
+        // Verify that each segment carries the correct source byte offset so
+        // the analyser can produce precise warning spans.
+        let src = "\"abc\ndef\"";
+        //          0123456789
+        //          "abc\ndef"
+        //           ^      ^-- closing " at 8
+        //           1 = start of first segment (after opening ")
+        //           5 = start of second segment (after \n at 4)
+        let mut lexer = Lexer::new(src);
+        if let TokenType::String(segs) = lexer.next_token().kind {
+            assert_eq!(segs[0].1, 1); // 'a' is at byte 1
+            assert_eq!(segs[1].1, 5); // 'd' is at byte 5 (after " a b c \n)
+        } else {
+            panic!("expected String token");
+        }
     }
 
     #[test]
@@ -679,7 +743,7 @@ mod tests {
         // The character after \" must still be part of the same string, not
         // start a new token.
         let mut lexer = Lexer::new(r#""a\"b" End"#);
-        assert_eq!(lexer.next_token().kind, TokenType::String(r#"a["]b"#.to_string()));
+        assert_eq!(seg_contents(lexer.next_token().kind), vec![r#"a["]b"#]);
         assert_eq!(lexer.next_token().kind, TokenType::End);
         assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }

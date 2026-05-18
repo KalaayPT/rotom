@@ -400,6 +400,7 @@ impl<'a> Parser<'a> {
         let TokenType::Identifier(name) = name_token.kind else {
             unreachable!()
         };
+        self.expect_advance(&TokenType::Colon)?;
         let mut body = self.parse_block(&[TokenType::EndMovement])?;
         if self.current_token_is(&TokenType::EndMovement) {
             let span = self.current_token.span.clone();
@@ -472,10 +473,11 @@ impl<'a> Parser<'a> {
     pub fn parse_include(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
         self.expect_advance(&TokenType::Include)?;
-        let path_token = self.expect_advance(&TokenType::String(String::new()))?;
-        let TokenType::String(path) = path_token.kind else {
+        let path_token = self.expect_advance(&TokenType::String(vec![]))?;
+        let TokenType::String(path_segs) = path_token.kind else {
             unreachable!()
         };
+        let path = path_segs.into_iter().map(|(s, _)| s).collect::<String>();
         let end = self.current_token.span.start;
         Ok(Spanned {
             node: StatementKind::Include { path },
@@ -739,6 +741,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 kind
             }
+
             TokenType::Not | TokenType::Minus => {
                 let operator = self.current_token.kind.clone();
                 self.advance();
@@ -1206,7 +1209,7 @@ script TestFunc #1:
     #[test]
     fn test_parse_action() {
         let source = r"
-action TestMovement
+action TestMovement:
     WalkNormalNorth 3
     FaceSouth
     EndMovement

@@ -413,7 +413,8 @@ impl<'a> Lowerer<'a> {
             }
 
             let materialized_args = self.materialize_command_args(command, cmd, args)?;
-            let resolved_args = self.resolve_args(&materialized_args)?;
+            let resolved_args =
+                self.resolve_args_for_command(command, &cmd.params, &materialized_args)?;
             self.output.push(IrOpcode::Command {
                 name: command.to_string(),
                 args: resolved_args,
@@ -765,9 +766,8 @@ impl<'a> Lowerer<'a> {
     fn format_arg_for_substitution(expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(s)
-            | ExpressionKind::Label(s)
-            | ExpressionKind::String(s) => Ok(s.clone()),
+            ExpressionKind::Identifier(s) | ExpressionKind::Label(s) => Ok(s.clone()),
+            ExpressionKind::String(segs) => Ok(segs.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ")),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = Self::format_arg_for_substitution(id)?;
                 let op_str = match operator {
@@ -846,9 +846,8 @@ impl<'a> Lowerer<'a> {
     fn format_expression_for_constant_eval(expr: &Expression) -> ParseResult<String> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(s)
-            | ExpressionKind::Label(s)
-            | ExpressionKind::String(s) => Ok(s.clone()),
+            ExpressionKind::Identifier(s) | ExpressionKind::Label(s) => Ok(s.clone()),
+            ExpressionKind::String(segs) => Ok(segs.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ")),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = Self::format_expression_for_constant_eval(id)?;
                 let op = match operator {
@@ -1163,7 +1162,41 @@ impl<'a> Lowerer<'a> {
         args.iter().map(|arg| self.resolve_arg(arg)).collect()
     }
 
+    /// Resolve args, routing string literals for `text_slot` params into the
+    /// correct text archive for the command (e.g. the menu archive for AddMenuEntryImm).
+    fn resolve_args_for_command(
+        &self,
+        command: &str,
+        params: &[crate::database::ParamDef],
+        args: &[Expression],
+    ) -> ParseResult<Vec<Arg>> {
+        let archive_override = self.msg_archive_for_command(command);
+        args.iter()
+            .enumerate()
+            .map(|(i, arg)| {
+                let override_for_arg = if archive_override.is_some()
+                    && params.get(i).map_or(false, |p| p.name == "text_slot")
+                {
+                    archive_override
+                } else {
+                    None
+                };
+                self.resolve_arg_with_archive(arg, override_for_arg)
+            })
+            .collect()
+    }
+
+    /// Return the fixed text archive ID for a command, or `None` to use the
+    /// script file's default archive.
+    fn msg_archive_for_command(&self, command: &str) -> Option<u16> {
+        uxie::Workspace::menu_entry_id(command, self.workspace.family)
+    }
+
     fn resolve_arg(&self, expr: &Expression) -> ParseResult<Arg> {
+        self.resolve_arg_with_archive(expr, None)
+    }
+
+    fn resolve_arg_with_archive(&self, expr: &Expression, archive_override: Option<u16>) -> ParseResult<Arg> {
         match &expr.node {
             ExpressionKind::Identifier(name) => {
                 if let Some(&val) = self.active_aliases.get(name) {
@@ -1197,20 +1230,24 @@ impl<'a> Lowerer<'a> {
             }
             ExpressionKind::Number(val) => Ok(Arg::Value(*val)),
             ExpressionKind::Label(name) => Ok(Arg::Pointer(name.clone())),
-            ExpressionKind::String(s) => {
-                let archive_id = self
-                    .workspace
-                    .text_archive_for_script_file(&self.source_stem)
-                    .ok_or_else(|| {
-                        lowering_error(format!(
-                            "cannot resolve text archive for '{}': string literals require \
-                                 a project workspace with script-to-archive mapping",
-                            self.source_stem
-                        ))
-                    })?;
+            ExpressionKind::String(segs) => {
+                let flat = segs.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ");
+                let archive_id = if let Some(id) = archive_override {
+                    id
+                } else {
+                    self.workspace
+                        .text_archive_for_script_file(&self.source_stem)
+                        .ok_or_else(|| {
+                            lowering_error(format!(
+                                "cannot resolve text archive for '{}': string literals require \
+                                     a project workspace with script-to-archive mapping",
+                                self.source_stem
+                            ))
+                        })?
+                };
                 let index = self
                     .workspace
-                    .find_or_add_message(archive_id, s)
+                    .find_or_add_message(archive_id, &flat)
                     .map_err(|e| {
                         lowering_error(format!(
                             "failed to write message to archive {archive_id}: {e}"
@@ -1250,6 +1287,41 @@ impl<'a> Lowerer<'a> {
                     }
                 };
                 Ok(Arg::Value(result))
+            }
+            ExpressionKind::Call { function, args }
+                if matches!(&function.node, ExpressionKind::Identifier(n) if n == "format")
+                    && args.len() == 1
+                    && matches!(&args[0].node, ExpressionKind::String(_)) =>
+            {
+                let ExpressionKind::String(segs) = &args[0].node else {
+                    unreachable!()
+                };
+                let wrapped = uxie::format_message(
+                    &segs.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" "),
+                )
+                .map_err(|e| lowering_error(format!("failed to format message: {e}")))?;
+                let archive_id = if let Some(id) = archive_override {
+                    id
+                } else {
+                    self.workspace
+                        .text_archive_for_script_file(&self.source_stem)
+                        .ok_or_else(|| {
+                            lowering_error(format!(
+                                "cannot resolve text archive for '{}': format() requires \
+                                     a project workspace with script-to-archive mapping",
+                                self.source_stem
+                            ))
+                        })?
+                };
+                let index = self
+                    .workspace
+                    .find_or_add_message(archive_id, &wrapped)
+                    .map_err(|e| {
+                        lowering_error(format!(
+                            "failed to write message to archive {archive_id}: {e}"
+                        ))
+                    })?;
+                Ok(Arg::Value(i32::from(index)))
             }
             ExpressionKind::Call { function, .. } => {
                 if self.command_call_parts(expr).is_some() {
@@ -1604,7 +1676,7 @@ script TestFunc #1:
     #[test]
     fn test_lower_action() {
         let source = r"
-action TestAction
+action TestAction:
     WalkNormalNorth 3
     EndMovement
 ";
