@@ -12,13 +12,13 @@ pub struct DecompPin {
 pub const POKEPLATINUM_PIN: DecompPin = DecompPin {
     name: "pokeplatinum",
     repo_url: "https://github.com/pret/pokeplatinum.git",
-    commit: "44a6337b419375e41ca8bbe42a9e16806d3c56b0",
+    commit: "4abac2cf45cd21995ff2ba30ffa9205cac29197f",
 };
 
 pub const POKEHEARTGOLD_PIN: DecompPin = DecompPin {
     name: "pokeheartgold",
     repo_url: "https://github.com/pret/pokeheartgold.git",
-    commit: "bdf1530b5f273ecb221756620a5e0043c7e2e15e",
+    commit: "79d73f74cc41e5615ff99b23588d416e96262fc0",
 };
 
 pub const ALL_PINS: &[DecompPin] = &[POKEPLATINUM_PIN, POKEHEARTGOLD_PIN];

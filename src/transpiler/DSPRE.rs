@@ -113,7 +113,7 @@ pub fn transpile(input: &str, db: Option<&crate::database::DatabaseV2>) -> Strin
         // Check for Action N: header
         if let Some(caps) = RE_ACTION_HEADER.captures(trimmed) {
             let id: u32 = caps[1].parse().expect("regex guarantees digits");
-            let _ = writeln!(output, "action action_{}", id);
+            let _ = writeln!(output, "action action_{}:", id);
             in_action = true;
             action_has_end_movement = false;
             continue;

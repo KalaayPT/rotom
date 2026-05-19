@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+use dashmap::DashMap;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -552,7 +553,7 @@ impl Variant {
 // ============================================================================
 
 /// Central repository for all named constants (built-in, DSPRE, and Decomp)
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ConstantDb {
     /// Manual and built-in constants: name -> value
     constants: HashMap<String, i32>,
@@ -562,6 +563,9 @@ pub struct ConstantDb {
     uxie_base_symbols: Option<Arc<SymbolTable>>,
     /// Active Uxie symbol table, optionally extended with file-local constants
     uxie_symbols: Option<SymbolTable>,
+    /// Shared Arc to workspace's message_ids. Wired at compile session setup.
+    /// Inserts from `load_archive_into_cache` are visible across all clones.
+    message_ids: Arc<DashMap<String, (u16, u16)>>,
 }
 
 impl std::fmt::Debug for ConstantDb {
@@ -594,7 +598,16 @@ impl ConstantDb {
             uxie_project_root: None,
             uxie_base_symbols: None,
             uxie_symbols: None,
+            message_ids: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Wire the shared message-ID map from the workspace.
+    ///
+    /// Must be called before any `clone_for_script` so all per-file clones
+    /// share the same allocation and see lazy-loaded IDs immediately.
+    pub fn set_message_ids(&mut self, ids: Arc<DashMap<String, (u16, u16)>>) {
+        self.message_ids = ids;
     }
 
     pub fn load_from_db(&mut self, db: &DatabaseV2) -> usize {
@@ -1049,6 +1062,7 @@ impl ConstantDb {
             } else {
                 self.uxie_symbols.clone()
             },
+            message_ids: self.message_ids.clone(), // Arc clone — cheap, shares the same DashMap
         };
         cloned.load_script_constants(script_path)?;
         Ok(cloned)
@@ -1265,13 +1279,36 @@ impl DatabaseV2 {
         static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         ROOT.get_or_init(|| {
             let cache = std::env::temp_dir().join("rotom_test_databases");
-            if cache.join(".extracted").exists() {
-                return cache;
+            if !Self::cached_test_dbs_are_current(&cache) {
+                Self::extract_embedded_test_dbs(&cache);
             }
-            Self::extract_embedded_test_dbs(&cache);
             cache
         })
         .clone()
+    }
+
+    /// Return `true` when the extracted cache exists and its `revision.txt`
+    /// matches the revision embedded in this build. A mismatch — or a missing
+    /// `revision.txt` on either side — means the embedded database has changed
+    /// since the last extraction, so the cache is stale and must be rebuilt.
+    fn cached_test_dbs_are_current(cache: &Path) -> bool {
+        let Some(embedded) = Self::embedded_db_revision() else {
+            return false;
+        };
+        match std::fs::read_to_string(cache.join("revision.txt")) {
+            Ok(cached) => cached.trim() == embedded.trim(),
+            Err(_) => false,
+        }
+    }
+
+    /// Read `revision.txt` from the embedded command-database zip, if present.
+    fn embedded_db_revision() -> Option<String> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+            crate::project::init::EMBEDDED_COMMAND_DATABASE_ZIP,
+        ))
+        .ok()?;
+        let entry = archive.by_name("revision.txt").ok()?;
+        std::io::read_to_string(entry).ok()
     }
 
     fn extract_embedded_test_dbs(cache: &Path) {
@@ -1298,8 +1335,6 @@ impl DatabaseV2 {
             let mut out_file = std::fs::File::create(&out_path).unwrap();
             std::io::copy(&mut entry, &mut out_file).unwrap();
         }
-
-        std::fs::write(cache.join(".extracted"), "").unwrap();
     }
 }
 

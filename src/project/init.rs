@@ -307,17 +307,23 @@ fn ensure_project_database(
 }
 
 fn is_v2_file_for_family(path: &Path, family: GameFamily) -> bool {
+    // `meta.version` is authoritative when present and recognizable.
     if let Ok(contents) = fs::read_to_string(path)
         && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
         && let Some(version) = json
             .get("meta")
             .and_then(|m| m.get("version"))
             .and_then(|v| v.as_str())
-        && game_family_from_hint(version) == Some(family)
+        && let Some(version_family) = game_family_from_hint(version)
     {
-        return true;
+        return version_family == family;
     }
-    game_family_from_hint(path.to_string_lossy()) == Some(family)
+    // Fall back to the file name only — never the full path, whose ancestor
+    // directory names (e.g. a project folder called `heartgold_hack`) would
+    // otherwise be misread as a family hint.
+    path.file_name()
+        .and_then(|name| game_family_from_hint(name.to_string_lossy()))
+        == Some(family)
 }
 
 fn pick_platinum_v2_variant(files: &[PathBuf], prefer_following: bool) -> Option<PathBuf> {

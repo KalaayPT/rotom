@@ -211,7 +211,7 @@ fn render_label_line(
 
     // Check if this is a movement label
     if prepass.movement_labels.contains(label_name) {
-        let _ = write!(output, "action {}", label_name);
+        let _ = write!(output, "action {}:", label_name);
         append_inline_comment(output, inline_comment);
         output.push('\n');
         return Ok(());
