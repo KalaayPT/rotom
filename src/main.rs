@@ -376,6 +376,7 @@ fn compile(
                 uxie::Workspace::new(PathBuf::new(), game)
             }),
     );
+    constants.set_message_ids(workspace.shared_message_ids());
     let result = compile_path(input, &output_path, &db, &constants, &workspace)?;
 
     report_compile_result(&result, json, false, Some(start_total.elapsed()))?;

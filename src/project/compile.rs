@@ -99,17 +99,21 @@ pub fn compile_project(
     let work = collect_project_compile_work(root, config)?;
     let mut session = load_compile_session(root, config, force)?;
 
-    // Borrow fields immutably so the parallel closure can use them.
-    let constants = &session.constants;
-    let state = &session.state;
-    let force_compile = session.force_compile;
-    let db = &session.db;
+    // Workspace must be created before the immutable borrow so we can wire the
+    // shared message_ids Arc into constants before any per-file clone_for_script.
     let workspace = std::sync::Arc::new(
         Workspace::open(root).unwrap_or_else(|_| {
             let game = config.game_family().unwrap_or(GameFamily::Platinum).default_game();
             Workspace::new(root.to_path_buf(), game)
         }),
     );
+    session.constants.set_message_ids(workspace.shared_message_ids());
+
+    // Borrow fields immutably so the parallel closure can use them.
+    let constants = &session.constants;
+    let state = &session.state;
+    let force_compile = session.force_compile;
+    let db = &session.db;
 
     let total_files = work.len();
     let progress = indicatif::ProgressBar::new(total_files as u64);

@@ -372,6 +372,12 @@ pub(crate) fn compile_file_internal(
             .unwrap_or("")
             .to_string();
 
+        // Warm step: pre-load text archive so message_ids is populated before
+        // ConstantDb::get is called during analysis/lowering.
+        if let Some(archive_id) = workspace.text_archive_for_script_file(&source_stem) {
+            let _ = workspace.ensure_archive_loaded(archive_id);
+        }
+
         if extension == "rotom" && load_file_constants {
             let lexer = compiler::Lexer::new(&rotom_source);
             let mut parser = compiler::Parser::new(lexer);

@@ -1180,6 +1180,12 @@ impl ConstantDb {
             return Some(val as i32);
         }
 
+        // message_ids is populated lazily by workspace::load_archive_into_cache
+        // (warm step) or eagerly by load_text_bank_json for decomp.
+        if let Some(entry) = self.message_ids.get(name) {
+            return Some(i32::from(entry.value().1)); // .1 = msg_index
+        }
+
         None
     }
 
@@ -2030,5 +2036,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn dspre_message_id_resolves_via_constantdb() {
+        let dir = tempfile::tempdir().unwrap();
+        let archives_dir = dir.path().join("expanded/textArchives");
+        std::fs::create_dir_all(&archives_dir).unwrap();
+        std::fs::write(
+            archives_dir.join("0199.json"),
+            r#"{"messages": [
+                {"id": "msg_0199_00000", "en_US": "Hello"},
+                {"id": "msg_0199_00001", "en_US": "World"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let game = uxie::game::Game::Platinum;
+        let ws = std::sync::Arc::new(uxie::Workspace::new(dir.path().to_path_buf(), game));
+        let mut constants = ConstantDb::new();
+        constants.set_message_ids(ws.shared_message_ids());
+
+        ws.ensure_archive_loaded(199).unwrap();
+
+        // Baseline: not yet loaded into message_ids — but ensure_archive_loaded populates it.
+        assert_eq!(constants.get("msg_0199_00001"), Some(1));
+        assert_eq!(constants.get("msg_0199_00000"), Some(0));
+
+        // Arc sharing: a clone made after wiring also sees the populated map.
+        let cloned = constants.clone_for_script(dir.path().join("fake.rotom")).unwrap();
+        assert_eq!(cloned.get("msg_0199_00001"), Some(1));
     }
 }

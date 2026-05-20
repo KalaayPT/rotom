@@ -136,6 +136,10 @@ impl RotomServer {
             ProjectTypeConfig::Generic => None,
         };
 
+        if let Some(ws) = &workspace {
+            constants.set_message_ids(ws.shared_message_ids());
+        }
+
         Ok(ProjectState {
             db: Arc::new(db),
             constants,
@@ -419,7 +423,16 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        Ok(compute_goto_definition(&doc.text, position, uri))
+        let workspace = self
+            .project_state_for_uri(uri)
+            .and_then(|s| s.workspace);
+
+        Ok(compute_goto_definition(
+            &doc.text,
+            position,
+            uri,
+            workspace.as_ref(),
+        ))
     }
 
     async fn signature_help(
