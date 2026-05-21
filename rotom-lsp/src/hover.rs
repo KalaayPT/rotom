@@ -5,11 +5,12 @@ use tower_lsp::lsp_types::{
 };
 
 use rotom::compiler::{
-    ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind},
+    ast::{ExpressionKind, ScriptFile, Statement, StatementKind},
     sourcemap::{Position as SourcePosition, SourceMap},
 };
 use rotom::database::{Command, ConstantDb, DatabaseV2};
 
+use crate::message_refs::{find_command_at_offset, is_text_slot, resolve_archive_id};
 use crate::util::parse_source;
 
 /// Produce an LSP hover response for the symbol under the cursor.
@@ -230,16 +231,6 @@ fn append_message_text(
     content.push('\u{BB}');
 }
 
-/// Commands that explicitly specify which text archive to read from as their
-/// first argument, overriding the file-level include association.
-const CROSS_ARCHIVE_COMMANDS: &[&str] = &[
-    "MessageFromBankInstant",
-    "MessageFromBank",
-    "MessageFromArchive",
-    "MessageAllFromArchive",
-    "MsgBoxExtern",
-];
-
 /// Determine the archive ID and fetch the message text for the hovered
 /// argument, or return `None` if this position does not correspond to a
 /// message index.
@@ -254,187 +245,22 @@ fn resolve_message_text(
 ) -> Option<String> {
     let (command, args, arg_index) = find_command_at_offset(&ast.items, byte_offset)?;
 
-    // Guard: cursor must be on a text_slot param (or MsgBoxExtern which is not
-    // in the regular DB but always has a text arg).
-    let is_text_slot = command == "MsgBoxExtern"
-        || db
-            .and_then(|db| db.commands.get(command))
-            .and_then(|cmd| cmd.params.get(arg_index))
-            .is_some_and(|p| p.name == "text_slot");
-    if !is_text_slot {
+    // Guard: cursor must be on a text slot parameter.
+    if !is_text_slot(command, arg_index, db) {
         return None;
     }
 
-    let archive_id = if CROSS_ARCHIVE_COMMANDS.contains(&command) {
-        // Archive ID comes from the first argument, not from the file include.
-        resolve_archive_from_first_arg(args, &ast.items, byte_offset, workspace)?
-    } else if let Some(id) = uxie::Workspace::menu_entry_id(command, workspace.family) {
-        // Menu entry commands always use a game-specific fixed archive.
-        id
-    } else {
-        // Normal: the file's text bank include tells us which archive to use.
-        // The stem was cached by apply_directives — no source re-scan needed.
-        if let Some(stem) = constants.and_then(|c| c.text_bank_stem()) {
-            workspace.text_archive_id(stem)?
-        } else {
-            // No text bank include in this file; fall back to the map-level
-            // association (workspace maps script file name → archive ID).
-            workspace.text_archive_for_script_file(script_file_name?)?
-        }
-    };
+    let archive_id = resolve_archive_id(
+        command,
+        args,
+        &ast.items,
+        byte_offset,
+        workspace,
+        script_file_name,
+        constants,
+    )?;
 
     workspace.read_message(archive_id, msg_index as u16)
-}
-
-/// Resolve the first argument of a cross-archive command to a numeric archive ID.
-fn resolve_archive_from_first_arg(
-    args: &[Expression],
-    all_items: &[Statement],
-    offset: usize,
-    workspace: &uxie::Workspace,
-) -> Option<u16> {
-    let expr = args.first()?;
-    match &expr.node {
-        ExpressionKind::Number(n) if *n >= 0x8000 => {
-            // Variable register as a raw number — look for a preceding GetStdMsgNaix.
-            resolve_text_archive_by_get_std_msg_naix(all_items, offset, expr)
-        }
-        ExpressionKind::Number(n) => u16::try_from(*n).ok(),
-        ExpressionKind::Identifier(id) if id.starts_with("VAR_") => {
-            // Named variable — look for a preceding GetStdMsgNaix assignment.
-            resolve_text_archive_by_get_std_msg_naix(all_items, offset, expr)
-        }
-        ExpressionKind::Identifier(id) => workspace.symbols.resolve_constant(id)?.try_into().ok(),
-        _ => None,
-    }
-}
-
-fn resolve_text_archive_by_get_std_msg_naix(
-    items: &[Statement],
-    offset: usize,
-    var_expr: &Expression,
-) -> Option<u16> {
-    for item in items {
-        if !item.span.contains(&offset) {
-            continue;
-        }
-        if let StatementKind::Function { body, .. } = &item.node {
-            // Find the current statement's position in the body
-            if let Some(pos) = body.iter().position(|s| s.span.contains(&offset))
-                && let Some(prev) = pos.checked_sub(1).and_then(|i| body.get(i))
-                && let StatementKind::ScriptCommand { command, args } = &prev.node
-                && command == "GetStdMsgNaix"
-                && args.len() >= 2
-                && expr_matches(&args[1], var_expr)
-            {
-                // First arg of GetStdMsgNaix is the bank ID
-                return resolve_explicit_u16(&args[0]);
-            } else {
-                continue;
-            }
-        }
-        let body = match &item.node {
-            StatementKind::Action { body, .. }
-            | StatementKind::IfStatement { body, .. }
-            | StatementKind::WhileStatement { body, .. } => Some(body),
-            _ => None,
-        };
-        if let Some(body) = body
-            && let Some(id) = resolve_text_archive_by_get_std_msg_naix(body, offset, var_expr)
-        {
-            return Some(id);
-        }
-        if let StatementKind::IfStatement { elseblock, .. } = &item.node
-            && let Some(elsebody) = elseblock
-            && let Some(id) = resolve_text_archive_by_get_std_msg_naix(elsebody, offset, var_expr)
-        {
-            return Some(id);
-        }
-        if let StatementKind::MatchStatement { cases, default, .. } = &item.node {
-            for case in cases {
-                if let Some(id) =
-                    resolve_text_archive_by_get_std_msg_naix(&case.body, offset, var_expr)
-                {
-                    return Some(id);
-                }
-            }
-            if let Some(default_body) = default
-                && let Some(id) =
-                    resolve_text_archive_by_get_std_msg_naix(default_body, offset, var_expr)
-            {
-                return Some(id);
-            }
-        }
-    }
-    None
-}
-
-/// Check if two expressions refer to the same thing (both are identifiers
-/// with the same name, or both are numbers with the same value).
-fn expr_matches(a: &Expression, b: &Expression) -> bool {
-    match (&a.node, &b.node) {
-        (ExpressionKind::Identifier(a_id), ExpressionKind::Identifier(b_id)) => a_id == b_id,
-        (ExpressionKind::Number(a_n), ExpressionKind::Number(b_n)) => a_n == b_n,
-        _ => false,
-    }
-}
-
-/// Resolve an expression directly to u16 (literal numbers only).
-fn resolve_explicit_u16(expr: &Expression) -> Option<u16> {
-    match &expr.node {
-        ExpressionKind::Number(n) => u16::try_from(*n).ok(),
-        _ => None,
-    }
-}
-
-/// Find the innermost `ScriptCommand` whose span contains `offset` and whose
-/// argument list contains `offset` inside one of the arg spans.
-///
-/// Returns `(command_name, all_args, arg_index)`.
-fn find_command_at_offset(
-    items: &[Statement],
-    offset: usize,
-) -> Option<(&str, &[Expression], usize)> {
-    for item in items {
-        if !item.span.contains(&offset) {
-            continue;
-        }
-        if let StatementKind::ScriptCommand { command, args } = &item.node {
-            let arg_index = args.iter().position(|arg| arg.span.contains(&offset))?;
-            return Some((command.as_str(), args.as_slice(), arg_index));
-        }
-        let body = match &item.node {
-            StatementKind::Function { body, .. }
-            | StatementKind::Action { body, .. }
-            | StatementKind::IfStatement { body, .. }
-            | StatementKind::WhileStatement { body, .. } => Some(body.as_slice()),
-            _ => None,
-        };
-        if let Some(body) = body
-            && let Some(result) = find_command_at_offset(body, offset)
-        {
-            return Some(result);
-        }
-        if let StatementKind::IfStatement { elseblock, .. } = &item.node
-            && let Some(elsebody) = elseblock
-            && let Some(result) = find_command_at_offset(elsebody, offset)
-        {
-            return Some(result);
-        }
-        if let StatementKind::MatchStatement { cases, default, .. } = &item.node {
-            for case in cases {
-                if let Some(result) = find_command_at_offset(&case.body, offset) {
-                    return Some(result);
-                }
-            }
-            if let Some(default_body) = default
-                && let Some(result) = find_command_at_offset(default_body, offset)
-            {
-                return Some(result);
-            }
-        }
-    }
-    None
 }
 
 fn format_expr(expr: &rotom::compiler::ast::Expression) -> String {
@@ -674,7 +500,9 @@ mod tests {
         );
         // Now check that resolve_text_archive_by_get_std_msg_naix returns Some(0)
         let var_expr = &args[0];
-        let archive_id = resolve_text_archive_by_get_std_msg_naix(&ast.items, offset_51, var_expr);
+        let archive_id = crate::message_refs::resolve_text_archive_by_get_std_msg_naix(
+            &ast.items, offset_51, var_expr,
+        );
         assert_eq!(
             archive_id,
             Some(0),

@@ -258,6 +258,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "chatot"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "054a8697e41f5af020c28e31174fd5d0e68f98863a745f8cfd22c7f72bbb8a17"
+dependencies = [
+ "byteorder",
+ "clap",
+ "rayon",
+ "serde",
+ "serde_derive",
+ "serde_json",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1260,7 +1274,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
- "uxie",
+ "uxie 0.7.0",
  "xxhash-rust",
  "zip",
 ]
@@ -1274,9 +1288,10 @@ dependencies = [
  "rotom",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tower-lsp",
- "uxie",
+ "uxie 0.6.13",
 ]
 
 [[package]]
@@ -1838,7 +1853,33 @@ dependencies = [
  "bitcode",
  "bitflags 2.10.0",
  "byteorder",
- "chatot",
+ "chatot 0.6.0",
+ "clap",
+ "dashmap 6.1.0",
+ "deunicode",
+ "modular-bitfield",
+ "quick-xml",
+ "rayon",
+ "regex",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "uxie"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c6cee81b6a1f7c5227e0d9bbcb1fdb9c136b6498399a3b4ae15547ec822fd78"
+dependencies = [
+ "binrw",
+ "bitcode",
+ "bitflags 2.10.0",
+ "byteorder",
+ "chatot 0.7.0",
  "clap",
  "dashmap 6.1.0",
  "deunicode",

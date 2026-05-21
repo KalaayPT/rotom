@@ -175,7 +175,7 @@ fn is_identifier_name(name: &str) -> bool {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
     }
-    chars.all(|c| is_identifier_char(c))
+    chars.all(is_identifier_char)
 }
 
 /// Return true if the cursor is inside a string literal.

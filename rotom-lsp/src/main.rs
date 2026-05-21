@@ -12,6 +12,7 @@ mod document;
 mod goto;
 mod hover;
 mod inlay_hints;
+mod message_refs;
 mod server;
 mod signature_help;
 mod util;
