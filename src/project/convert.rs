@@ -409,7 +409,8 @@ pub fn convert_project(
             }
         }
         ProjectTypeConfig::Dspre => {
-            let language = RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
+            let language =
+                RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
             let _ = constants
                 .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;

@@ -5,7 +5,7 @@ use crate::{BatchCompileResult, BatchDecompileResult};
 
 use super::compile::{compile_project, decompile_project};
 use super::config::{find_project_root, load_config};
-use super::convert::{ConvertReport, convert_project, ConvertOptions};
+use super::convert::{ConvertOptions, ConvertReport, convert_project};
 use super::error::{ProjectError, Result};
 use super::init::{InitOptions, InitReport, run_init};
 
@@ -31,10 +31,7 @@ pub fn init_mode(root: Option<&Path>, non_interactive: bool) -> Result<InitRepor
     )
 }
 
-pub fn convert_mode(
-    root: Option<&Path>,
-    options: ConvertOptions,
-) -> Result<ConvertReport> {
+pub fn convert_mode(root: Option<&Path>, options: ConvertOptions) -> Result<ConvertReport> {
     let root = resolve_project_root(root)?;
     let config = load_config(&root)?;
     convert_project(&root, &config, options)

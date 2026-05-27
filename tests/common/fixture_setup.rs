@@ -103,7 +103,12 @@ fn checkout_or_die(path: &Path, commit: &str) {
         .arg(commit)
         .status()
         .expect("git checkout failed");
-    assert!(status.success(), "git checkout {} failed in {}", commit, path.display())
+    assert!(
+        status.success(),
+        "git checkout {} failed in {}",
+        commit,
+        path.display()
+    )
 }
 
 /// Return a persistent temp directory for project lifecycle tests.

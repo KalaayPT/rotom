@@ -101,13 +101,16 @@ pub fn compile_project(
 
     // Workspace must be created before the immutable borrow so we can wire the
     // shared message_ids Arc into constants before any per-file clone_for_script.
-    let workspace = std::sync::Arc::new(
-        Workspace::open(root).unwrap_or_else(|_| {
-            let game = config.game_family().unwrap_or(GameFamily::Platinum).default_game();
-            Workspace::new(root.to_path_buf(), game)
-        }),
-    );
-    session.constants.set_message_ids(workspace.shared_message_ids());
+    let workspace = std::sync::Arc::new(Workspace::open(root).unwrap_or_else(|_| {
+        let game = config
+            .game_family()
+            .unwrap_or(GameFamily::Platinum)
+            .default_game();
+        Workspace::new(root.to_path_buf(), game)
+    }));
+    session
+        .constants
+        .set_message_ids(workspace.shared_message_ids());
 
     // Borrow fields immutably so the parallel closure can use them.
     let constants = &session.constants;
@@ -327,11 +330,13 @@ pub fn compile_project(
         }
     }
 
-    workspace.flush_pending_messages().map_err(|source| ProjectError::Io {
-        action: "Failed to flush text archives after compilation",
-        path: root.to_path_buf(),
-        source,
-    })?;
+    workspace
+        .flush_pending_messages()
+        .map_err(|source| ProjectError::Io {
+            action: "Failed to flush text archives after compilation",
+            path: root.to_path_buf(),
+            source,
+        })?;
     finish_compile_session(&mut session, current_paths)?;
 
     Ok(BatchCompileResult {
@@ -599,7 +604,8 @@ fn load_project_database_and_constants(
             constant_cache_rebuilt = rebuilt;
         }
         ProjectTypeConfig::Dspre => {
-            let language = RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
+            let language =
+                RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
             let _ = constants
                 .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;

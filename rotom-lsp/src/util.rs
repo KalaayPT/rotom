@@ -1,11 +1,6 @@
 use tower_lsp::lsp_types::{Location, Position as LspPosition, Range, Url};
 
-use rotom::compiler::{
-    ast::ScriptFile,
-    lexer::Lexer,
-    parser::Parser,
-    sourcemap::SourceMap,
-};
+use rotom::compiler::{ast::ScriptFile, lexer::Lexer, parser::Parser, sourcemap::SourceMap};
 
 /// Parse `source` with the error-tolerant parser.
 ///

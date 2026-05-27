@@ -39,7 +39,8 @@ pub fn collect_message_refs(
     let Some(ast) = parse_source(source) else {
         return Vec::new();
     };
-    let script_path = std::fs::canonicalize(script_path).unwrap_or_else(|_| script_path.to_path_buf());
+    let script_path =
+        std::fs::canonicalize(script_path).unwrap_or_else(|_| script_path.to_path_buf());
     let map = SourceMap::new(source);
     let mut refs = Vec::new();
     walk_commands(&ast.items, &mut |stmt| {
@@ -293,7 +294,8 @@ pub fn resolve_text_archive_by_get_std_msg_naix(
         }
         if let StatementKind::MatchStatement { cases, default, .. } = &item.node {
             for case in cases {
-                if let Some(id) = resolve_text_archive_by_get_std_msg_naix(&case.body, offset, var_expr)
+                if let Some(id) =
+                    resolve_text_archive_by_get_std_msg_naix(&case.body, offset, var_expr)
                 {
                     return Some(id);
                 }

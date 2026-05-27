@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position as LspPosition, Range, Url};
 use rotom::database::DatabaseV2;
+use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position as LspPosition, Range, Url};
 
 use rotom::compiler::{
     ast::{Statement, StatementKind},
@@ -45,8 +45,8 @@ pub fn compute_goto_definition(
             && let Some((archive_id, msg_index)) = ws.resolve_message_id(&word)
             && let Some(path) = ws.cached_text_archive_path(archive_id)
         {
-            let location =
-                json_message_location(&path, msg_index as usize).unwrap_or_else(|| file_start_location(&path));
+            let location = json_message_location(&path, msg_index as usize)
+                .unwrap_or_else(|| file_start_location(&path));
             return Some(GotoDefinitionResponse::Scalar(location));
         }
     }
@@ -68,8 +68,8 @@ pub fn compute_goto_definition(
         )
         && let Some(path) = ws.cached_text_archive_path(archive_id)
     {
-        let location =
-            json_message_location(&path, msg_index as usize).unwrap_or_else(|| file_start_location(&path));
+        let location = json_message_location(&path, msg_index as usize)
+            .unwrap_or_else(|| file_start_location(&path));
         return Some(GotoDefinitionResponse::Scalar(location));
     }
 
@@ -98,7 +98,10 @@ fn extract_numeric_literal_at_offset(source: &str, byte_offset: usize) -> Option
     }
 
     let token = &source[start..end];
-    if let Some(hex) = token.strip_prefix("0x").or_else(|| token.strip_prefix("0X")) {
+    if let Some(hex) = token
+        .strip_prefix("0x")
+        .or_else(|| token.strip_prefix("0X"))
+    {
         i32::from_str_radix(hex, 16).ok()
     } else {
         token.parse::<i32>().ok()
@@ -113,9 +116,7 @@ fn is_numeric_token_char(c: char) -> bool {
 fn find_definition<'a>(items: &'a [Statement], word: &str) -> Option<&'a Statement> {
     for item in items {
         let found = match &item.node {
-            StatementKind::Function { headers, .. } => {
-                headers.iter().any(|h| h.name == word)
-            }
+            StatementKind::Function { headers, .. } => headers.iter().any(|h| h.name == word),
             StatementKind::Action { name, .. }
             | StatementKind::AliasStatement { name, .. }
             | StatementKind::Label(name) => *name == word,
@@ -133,7 +134,9 @@ fn find_definition<'a>(items: &'a [Statement], word: &str) -> Option<&'a Stateme
                     return Some(stmt);
                 }
             }
-            StatementKind::IfStatement { body, elseblock, .. } => {
+            StatementKind::IfStatement {
+                body, elseblock, ..
+            } => {
                 if let Some(stmt) = find_definition(body, word) {
                     return Some(stmt);
                 }
@@ -176,8 +179,14 @@ pub(crate) fn json_message_location(path: &std::path::Path, msg_index: usize) ->
                 let location = Location {
                     uri,
                     range: Range {
-                        start: LspPosition { line: line_idx as u32, character: 0 },
-                        end: LspPosition { line: line_idx as u32, character: 0 },
+                        start: LspPosition {
+                            line: line_idx as u32,
+                            character: 0,
+                        },
+                        end: LspPosition {
+                            line: line_idx as u32,
+                            character: 0,
+                        },
                     },
                 };
                 return Some(location);
@@ -208,8 +217,14 @@ fn file_start_location(path: &std::path::Path) -> Location {
     Location {
         uri: Url::from_file_path(path).unwrap_or_else(|_| Url::parse("file:///").unwrap()),
         range: Range {
-            start: LspPosition { line: 0, character: 0 },
-            end: LspPosition { line: 0, character: 0 },
+            start: LspPosition {
+                line: 0,
+                character: 0,
+            },
+            end: LspPosition {
+                line: 0,
+                character: 0,
+            },
         },
     }
 }

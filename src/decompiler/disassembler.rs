@@ -697,8 +697,7 @@ impl<'a> Disassembler<'a> {
                             break;
                         }
                         let prev = pos - 4;
-                        let opcode =
-                            u16::from_le_bytes([self.bytes[prev], self.bytes[prev + 1]]);
+                        let opcode = u16::from_le_bytes([self.bytes[prev], self.bytes[prev + 1]]);
                         if self.db.get_movement_by_id(opcode).is_none()
                             || opcode == END_MOVEMENT_OPCODE
                         {
@@ -750,7 +749,11 @@ impl<'a> Disassembler<'a> {
         // 4-byte or 4-byte+2-byte-aligned positions, so we search both stride phases and
         // return the earliest match.
         let search_end = end.min(self.bytes.len().saturating_sub(3));
-        let aligned = if start.is_multiple_of(2) { start } else { start + 1 };
+        let aligned = if start.is_multiple_of(2) {
+            start
+        } else {
+            start + 1
+        };
         let mut earliest: Option<usize> = None;
         for base in [aligned, aligned + 2] {
             for pos in (base..search_end).step_by(4) {
@@ -1276,8 +1279,7 @@ mod opcode_collision_tests {
         bin.extend_from_slice(&[0xFE, 0x00, 0x00, 0x00]); // EndMovement at 12-15
 
         let db = DatabaseV2::test_platinum();
-        let ScriptOutput::Normal { items, .. } =
-            disassemble_bytes(db, bin).expect("disassemble")
+        let ScriptOutput::Normal { items, .. } = disassemble_bytes(db, bin).expect("disassemble")
         else {
             panic!("expected normal script output");
         };
@@ -1299,8 +1301,7 @@ mod opcode_collision_tests {
         bin.extend_from_slice(&[0xFE, 0x00, 0x00, 0x00]); // EndMovement at 14-17
 
         let db = DatabaseV2::test_platinum();
-        let ScriptOutput::Normal { items, .. } =
-            disassemble_bytes(db, bin).expect("disassemble")
+        let ScriptOutput::Normal { items, .. } = disassemble_bytes(db, bin).expect("disassemble")
         else {
             panic!("expected normal script output");
         };

@@ -126,10 +126,7 @@ pub enum ProjectError {
     #[error(
         "DSPRE convert expected paired script binary '{binary}' for '{script}', but the file is missing"
     )]
-    DspreConvertMissingBinary {
-        script: PathBuf,
-        binary: PathBuf,
-    },
+    DspreConvertMissingBinary { script: PathBuf, binary: PathBuf },
 
     /// Decompilation failed after resolving the DSPRE script ↔ binary pairing.
     #[error(

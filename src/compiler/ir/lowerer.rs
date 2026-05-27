@@ -767,7 +767,11 @@ impl<'a> Lowerer<'a> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
             ExpressionKind::Identifier(s) | ExpressionKind::Label(s) => Ok(s.clone()),
-            ExpressionKind::String(segs) => Ok(segs.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ")),
+            ExpressionKind::String(segs) => Ok(segs
+                .iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = Self::format_arg_for_substitution(id)?;
                 let op_str = match operator {
@@ -847,7 +851,11 @@ impl<'a> Lowerer<'a> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
             ExpressionKind::Identifier(s) | ExpressionKind::Label(s) => Ok(s.clone()),
-            ExpressionKind::String(segs) => Ok(segs.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ")),
+            ExpressionKind::String(segs) => Ok(segs
+                .iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")),
             ExpressionKind::Prefix { operator, id } => {
                 let inner = Self::format_expression_for_constant_eval(id)?;
                 let op = match operator {
@@ -1196,7 +1204,11 @@ impl<'a> Lowerer<'a> {
         self.resolve_arg_with_archive(expr, None)
     }
 
-    fn resolve_arg_with_archive(&self, expr: &Expression, archive_override: Option<u16>) -> ParseResult<Arg> {
+    fn resolve_arg_with_archive(
+        &self,
+        expr: &Expression,
+        archive_override: Option<u16>,
+    ) -> ParseResult<Arg> {
         match &expr.node {
             ExpressionKind::Identifier(name) => {
                 if let Some(&val) = self.active_aliases.get(name) {
@@ -1231,7 +1243,11 @@ impl<'a> Lowerer<'a> {
             ExpressionKind::Number(val) => Ok(Arg::Value(*val)),
             ExpressionKind::Label(name) => Ok(Arg::Pointer(name.clone())),
             ExpressionKind::String(segs) => {
-                let flat = segs.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ");
+                let flat = segs
+                    .iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 let archive_id = if let Some(id) = archive_override {
                     id
                 } else {
@@ -1297,7 +1313,11 @@ impl<'a> Lowerer<'a> {
                     unreachable!()
                 };
                 let wrapped = uxie::format_message(
-                    &segs.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" "),
+                    &segs
+                        .iter()
+                        .map(|(s, _)| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
                 )
                 .map_err(|e| lowering_error(format!("failed to format message: {e}")))?;
                 let archive_id = if let Some(id) = archive_override {

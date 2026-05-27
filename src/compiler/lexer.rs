@@ -685,7 +685,10 @@ mod tests {
         // \" inside a string must produce the chatot alias ["] for U+201C,
         // not a raw ASCII double-quote (which has no charmap entry).
         let mut lexer = Lexer::new(r#""say \" something""#);
-        assert_eq!(seg_contents(lexer.next_token().kind), vec![r#"say ["] something"#]);
+        assert_eq!(
+            seg_contents(lexer.next_token().kind),
+            vec![r#"say ["] something"#]
+        );
         assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 
@@ -695,7 +698,10 @@ mod tests {
         // measured independently for dialog width warnings.
         let src = "\"hello\nworld\"";
         let mut lexer = Lexer::new(src);
-        assert_eq!(seg_contents(lexer.next_token().kind), vec!["hello", "world"]);
+        assert_eq!(
+            seg_contents(lexer.next_token().kind),
+            vec!["hello", "world"]
+        );
         assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 
@@ -705,7 +711,10 @@ mod tests {
         // auto-indent doesn't pollute the segment content.
         let src = "\"first line\n    second line\"";
         let mut lexer = Lexer::new(src);
-        assert_eq!(seg_contents(lexer.next_token().kind), vec!["first line", "second line"]);
+        assert_eq!(
+            seg_contents(lexer.next_token().kind),
+            vec!["first line", "second line"]
+        );
         assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 
@@ -715,7 +724,10 @@ mod tests {
         // segment; the escape stays with that segment.
         let src = "\"line one\\r\n    line two\"";
         let mut lexer = Lexer::new(src);
-        assert_eq!(seg_contents(lexer.next_token().kind), vec![r"line one\r", "line two"]);
+        assert_eq!(
+            seg_contents(lexer.next_token().kind),
+            vec![r"line one\r", "line two"]
+        );
         assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 

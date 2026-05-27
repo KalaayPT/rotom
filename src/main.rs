@@ -8,11 +8,11 @@ use rotom::compile_path;
 use rotom::compiler::diagnostic::{CompileError, print_error, print_warning};
 use rotom::database::{ConstantDb, DatabaseV2, GameFamilyExt, game_family_from_hint};
 use rotom::decompile_path;
-use rotom::project::config::find_project_root;
 use rotom::project::command::{
     compile_mode as compile_project_mode, convert_mode, decompile_mode as decompile_project_mode,
     init_mode,
 };
+use rotom::project::config::find_project_root;
 use rotom::project::convert::ConvertOptions;
 use rotom::project::error::ProjectError;
 
@@ -129,7 +129,12 @@ fn main() {
             input,
             output,
             verbose,
-        } => handle_decompile_command(database.as_deref(), input.as_deref(), output.as_deref(), *verbose),
+        } => handle_decompile_command(
+            database.as_deref(),
+            input.as_deref(),
+            output.as_deref(),
+            *verbose,
+        ),
         Commands::Init {
             root,
             non_interactive,
@@ -211,8 +216,7 @@ fn handle_decompile_command(
         let input = input.ok_or(ProjectError::MissingDecompileArgs);
         match (database, input) {
             (Ok(database), Ok(input)) => {
-                decompile(database, input, output, verbose)
-                    .map_err(ProjectError::from)
+                decompile(database, input, output, verbose).map_err(ProjectError::from)
             }
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
@@ -255,11 +259,7 @@ fn handle_init_command(root: Option<&std::path::Path>, non_interactive: bool) {
     }
 }
 
-fn handle_convert_command(
-    root: Option<&std::path::Path>,
-    dry_run: bool,
-    non_interactive: bool,
-) {
+fn handle_convert_command(root: Option<&std::path::Path>, dry_run: bool, non_interactive: bool) {
     let options = ConvertOptions {
         dry_run,
         non_interactive,
@@ -372,7 +372,10 @@ fn compile(
         find_project_root(input)
             .and_then(|root| uxie::Workspace::open(&root).ok())
             .unwrap_or_else(|| {
-                let game = db.game_family().unwrap_or(uxie::GameFamily::Platinum).default_game();
+                let game = db
+                    .game_family()
+                    .unwrap_or(uxie::GameFamily::Platinum)
+                    .default_game();
                 uxie::Workspace::new(PathBuf::new(), game)
             }),
     );
@@ -459,8 +462,13 @@ fn decompile(
         None
     };
 
-    let result =
-        decompile_path(input, &output_path, &db, Some(&constants), progress.as_ref())?;
+    let result = decompile_path(
+        input,
+        &output_path,
+        &db,
+        Some(&constants),
+        progress.as_ref(),
+    )?;
     report_decompile_result(&result, verbose, Some(start.elapsed()));
 
     if result.is_success() {

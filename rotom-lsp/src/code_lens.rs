@@ -39,7 +39,11 @@ pub fn is_message_archive_path(path: &Path) -> bool {
 /// Produce `CodeLens` hints for a Rotom source file.
 ///
 /// Shows reference counts above scripts, labels, aliases, and actions.
-pub fn compute_script_code_lens(source: &str, uri: &Url, db: Option<&DatabaseV2>) -> Vec<CodeLens> {
+pub fn compute_script_code_lens(
+    source: &str,
+    uri: &Url,
+    db: Option<&DatabaseV2>,
+) -> Vec<CodeLens> {
     let Some(ast) = parse_source(source) else {
         return Vec::new();
     };

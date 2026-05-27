@@ -8,17 +8,17 @@ use super::diagnostic::serialize_range;
 /// The type of a token in the Rotom language.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum TokenType {
-    Script,   // "script"
-    Public,   // "public"
-    Action,   // "action"
-    Alias,    // "alias"
-    Global,   // "global"
+    Script, // "script"
+    Public, // "public"
+    Action, // "action"
+    Alias,  // "alias"
+    Global, // "global"
 
-    Num(i32),           // integer
-    Identifier(String), // variable,
-    Label(String),      // label definition (ends with :)
-    LocalLabel(String), // local label reference (.name without colon)
-    String(Vec<(String, usize)>),     // string literal; each segment is (content, source_start_byte)
+    Num(i32),                     // integer
+    Identifier(String),           // variable,
+    Label(String),                // label definition (ends with :)
+    LocalLabel(String),           // local label reference (.name without colon)
+    String(Vec<(String, usize)>), // string literal; each segment is (content, source_start_byte)
 
     // preprocessor
     Include, // "#include"
@@ -140,7 +140,14 @@ impl fmt::Display for TokenType {
             TokenType::Num(n) => write!(f, "number '{}'", n),
             TokenType::Label(l) => write!(f, "label definition '{}'", l),
             TokenType::LocalLabel(l) => write!(f, "local label reference '{}'", l),
-            TokenType::String(s) => write!(f, "string \"{}\"", s.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" ")),
+            TokenType::String(s) => write!(
+                f,
+                "string \"{}\"",
+                s.iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
 
             // --- Preprocessor ---
             TokenType::Include => write!(f, "'#include'"),

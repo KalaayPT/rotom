@@ -35,7 +35,9 @@ pub fn parse_dspre_generated_timestamp(source: &str) -> Option<DateTime<Local>> 
 ///
 /// Scripts whose headers do not parse are skipped. I/O errors when reading a file are
 /// propagated.
-pub fn dspre_export_baseline_from_script_paths(paths: &[PathBuf]) -> Result<Option<DspreExportBaseline>> {
+pub fn dspre_export_baseline_from_script_paths(
+    paths: &[PathBuf],
+) -> Result<Option<DspreExportBaseline>> {
     let mut best: Option<(DateTime<Local>, PathBuf)> = None;
     for path in paths {
         let source = fs::read_to_string(path).map_err(|source| ProjectError::Io {
@@ -67,9 +69,7 @@ fn dspre_header_prefix(source: &str) -> &str {
 fn extract_generated_line(header: &str) -> Option<&str> {
     for line in header.lines() {
         let trimmed = line.trim_start();
-        let after_star = trimmed
-            .strip_prefix('*')
-            .map_or(trimmed, str::trim_start);
+        let after_star = trimmed.strip_prefix('*').map_or(trimmed, str::trim_start);
         let Some(rest) = after_star.strip_prefix("Generated:") else {
             continue;
         };

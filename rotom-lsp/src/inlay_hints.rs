@@ -1,9 +1,6 @@
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position as LspPosition};
 
-use rotom::compiler::{
-    ast::StatementKind,
-    sourcemap::SourceMap,
-};
+use rotom::compiler::{ast::StatementKind, sourcemap::SourceMap};
 use rotom::database::DatabaseV2;
 
 use crate::util::parse_source;
@@ -48,13 +45,11 @@ fn walk_statement(
                                 line: pos.line,
                                 character: pos.character,
                             },
-                            label: InlayHintLabel::String(
-                                if param.optional {
-                                    format!("[{}]: ", param.name)
-                                } else {
-                                    format!("{}: ", param.name)
-                                }
-                            ),
+                            label: InlayHintLabel::String(if param.optional {
+                                format!("[{}]: ", param.name)
+                            } else {
+                                format!("{}: ", param.name)
+                            }),
                             kind: Some(InlayHintKind::PARAMETER),
                             text_edits: None,
                             tooltip: None,
@@ -66,7 +61,12 @@ fn walk_statement(
                 }
             }
         }
-        StatementKind::IfStatement { condition, body, elseblock, .. } => {
+        StatementKind::IfStatement {
+            condition,
+            body,
+            elseblock,
+            ..
+        } => {
             walk_expression(condition, db, map, hints);
             for stmt in body {
                 walk_statement(&stmt.node, db, map, hints);
@@ -77,13 +77,20 @@ fn walk_statement(
                 }
             }
         }
-        StatementKind::WhileStatement { condition, body, .. } => {
+        StatementKind::WhileStatement {
+            condition, body, ..
+        } => {
             walk_expression(condition, db, map, hints);
             for stmt in body {
                 walk_statement(&stmt.node, db, map, hints);
             }
         }
-        StatementKind::MatchStatement { subject, cases, default, .. } => {
+        StatementKind::MatchStatement {
+            subject,
+            cases,
+            default,
+            ..
+        } => {
             walk_expression(subject, db, map, hints);
             for case in cases {
                 for val in &case.values {

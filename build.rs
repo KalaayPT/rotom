@@ -11,7 +11,10 @@ fn main() -> io::Result<()> {
     // Download the latest command database release and embed it.
     let url = "https://github.com/DS-Pokemon-Rom-Editor/scrcmd-database/releases/latest/download/db-latest.zip";
     let response = minreq::get(url)
-        .with_header("User-Agent", format!("rotom/{} build", env!("CARGO_PKG_VERSION")))
+        .with_header(
+            "User-Agent",
+            format!("rotom/{} build", env!("CARGO_PKG_VERSION")),
+        )
         .with_timeout(30)
         .send()
         .map_err(|e| io::Error::other(format!("download failed: {e}")))?;

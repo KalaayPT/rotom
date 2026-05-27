@@ -772,7 +772,14 @@ fn decompile_file_internal(
         error: e,
     })?;
 
-    decompile_file_from_ir(input, &script_output, output_file, output_dir, db, constants)
+    decompile_file_from_ir(
+        input,
+        &script_output,
+        output_file,
+        output_dir,
+        db,
+        constants,
+    )
 }
 
 /// Decompile a file or directory of binary scripts to Rotoscript source.

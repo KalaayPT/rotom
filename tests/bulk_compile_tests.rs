@@ -335,7 +335,12 @@ fn compile_single_script(
                         ));
                     }
                 };
-                match compile(&transpile_result.source, db, &constants, transpile_result.binary_quirks) {
+                match compile(
+                    &transpile_result.source,
+                    db,
+                    &constants,
+                    transpile_result.binary_quirks,
+                ) {
                     Ok(out) => out.bytes,
                     Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
                 }
@@ -372,7 +377,12 @@ fn compile_single_script(
             }
         };
 
-        match compile(&transpile_result.source, db, &constants, transpile_result.binary_quirks) {
+        match compile(
+            &transpile_result.source,
+            db,
+            &constants,
+            transpile_result.binary_quirks,
+        ) {
             Ok(out) => out.bytes,
             Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
         }
@@ -1163,7 +1173,12 @@ fn compile_heartgold_single_script(
                 return CompileOutcome::CompileError(format!("Decomp transpile error: {}", e));
             }
         };
-        match compile(&transpile_result.source, db, &constants, transpile_result.binary_quirks) {
+        match compile(
+            &transpile_result.source,
+            db,
+            &constants,
+            transpile_result.binary_quirks,
+        ) {
             Ok(_) => CompileOutcome::Match, // Compiled successfully
             Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
         }

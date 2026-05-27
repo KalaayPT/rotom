@@ -57,7 +57,10 @@ pub fn extract_command_context(source: &str, byte_offset: usize) -> Option<(Stri
     if name.is_empty() || !name.chars().all(is_identifier_char) {
         return None;
     }
-    Some((name.to_string(), trimmed[space..].matches(',').count() as u32))
+    Some((
+        name.to_string(),
+        trimmed[space..].matches(',').count() as u32,
+    ))
 }
 
 /// Extract the last identifier word in `text` (the word ending at `text.len()`).
@@ -65,7 +68,9 @@ fn word_ending_at(text: &str) -> Option<String> {
     let trimmed = text.trim_end();
     let start = trimmed
         .rfind(|c: char| !is_identifier_char(c))
-        .map_or(0, |i| i + trimmed[i..].chars().next().map_or(1, char::len_utf8));
+        .map_or(0, |i| {
+            i + trimmed[i..].chars().next().map_or(1, char::len_utf8)
+        });
     let word = &trimmed[start..];
     if word.is_empty() {
         None
@@ -126,9 +131,10 @@ fn build_signature_help(name: &str, cmd: &Command, active_param: u32) -> Signatu
     SignatureHelp {
         signatures: vec![SignatureInformation {
             label,
-            documentation: cmd.description.as_ref().map(|d| {
-                tower_lsp::lsp_types::Documentation::String(d.clone())
-            }),
+            documentation: cmd
+                .description
+                .as_ref()
+                .map(|d| tower_lsp::lsp_types::Documentation::String(d.clone())),
             parameters: Some(parameters),
             active_parameter: Some(active_param),
         }],

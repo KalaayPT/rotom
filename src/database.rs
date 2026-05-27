@@ -467,10 +467,7 @@ impl Command {
                         return ResolvedCommandShape {
                             params: variant.source_params_or(&self.params),
                             emit_args: variant.emit_args.as_deref(),
-                            macro_expansion: variant
-                                .expansion
-                                .as_ref()
-                                .or(self.expansion.as_ref()),
+                            macro_expansion: variant.expansion.as_ref().or(self.expansion.as_ref()),
                         };
                     }
                 }
@@ -487,10 +484,7 @@ impl Command {
                     return ResolvedCommandShape {
                         params: variant.source_params_or(&self.params),
                         emit_args: variant.emit_args.as_deref(),
-                        macro_expansion: variant
-                            .expansion
-                            .as_ref()
-                            .or(self.expansion.as_ref()),
+                        macro_expansion: variant.expansion.as_ref().or(self.expansion.as_ref()),
                     };
                 }
             }
@@ -1133,7 +1127,9 @@ impl ConstantDb {
         include_dirs: &[PathBuf],
         include_path: &str,
     ) -> std::io::Result<bool> {
-        if !include_path.contains("res/field/events/") || !include_path.to_ascii_lowercase().ends_with(".h") {
+        if !include_path.contains("res/field/events/")
+            || !include_path.to_ascii_lowercase().ends_with(".h")
+        {
             return Ok(false);
         }
 
@@ -2017,7 +2013,8 @@ mod tests {
             );
 
             let mut constants = ConstantDb::new();
-            let language = RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
+            let language =
+                RomHeader::open(root).map_or(GameLanguage::English, |h| h.detect_language());
             constants
                 .load_dspre_text_archives(root, language)
                 .expect("failed to load DSPRE trainer archive");
@@ -2064,7 +2061,9 @@ mod tests {
         assert_eq!(constants.get("msg_0199_00000"), Some(0));
 
         // Arc sharing: a clone made after wiring also sees the populated map.
-        let cloned = constants.clone_for_script(dir.path().join("fake.rotom")).unwrap();
+        let cloned = constants
+            .clone_for_script(dir.path().join("fake.rotom"))
+            .unwrap();
         assert_eq!(cloned.get("msg_0199_00001"), Some(1));
     }
 }

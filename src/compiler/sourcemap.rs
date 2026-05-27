@@ -143,10 +143,34 @@ mod tests {
     fn ascii_positions() {
         let src = "line1\nline2\nline3";
         let map = SourceMap::new(src);
-        assert_eq!(map.byte_to_position(0), Position { line: 0, character: 0 });
-        assert_eq!(map.byte_to_position(3), Position { line: 0, character: 3 });
-        assert_eq!(map.byte_to_position(6), Position { line: 1, character: 0 });
-        assert_eq!(map.byte_to_position(9), Position { line: 1, character: 3 });
+        assert_eq!(
+            map.byte_to_position(0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            map.byte_to_position(3),
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
+        assert_eq!(
+            map.byte_to_position(6),
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
+        assert_eq!(
+            map.byte_to_position(9),
+            Position {
+                line: 1,
+                character: 3
+            }
+        );
     }
 
     #[test]
@@ -154,10 +178,34 @@ mod tests {
         // 😀 (U+1F600) is 2 UTF-16 code units, 4 UTF-8 bytes.
         let src = "a😀b";
         let map = SourceMap::new(src);
-        assert_eq!(map.byte_to_position(0), Position { line: 0, character: 0 }); // 'a'
-        assert_eq!(map.byte_to_position(1), Position { line: 0, character: 1 }); // 'a'
-        assert_eq!(map.byte_to_position(5), Position { line: 0, character: 3 }); // 'b'
-        assert_eq!(map.byte_to_position(6), Position { line: 0, character: 4 }); // past end
+        assert_eq!(
+            map.byte_to_position(0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        ); // 'a'
+        assert_eq!(
+            map.byte_to_position(1),
+            Position {
+                line: 0,
+                character: 1
+            }
+        ); // 'a'
+        assert_eq!(
+            map.byte_to_position(5),
+            Position {
+                line: 0,
+                character: 3
+            }
+        ); // 'b'
+        assert_eq!(
+            map.byte_to_position(6),
+            Position {
+                line: 0,
+                character: 4
+            }
+        ); // past end
     }
 
     #[test]
@@ -173,7 +221,10 @@ mod tests {
             // Round-trip may clamp inside a surrogate pair, so it should never
             // exceed the original offset and should land on a char boundary.
             assert!(back <= offset, "round-trip exceeded original offset");
-            assert!(src.is_char_boundary(back), "round-trip landed on non-char-boundary");
+            assert!(
+                src.is_char_boundary(back),
+                "round-trip landed on non-char-boundary"
+            );
         }
     }
 
@@ -181,7 +232,19 @@ mod tests {
     fn position_to_byte_past_end() {
         let src = "hi";
         let map = SourceMap::new(src);
-        assert_eq!(map.position_to_byte(Position { line: 0, character: 10 }), 2);
-        assert_eq!(map.position_to_byte(Position { line: 10, character: 0 }), 2);
+        assert_eq!(
+            map.position_to_byte(Position {
+                line: 0,
+                character: 10
+            }),
+            2
+        );
+        assert_eq!(
+            map.position_to_byte(Position {
+                line: 10,
+                character: 0
+            }),
+            2
+        );
     }
 }

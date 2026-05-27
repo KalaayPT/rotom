@@ -3,12 +3,12 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
 use rotom::compiler::{
+    Analyzer,
     ast::ScriptFile,
     diagnostic::{CompileError, CompileWarning},
     lexer::Lexer,
     parser::Parser,
     sourcemap::SourceMap,
-    Analyzer,
 };
 use rotom::database::{ConstantDb, DatabaseV2};
 
@@ -147,7 +147,10 @@ mod tests {
     End
 "#;
         let diagnostics = compute_diagnostics(source, None, None, None);
-        assert!(diagnostics.is_empty(), "valid source should have no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "valid source should have no diagnostics"
+        );
     }
 
     #[test]
