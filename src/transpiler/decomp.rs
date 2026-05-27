@@ -783,8 +783,12 @@ fn reorder_decomp_args_to_binary(
 fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
     const MAX_LOOKAHEAD: usize = 32;
 
-    for i in start_idx..std::cmp::min(start_idx + MAX_LOOKAHEAD, lines.len()) {
-        let trimmed = lines[i].trim();
+    for line in lines
+        .iter()
+        .take(std::cmp::min(start_idx + MAX_LOOKAHEAD, lines.len()))
+        .skip(start_idx)
+    {
+        let trimmed = line.trim();
 
         if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
             continue;

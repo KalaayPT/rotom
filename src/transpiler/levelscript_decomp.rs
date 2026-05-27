@@ -27,6 +27,7 @@ impl std::fmt::Display for TranspileError {
 
 impl std::error::Error for TranspileError {}
 
+#[allow(clippy::too_many_lines)]
 pub fn transpile_levelscript(
     source: &str,
     constants: Option<&ConstantDb>,

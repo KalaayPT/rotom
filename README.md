@@ -199,7 +199,7 @@ script SearchLoop #1:
 
 ## Design Philosophy
 
-Rotom is built with three core principles:
+Rotom is built with two core principles:
 
 1. **Fidelity to source**: Compile back to byte-matching binaries that match the original game scripts for smaller patch sizes and decomp compatibility.
 2. **Developer experience**: Clean syntax, rich error messages, seamless decomp integration

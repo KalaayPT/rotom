@@ -103,6 +103,7 @@ impl LevelScript {
     }
 
     /// Parse a levelscript from binary data
+    #[allow(clippy::too_many_lines)]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         // Handle empty levelscript (4 zero bytes)
         if bytes.len() == 4 && bytes.iter().all(|&b| b == 0) {

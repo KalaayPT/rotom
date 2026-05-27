@@ -942,8 +942,7 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
     })?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let tmp = dir.join(format!(
         "{}.{stamp}.tmp",
         v2_path.file_name().and_then(|s| s.to_str()).unwrap_or("db"),

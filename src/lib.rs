@@ -291,6 +291,7 @@ fn count_jump_table_lines(source: &str) -> usize {
 /// Reads a file from disk and compiles it, handling translation and preprocessor directives.
 ///
 /// Supports `.rotom`, `.script`, `.s`, and `.json` inputs.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn compile_file_internal(
     input: &Path,
     output: &Path,
@@ -550,6 +551,7 @@ fn detect_compile_output_collisions(
 /// Returns an error when the input path does not exist, when the output is
 /// not a directory for directory-mode compilation, or when output path
 /// collisions are detected.
+#[allow(clippy::too_many_lines)]
 pub fn compile_path(
     input: &Path,
     output: &Path,

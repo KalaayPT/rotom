@@ -52,6 +52,7 @@ struct WorkspaceInfo {
 
 /// Initialize a Rotom project under `root`, downloading or embedding the command database,
 /// writing `rotom.toml`, and optionally converting legacy scripts when `options.interactive`.
+#[allow(clippy::too_many_lines)]
 pub fn run_init(root: Option<PathBuf>, options: InitOptions) -> Result<InitReport> {
     let InitOptions {
         interactive,

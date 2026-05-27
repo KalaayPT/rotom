@@ -60,6 +60,7 @@ pub fn find_convertible_files(root: &Path, config: &RotomConfig) -> Result<Vec<P
 /// Reads and disassembles the binary once. With `dry_run`, returns a plan only; otherwise backs up
 /// the `.script`, writes decompiled output beside it, removes the placeholder, and returns compile
 /// state metadata.
+#[allow(clippy::too_many_lines)]
 fn convert_one_dspre_script_placeholder(
     root: &Path,
     config: &RotomConfig,

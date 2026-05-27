@@ -557,7 +557,7 @@ pub struct ConstantDb {
     uxie_base_symbols: Option<Arc<SymbolTable>>,
     /// Active Uxie symbol table, optionally extended with file-local constants
     uxie_symbols: Option<SymbolTable>,
-    /// Shared Arc to workspace's message_ids. Wired at compile session setup.
+    /// Shared Arc to workspace's `message_ids`. Wired at compile session setup.
     /// Inserts from `load_archive_into_cache` are visible across all clones.
     message_ids: Arc<DashMap<String, (u16, u16)>>,
 }
@@ -581,7 +581,13 @@ impl std::fmt::Debug for ConstantDb {
                     .as_ref()
                     .map(|s| s.get_all_defines().len()),
             )
-            .finish()
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for ConstantDb {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -2,6 +2,7 @@
 //!
 //! Uses atomic counters — no channels, no mutexes, negligible overhead.
 
+use std::fmt::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -48,7 +49,7 @@ impl CompileProgress {
 
                 let mut msg = format!("\r  {label} {}/{} files", done + skip, total);
                 if errs > 0 {
-                    msg.push_str(&format!(" ({} failed)", errs));
+                    let _ = write!(msg, " ({errs} failed)");
                 }
                 eprint!("{msg: <80}");
 

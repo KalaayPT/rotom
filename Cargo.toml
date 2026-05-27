@@ -6,6 +6,10 @@ resolver = "2"
 name = "rotom"
 version = "0.1.0"
 edition = "2024"
+description = "scripting language and toolchain for pokemon gen 4 game scripts"
+license = "MIT"
+license-file = "LICENSE"
+repository = "https://github.com/KalaayPT/rotom"
 
 [lib]
 name = "rotom"

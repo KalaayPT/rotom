@@ -904,18 +904,14 @@ mod tests {
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
         assert!(script_file.aliases.is_empty());
-        let functions: Vec<_> = script_file
+        assert!(!script_file
             .items
             .iter()
-            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
-            .collect();
-        let actions: Vec<_> = script_file
+            .any(|s| matches!(s.node, StatementKind::Function { .. })));
+        assert!(!script_file
             .items
             .iter()
-            .filter(|s| matches!(s.node, StatementKind::Action { .. }))
-            .collect();
-        assert!(functions.is_empty());
-        assert!(actions.is_empty());
+            .any(|s| matches!(s.node, StatementKind::Action { .. })));
     }
 
     #[test]
@@ -1508,12 +1504,13 @@ script Second #2:
         let errors = std::mem::take(&mut parser.errors);
 
         assert!(!errors.is_empty(), "expected at least one error");
-        let functions: Vec<_> = file
-            .items
-            .iter()
-            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
-            .collect();
-        assert_eq!(functions.len(), 2);
+        assert_eq!(
+            file.items
+                .iter()
+                .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -1547,12 +1544,14 @@ script Second #2:
             !errors.is_empty(),
             "expected at least one error for missing endwhile"
         );
-        let functions: Vec<_> = file
-            .items
-            .iter()
-            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
-            .collect();
-        assert_eq!(functions.len(), 2, "both scripts should still be parsed");
+        assert_eq!(
+            file.items
+                .iter()
+                .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+                .count(),
+            2,
+            "both scripts should still be parsed"
+        );
     }
 
     #[test]
@@ -1599,13 +1598,11 @@ script Test #1:
             parser.errors.is_empty(),
             "expected no errors for preprocessor directives"
         );
-        let functions: Vec<_> = file
-            .items
-            .iter()
-            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
-            .collect();
         assert_eq!(
-            functions.len(),
+            file.items
+                .iter()
+                .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+                .count(),
             1,
             "expected one script after preprocessor directives"
         );

@@ -25,14 +25,10 @@ fn run_rotom(args: &[&str], cwd: &std::path::Path) -> Result<String, String> {
     // the shared default directory (~/.local/share/rotom/databases).
     // Use the *project* directory name so different test projects get
     // different caches, while repeated calls from the same test reuse it.
-    let cache_dir = cwd
-        .file_name()
-        .map(|n| std::env::temp_dir().join("rotom_test_cache").join(n))
-        .unwrap_or_else(|| {
-            std::env::temp_dir()
-                .join("rotom_test_cache")
-                .join("default")
-        });
+    let cache_dir = cwd.file_name().map_or_else(
+        || std::env::temp_dir().join("rotom_test_cache").join("default"),
+        |n| std::env::temp_dir().join("rotom_test_cache").join(n),
+    );
     cmd.env("XDG_DATA_HOME", &cache_dir);
     let output = cmd
         .output()

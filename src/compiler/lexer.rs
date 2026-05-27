@@ -95,6 +95,7 @@ impl<'a> Lexer<'a> {
     ///
     /// Repeatedly calling this method (or iterating the lexer) will yield
     /// all tokens including a final `EOF` token.
+    #[allow(clippy::too_many_lines)]
     pub fn next_token(&mut self) -> Token {
         self.skip_whitespace_and_comments();
         let start = self.current_pos;

@@ -51,15 +51,12 @@ fn format_arg(arg: &Arg, param_name: Option<&str>, constants: Option<&ConstantDb
             if *v >= 0x4000 {
                 return format!("0x{:X}", v);
             }
-            if let Some(name) = param_name {
-                if let Some(family) = param_semantic_family(name) {
-                    if let Some(constants) = constants
-                        && let Some(resolved) =
-                            constants.resolve_value_to_name(i64::from(*v), family)
-                    {
-                        return resolved;
-                    }
-                }
+            if let Some(name) = param_name
+                && let Some(family) = param_semantic_family(name)
+                && let Some(constants) = constants
+                && let Some(resolved) = constants.resolve_value_to_name(i64::from(*v), family)
+            {
+                return resolved;
             }
             v.to_string()
         }

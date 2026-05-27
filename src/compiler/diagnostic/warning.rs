@@ -21,8 +21,8 @@ pub enum CompileWarning {
         previous_span: Range<usize>,
     },
     /// A segment of a message string is wider than the dialog allows.
-    /// For plain strings this means dialog overflow; for format() strings
-    /// it means format() will insert an extra word-wrap break within it.
+    /// For plain strings this means dialog overflow; for `format()` strings
+    /// it means `format()` will insert an extra word-wrap break within it.
     MessageLineTooLong {
         #[serde(serialize_with = "serialize_range")]
         span: Range<usize>,

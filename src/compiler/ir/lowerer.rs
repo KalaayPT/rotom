@@ -1171,7 +1171,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Resolve args, routing string literals for `text_slot` params into the
-    /// correct text archive for the command (e.g. the menu archive for AddMenuEntryImm).
+    /// correct text archive for the command (e.g. the menu archive for `AddMenuEntryImm`).
     fn resolve_args_for_command(
         &self,
         command: &str,
@@ -1183,7 +1183,7 @@ impl<'a> Lowerer<'a> {
             .enumerate()
             .map(|(i, arg)| {
                 let override_for_arg = if archive_override.is_some()
-                    && params.get(i).map_or(false, |p| p.name == "text_slot")
+                    && params.get(i).is_some_and(|p| p.name == "text_slot")
                 {
                     archive_override
                 } else {
@@ -1204,6 +1204,7 @@ impl<'a> Lowerer<'a> {
         self.resolve_arg_with_archive(expr, None)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_arg_with_archive(
         &self,
         expr: &Expression,

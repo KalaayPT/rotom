@@ -54,6 +54,7 @@ pub fn ensure_decomp_fixtures() {
 }
 
 /// Return a DSPRE fixture root when the local fixture tree is present.
+#[allow(dead_code)]
 pub fn dspre_fixture_root(game: &str) -> Option<PathBuf> {
     let root = fixture_root();
     let dspre = root.join("dspre").join(format!("{}_DSPRE_contents", game));
@@ -92,7 +93,7 @@ fn clone_or_die(url: &str, dest: &Path) {
         .arg(dest)
         .status()
         .unwrap_or_else(|e| panic!("Failed to run `git clone`. Is git installed?\nError: {}", e));
-    assert!(status.success(), "git clone failed for {}", url)
+    assert!(status.success(), "git clone failed for {}", url);
 }
 
 fn checkout_or_die(path: &Path, commit: &str) {
@@ -108,11 +109,12 @@ fn checkout_or_die(path: &Path, commit: &str) {
         "git checkout {} failed in {}",
         commit,
         path.display()
-    )
+    );
 }
 
 /// Return a persistent temp directory for project lifecycle tests.
 /// These are NOT auto-deleted so you can inspect uxie/rotom artifacts.
+#[allow(dead_code)]
 pub fn persistent_test_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir()
         .join("rotom_lifecycle_tests")

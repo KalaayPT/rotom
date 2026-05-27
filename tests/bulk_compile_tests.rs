@@ -260,8 +260,7 @@ fn load_platinum_db_and_constants() -> (DatabaseV2, ConstantDb) {
     let dspre_root = get_dspre_platinum_root();
     if dspre_root.is_dir() {
         let language = RomHeader::open(&dspre_root)
-            .map(|h| h.detect_language())
-            .unwrap_or(GameLanguage::English);
+            .map_or(GameLanguage::English, |h| h.detect_language());
         let _ = constants.load_dspre_text_archives(&dspre_root, language);
     }
     (db, constants)
@@ -278,8 +277,7 @@ fn load_heartgold_db_and_constants() -> (DatabaseV2, ConstantDb) {
     let dspre_root = get_dspre_heartgold_root();
     if dspre_root.is_dir() {
         let language = RomHeader::open(&dspre_root)
-            .map(|h| h.detect_language())
-            .unwrap_or(GameLanguage::English);
+            .map_or(GameLanguage::English, |h| h.detect_language());
         let _ = constants.load_dspre_text_archives(&dspre_root, language);
     }
     (db, constants)
@@ -312,50 +310,47 @@ fn compile_single_script(
     };
 
     let binary_path = script_to_binary_path(script_path);
-    let expected_bytes = match std::fs::read(&binary_path) {
-        Ok(b) => b,
-        Err(_) => {
-            // Golden-file seeding: reference binary missing, so compile and
-            // write it out so future runs have something to compare against.
-            let decomp_root = get_pokeplatinum_root();
-            let constants = clone_map_events(base_constants, &decomp_root, script_path);
-            let is_levelscript = is_levelscript_source(&source);
-            let bytes = if is_levelscript {
-                match compile_levelscript_assembly_to_bytes(&source, &constants) {
-                    Ok(b) => b,
-                    Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
-                }
-            } else {
-                let transpile_result = match transpile_decomp(&source, Some(db)) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        return CompileOutcome::CompileError(format!(
-                            "Decomp transpile error: {}",
-                            e
-                        ));
-                    }
-                };
-                match compile(
-                    &transpile_result.source,
-                    db,
-                    &constants,
-                    transpile_result.binary_quirks,
-                ) {
-                    Ok(out) => out.bytes,
-                    Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
+    let Ok(expected_bytes) = std::fs::read(&binary_path) else {
+        // Golden-file seeding: reference binary missing, so compile and
+        // write it out so future runs have something to compare against.
+        let decomp_root = get_pokeplatinum_root();
+        let constants = clone_map_events(base_constants, &decomp_root, script_path);
+        let is_levelscript = is_levelscript_source(&source);
+        let bytes = if is_levelscript {
+            match compile_levelscript_assembly_to_bytes(&source, &constants) {
+                Ok(b) => b,
+                Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
+            }
+        } else {
+            let transpile_result = match transpile_decomp(&source, Some(db)) {
+                Ok(result) => result,
+                Err(e) => {
+                    return CompileOutcome::CompileError(format!(
+                        "Decomp transpile error: {}",
+                        e
+                    ));
                 }
             };
-            if let Some(parent) = binary_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+            match compile(
+                &transpile_result.source,
+                db,
+                &constants,
+                transpile_result.binary_quirks,
+            ) {
+                Ok(out) => out.bytes,
+                Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
             }
-            if std::fs::write(&binary_path, &bytes).is_err() {
-                return CompileOutcome::IoError(format!(
-                    "Failed to seed reference binary {}",
-                    binary_path.display()
-                ));
-            }
-            return CompileOutcome::Match;
+        };
+        if let Some(parent) = binary_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
+        if std::fs::write(&binary_path, &bytes).is_err() {
+            return CompileOutcome::IoError(format!(
+                "Failed to seed reference binary {}",
+                binary_path.display()
+            ));
+        }
+        return CompileOutcome::Match;
     };
     let expected_hash = sha256_hex(&expected_bytes);
 
@@ -673,6 +668,7 @@ fn bulk_failure_print_limit() -> usize {
         .unwrap_or(DEFAULT_LIMIT)
 }
 
+#[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
 fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bool) {
     let stats = &result.stats;
     let total = stats.total as u64;
@@ -891,7 +887,7 @@ fn test_bulk_compile_normal_scripts() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "verbose bulk report is opt-in for local diagnostics"]
 fn test_bulk_compile_normal_scripts_verbose() {
     let result = run_normal_scripts_test(true);
     assert_100_percent_match(&result, "Normal scripts");
@@ -904,7 +900,7 @@ fn test_bulk_compile_levelscripts() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "verbose bulk report is opt-in for local diagnostics"]
 fn test_bulk_compile_levelscripts_verbose() {
     let result = run_levelscripts_test(true);
     assert_100_percent_match(&result, "Levelscripts");
@@ -942,7 +938,7 @@ fn test_dspre_platinum_round_trip() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "verbose bulk report is opt-in for local diagnostics"]
 fn test_dspre_platinum_round_trip_verbose() {
     let result = run_dspre_platinum_round_trip_test(true);
     let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
@@ -984,7 +980,7 @@ fn test_dspre_platinum_compile() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "verbose bulk report is opt-in for local diagnostics"]
 fn test_dspre_platinum_compile_verbose() {
     let result = run_dspre_platinum_compile_test(true);
     let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
@@ -1029,7 +1025,7 @@ fn test_dspre_heartgold_round_trip() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "verbose bulk report is opt-in for local diagnostics"]
 fn test_dspre_heartgold_round_trip_verbose() {
     let result = run_dspre_heartgold_round_trip_test(true);
     let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
@@ -1071,7 +1067,7 @@ fn test_dspre_heartgold_compile() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "verbose bulk report is opt-in for local diagnostics"]
 fn test_dspre_heartgold_compile_verbose() {
     let result = run_dspre_heartgold_compile_test(true);
     let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
@@ -1261,7 +1257,7 @@ fn test_bulk_compile_heartgold_scripts() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "verbose bulk report is opt-in for local diagnostics"]
 fn test_bulk_compile_heartgold_scripts_verbose() {
     let result = run_heartgold_scripts_test(true);
     let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
