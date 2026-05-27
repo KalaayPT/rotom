@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use tower_lsp::lsp_types::{CodeLens, Command, Location, Position, Range, Url};
@@ -36,6 +36,14 @@ pub fn is_message_archive_path(path: &Path) -> bool {
     parent == Some("textArchives") || (parent == Some("text") && grandparent == Some("res"))
 }
 
+/// True when the URI is a `.rotom` script (diagnostics, completion, etc.).
+pub fn is_rotom_script_uri(uri: &Url) -> bool {
+    uri.to_file_path()
+        .ok()
+        .and_then(|p| p.extension().and_then(|s| s.to_str()).map(|s| s == "rotom"))
+        .unwrap_or(false)
+}
+
 /// Produce `CodeLens` hints for a Rotom source file.
 ///
 /// Shows reference counts above scripts, labels, aliases, and actions.
@@ -50,8 +58,10 @@ pub fn compute_script_code_lens(
 
     let map = SourceMap::new(source);
     let mut refs: HashMap<String, Vec<Location>> = HashMap::new();
+    let mut aliases = HashSet::new();
 
-    count_refs(&ast.items, uri, &map, &mut refs, db);
+    collect_alias_names(&ast.items, &mut aliases);
+    count_refs(&ast.items, uri, &map, &mut refs, db, &aliases);
 
     let mut lenses = Vec::new();
     emit_lenses(&ast.items, uri, &map, &refs, &mut lenses);
@@ -119,15 +129,13 @@ fn count_refs(
     map: &SourceMap,
     refs: &mut HashMap<String, Vec<Location>>,
     db: Option<&DatabaseV2>,
+    aliases: &HashSet<String>,
 ) {
     for item in items {
         match &item.node {
             StatementKind::Jump(expr) => {
-                if let Some(name) = expr_name(expr) {
-                    refs.entry(name.to_string())
-                        .or_default()
-                        .push(byte_span_to_location(uri, &expr.span, map));
-                }
+                count_label_ref(expr, uri, map, refs);
+                count_alias_refs_in_expr(expr, uri, map, refs, aliases);
             }
             StatementKind::ScriptCommand { command, args } => {
                 if let Some(db) = db
@@ -137,38 +145,133 @@ fn count_refs(
                         if let Some(param) = cmd.params.get(i)
                             && (param.param_type == ParamType::Label
                                 || param.name == "relative_jump")
-                            && let Some(name) = expr_name(arg)
                         {
-                            refs.entry(name.to_string())
-                                .or_default()
-                                .push(byte_span_to_location(uri, &arg.span, map));
+                            count_label_ref(arg, uri, map, refs);
                         }
                     }
                 }
+                for arg in args {
+                    count_alias_refs_in_expr(arg, uri, map, refs, aliases);
+                }
             }
-            StatementKind::Function { body, .. }
-            | StatementKind::Action { body, .. }
-            | StatementKind::WhileStatement { body, .. } => {
-                count_refs(body, uri, map, refs, db);
+            StatementKind::AliasStatement { value, .. } => {
+                count_alias_refs_in_expr(value, uri, map, refs, aliases);
+            }
+            StatementKind::Function { body, .. } | StatementKind::Action { body, .. } => {
+                count_refs(body, uri, map, refs, db, aliases);
+            }
+            StatementKind::WhileStatement { condition, body } => {
+                count_alias_refs_in_expr(condition, uri, map, refs, aliases);
+                count_refs(body, uri, map, refs, db, aliases);
             }
             StatementKind::IfStatement {
-                body, elseblock, ..
+                condition,
+                body,
+                elseblock,
             } => {
-                count_refs(body, uri, map, refs, db);
+                count_alias_refs_in_expr(condition, uri, map, refs, aliases);
+                count_refs(body, uri, map, refs, db, aliases);
                 if let Some(else_b) = elseblock {
-                    count_refs(else_b, uri, map, refs, db);
+                    count_refs(else_b, uri, map, refs, db, aliases);
                 }
             }
-            StatementKind::MatchStatement { cases, default, .. } => {
+            StatementKind::MatchStatement {
+                subject,
+                cases,
+                default,
+            } => {
+                count_alias_refs_in_expr(subject, uri, map, refs, aliases);
                 for case in cases {
-                    count_refs(&case.body, uri, map, refs, db);
+                    for value in &case.values {
+                        count_alias_refs_in_expr(value, uri, map, refs, aliases);
+                    }
+                    count_refs(&case.body, uri, map, refs, db, aliases);
                 }
                 if let Some(default) = default {
-                    count_refs(default, uri, map, refs, db);
+                    count_refs(default, uri, map, refs, db, aliases);
                 }
             }
             _ => {}
         }
+    }
+}
+
+fn collect_alias_names(items: &[Statement], aliases: &mut HashSet<String>) {
+    for item in items {
+        match &item.node {
+            StatementKind::AliasStatement { name, .. } => {
+                aliases.insert(name.clone());
+            }
+            StatementKind::Function { body, .. } | StatementKind::Action { body, .. } => {
+                collect_alias_names(body, aliases);
+            }
+            StatementKind::WhileStatement { body, .. } => collect_alias_names(body, aliases),
+            StatementKind::IfStatement { body, elseblock, .. } => {
+                collect_alias_names(body, aliases);
+                if let Some(else_b) = elseblock {
+                    collect_alias_names(else_b, aliases);
+                }
+            }
+            StatementKind::MatchStatement { cases, default, .. } => {
+                for case in cases {
+                    collect_alias_names(&case.body, aliases);
+                }
+                if let Some(default) = default {
+                    collect_alias_names(default, aliases);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn count_label_ref(
+    expr: &rotom::compiler::ast::Expression,
+    uri: &Url,
+    map: &SourceMap,
+    refs: &mut HashMap<String, Vec<Location>>,
+) {
+    if let Some(name) = expr_name(expr) {
+        refs.entry(name.to_string())
+            .or_default()
+            .push(byte_span_to_location(uri, &expr.span, map));
+    }
+}
+
+fn count_alias_refs_in_expr(
+    expr: &rotom::compiler::ast::Expression,
+    uri: &Url,
+    map: &SourceMap,
+    refs: &mut HashMap<String, Vec<Location>>,
+    aliases: &HashSet<String>,
+) {
+    match &expr.node {
+        ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => {
+            if aliases.contains(name) {
+                refs.entry(name.to_string())
+                    .or_default()
+                    .push(byte_span_to_location(uri, &expr.span, map));
+            }
+        }
+        ExpressionKind::Prefix { id, .. } => count_alias_refs_in_expr(id, uri, map, refs, aliases),
+        ExpressionKind::Infix { left, right, .. } => {
+            count_alias_refs_in_expr(left, uri, map, refs, aliases);
+            count_alias_refs_in_expr(right, uri, map, refs, aliases);
+        }
+        ExpressionKind::Call { function, args } => {
+            count_alias_refs_in_expr(function, uri, map, refs, aliases);
+            for arg in args {
+                count_alias_refs_in_expr(arg, uri, map, refs, aliases);
+            }
+        }
+        ExpressionKind::Number(_) | ExpressionKind::String(_) | ExpressionKind::Error => {}
+    }
+}
+
+fn expr_name(expr: &rotom::compiler::ast::Expression) -> Option<&str> {
+    match &expr.node {
+        ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Some(name),
+        _ => None,
     }
 }
 
@@ -247,19 +350,24 @@ fn make_ref_lens(
     }
 }
 
-fn expr_name(expr: &rotom::compiler::ast::Expression) -> Option<&str> {
-    match &expr.node {
-        ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Some(name),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{build_message_code_lens, compute_script_code_lens, is_message_archive_uri};
+    use super::{
+        build_message_code_lens, compute_script_code_lens, is_message_archive_uri,
+        is_rotom_script_uri,
+    };
     use crate::message_refs::MessageRef;
     use std::path::PathBuf;
     use tower_lsp::lsp_types::Url;
+
+    #[test]
+    fn script_uri_only_matches_rotom_files() {
+        let archive =
+            Url::from_file_path("/tmp/project/expanded/textArchives/0199.json").expect("archive");
+        let rotom = Url::from_file_path("/tmp/scripts/main.rotom").expect("rotom");
+        assert!(!is_rotom_script_uri(&archive));
+        assert!(is_rotom_script_uri(&rotom));
+    }
 
     #[test]
     fn archive_uri_matches_known_layouts() {
@@ -283,6 +391,32 @@ mod tests {
                 .as_ref()
                 .is_some_and(|c| c.title.contains("1 reference"))
         }));
+    }
+
+    #[test]
+    fn script_code_lens_counts_alias_references_in_expressions() {
+        let uri = Url::from_file_path("/tmp/test.rotom").expect("uri");
+        let source = "script Main #1:\n    alias 0x8001 as VAR_COUNTER\n    while VAR_COUNTER < 10 do\n        AddVar VAR_COUNTER, 1\n    endwhile\n    End\n";
+        let lenses = compute_script_code_lens(source, &uri, None);
+        let alias_lens = lenses
+            .iter()
+            .find(|lens| lens.range.start.line == 1)
+            .and_then(|lens| lens.command.as_ref())
+            .expect("alias lens");
+        assert_eq!(alias_lens.title, "2 references");
+    }
+
+    #[test]
+    fn script_code_lens_does_not_count_non_label_args_as_label_refs() {
+        let uri = Url::from_file_path("/tmp/test.rotom").expect("uri");
+        let source = "script Main #1:\nHelper:\n    SetVar Helper, 1\n    End\n";
+        let lenses = compute_script_code_lens(source, &uri, None);
+        let label_lens = lenses
+            .iter()
+            .find(|lens| lens.range.start.line == 1)
+            .and_then(|lens| lens.command.as_ref())
+            .expect("label lens");
+        assert_eq!(label_lens.title, "0 references");
     }
 
     #[test]

@@ -15,7 +15,9 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer};
 
-use crate::code_lens::{build_message_code_lens, compute_script_code_lens, is_message_archive_uri};
+use crate::code_lens::{
+    build_message_code_lens, compute_script_code_lens, is_message_archive_uri, is_rotom_script_uri,
+};
 use crate::completions::compute_completions;
 use crate::diagnostics::compute_diagnostics;
 use crate::document::{DocumentCache, compute_document_symbols};
@@ -311,6 +313,9 @@ impl RotomServer {
     /// If the user is typing rapidly, old pending tasks are aborted so only
     /// the most recent change triggers a diagnostic pass.
     fn publish_diagnostics(&self, uri: &Url) {
+        if !is_rotom_script_uri(uri) {
+            return;
+        }
         // Abort any existing pending diagnostic task for this document.
         if let Some((_, old)) = self.pending_diagnostics.remove(uri) {
             old.abort();
@@ -442,6 +447,9 @@ impl LanguageServer for RotomServer {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
+        if !is_rotom_script_uri(uri) {
+            return Ok(None);
+        }
         let position = params.text_document_position.position;
 
         let doc = self.documents.get(uri);
@@ -473,6 +481,9 @@ impl LanguageServer for RotomServer {
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
+        if !is_rotom_script_uri(uri) {
+            return Ok(None);
+        }
         let position = params.text_document_position_params.position;
 
         let doc = self.documents.get(uri);
@@ -509,6 +520,9 @@ impl LanguageServer for RotomServer {
         params: tower_lsp::lsp_types::DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
+        if !is_rotom_script_uri(uri) {
+            return Ok(None);
+        }
 
         let symbols = self
             .documents
@@ -530,6 +544,9 @@ impl LanguageServer for RotomServer {
         params: tower_lsp::lsp_types::GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
+        if !is_rotom_script_uri(uri) {
+            return Ok(None);
+        }
         let position = params.text_document_position_params.position;
 
         let doc = self.documents.get(uri);
@@ -560,6 +577,9 @@ impl LanguageServer for RotomServer {
         params: tower_lsp::lsp_types::SignatureHelpParams,
     ) -> Result<Option<SignatureHelp>> {
         let uri = &params.text_document_position_params.text_document.uri;
+        if !is_rotom_script_uri(uri) {
+            return Ok(None);
+        }
         let position = params.text_document_position_params.position;
 
         let doc = self.documents.get(uri);
@@ -580,7 +600,6 @@ impl LanguageServer for RotomServer {
         params: tower_lsp::lsp_types::CodeLensParams,
     ) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
-
         if is_message_archive_uri(uri) {
             let Some(state) = self.project_state_for_uri(uri) else {
                 return Ok(None);
@@ -632,6 +651,10 @@ impl LanguageServer for RotomServer {
             });
         }
 
+        if !is_rotom_script_uri(uri) {
+            return Ok(None);
+        }
+
         let doc = self.documents.get(uri);
         let Some(doc) = doc else {
             return Ok(None);
@@ -650,6 +673,9 @@ impl LanguageServer for RotomServer {
         let uri = params.text_document.uri;
         self.documents
             .insert(uri.clone(), params.text_document.text);
+        if is_message_archive_uri(&uri) {
+            let _ = self.project_state_for_uri(&uri);
+        }
         self.publish_diagnostics(&uri);
     }
 
@@ -682,6 +708,9 @@ impl LanguageServer for RotomServer {
         params: tower_lsp::lsp_types::InlayHintParams,
     ) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
+        if !is_rotom_script_uri(uri) {
+            return Ok(None);
+        }
 
         let doc = self.documents.get(uri);
         let Some(doc) = doc else {
