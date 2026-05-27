@@ -61,7 +61,7 @@ impl DocumentCache {
 
 /// Build grouped document symbols.
 ///
-/// Scripts, labels, and actions are bucketed into collapsible parent nodes
+/// Scripts, aliases, labels, and actions are bucketed into collapsible parent nodes
 /// so the editor outline shows them grouped by kind.
 pub fn compute_document_symbols(source: &str) -> Vec<DocumentSymbol> {
     let Some(file) = parse_source(source) else {
@@ -69,6 +69,7 @@ pub fn compute_document_symbols(source: &str) -> Vec<DocumentSymbol> {
     };
 
     let mut scripts = Vec::new();
+    let mut aliases = Vec::new();
     let mut labels = Vec::new();
     let mut actions = Vec::new();
 
@@ -99,7 +100,7 @@ pub fn compute_document_symbols(source: &str) -> Vec<DocumentSymbol> {
                 actions.push(make_symbol(name, SymbolKind::METHOD, &item.span, &map));
             }
             StatementKind::AliasStatement { name, .. } => {
-                labels.push(make_symbol(name, SymbolKind::VARIABLE, &item.span, &map));
+                aliases.push(make_symbol(name, SymbolKind::VARIABLE, &item.span, &map));
             }
             StatementKind::Label(name) => {
                 labels.push(make_symbol(name, SymbolKind::PROPERTY, &item.span, &map));
@@ -111,6 +112,9 @@ pub fn compute_document_symbols(source: &str) -> Vec<DocumentSymbol> {
     let mut groups = Vec::new();
     if !scripts.is_empty() {
         groups.push(make_group("Scripts", SymbolKind::NAMESPACE, &scripts, &map));
+    }
+    if !aliases.is_empty() {
+        groups.push(make_group("Aliases", SymbolKind::NAMESPACE, &aliases, &map));
     }
     if !labels.is_empty() {
         groups.push(make_group("Labels", SymbolKind::NAMESPACE, &labels, &map));
@@ -187,5 +191,46 @@ fn make_symbol(
         range,
         selection_range: range,
         children: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group_names(symbols: &[DocumentSymbol]) -> Vec<&str> {
+        symbols.iter().map(|symbol| symbol.name.as_str()).collect()
+    }
+
+    #[test]
+    fn document_symbols_group_aliases_separately_from_labels() {
+        let symbols = compute_document_symbols(
+            r#"alias 0x800C as VAR_RESULT
+
+script Main #1:
+    End
+
+Helper:
+    Return
+"#,
+        );
+
+        assert_eq!(group_names(&symbols), vec!["Scripts", "Aliases", "Labels"]);
+
+        let aliases = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Aliases")
+            .and_then(|symbol| symbol.children.as_ref())
+            .expect("Aliases group should have children");
+        assert_eq!(aliases[0].name, "VAR_RESULT");
+        assert_eq!(aliases[0].kind, SymbolKind::VARIABLE);
+
+        let labels = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Labels")
+            .and_then(|symbol| symbol.children.as_ref())
+            .expect("Labels group should have children");
+        assert_eq!(labels[0].name, "Helper");
+        assert_eq!(labels[0].kind, SymbolKind::FUNCTION);
     }
 }
