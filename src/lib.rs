@@ -453,6 +453,18 @@ pub(crate) fn compile_file_internal(
     };
     let size = bytes.len();
 
+    write_compiled_bytes(input, output, &bytes)?;
+
+    Ok(CompiledFile {
+        input: input.to_path_buf(),
+        output: output.to_path_buf(),
+        size,
+        source: warning_source,
+        warnings,
+    })
+}
+
+fn write_compiled_bytes(input: &Path, output: &Path, bytes: &[u8]) -> Result<(), CompileFailure> {
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             CompileFailure::io_error(
@@ -466,19 +478,11 @@ pub(crate) fn compile_file_internal(
         })?;
     }
 
-    std::fs::write(output, &bytes).map_err(|e| {
+    std::fs::write(output, bytes).map_err(|e| {
         CompileFailure::io_error(
             input,
             format!("Failed to write output file '{}': {}", output.display(), e),
         )
-    })?;
-
-    Ok(CompiledFile {
-        input: input.to_path_buf(),
-        output: output.to_path_buf(),
-        size,
-        source: warning_source,
-        warnings,
     })
 }
 

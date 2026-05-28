@@ -904,14 +904,18 @@ mod tests {
         let mut parser = Parser::new(lexer);
         let script_file = parser.parse_script_file().unwrap();
         assert!(script_file.aliases.is_empty());
-        assert!(!script_file
-            .items
-            .iter()
-            .any(|s| matches!(s.node, StatementKind::Function { .. })));
-        assert!(!script_file
-            .items
-            .iter()
-            .any(|s| matches!(s.node, StatementKind::Action { .. })));
+        assert!(
+            !script_file
+                .items
+                .iter()
+                .any(|s| matches!(s.node, StatementKind::Function { .. }))
+        );
+        assert!(
+            !script_file
+                .items
+                .iter()
+                .any(|s| matches!(s.node, StatementKind::Action { .. }))
+        );
     }
 
     #[test]

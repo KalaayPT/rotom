@@ -200,11 +200,11 @@ GoToIf GREATER, HandleLarge
 
 The decompiler also outputs these symbolic names instead of numeric values.
 
-### 3.4 Variable Heuristics (Compiler Logic)
+### 3.4 Variable Heuristics
 
-The compiler infers the "type" of a number based on the Nintendo DS Memory Map:
-* Value (Immediate): 0x0000 to 0x3FFF
-* Variable (Pointer): 0x4000 and above (e.g., Flags, Script Vars).
+Script command operands use a 16-bit value space split at `0x4000`. When compiling or decompiling numeric operands, the heuristic is:
+* Immediate value: `0x0000`-`0x3FFF`
+* Variable ID: `0x4000`-`0xFFFF` (flags, script variables, etc.)
 
 ## 4. Control Flow
 
@@ -476,17 +476,13 @@ Rotom includes a transpiler for DSPRE script format:
   - [x] Parser tests
   - [x] Semantic analysis tests
   - [x] Codegen tests (byte-matching verification)
-
-### In Progress
-
-- [ ] roundtrip matching for dspre scripts
-- [ ] Binary matching against pokeplatinum decompiled scripts
-- [ ] Decompilation into high-level logic
+- [x] better macro support (user-defined macros)
+- [x] roundtrip matching for dspre scripts
+- [x] Binary matching against pokeplatinum decompiled scripts
 
 ### Future Work
 
-- [ ] better macro support (user-defined macros)
-- [ ] stdlib (macros, standard definitions, etc.)
+- [ ] Decompilation into high-level logic
 - [ ] compiler flag for raw/optimized compilation (e.g. fixing missing jump table markers)
 - [ ] Constant folding for compile-time arithmetic
 - [ ] Complex expressions in conditions (`if x + 1 == 5`)

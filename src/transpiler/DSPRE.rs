@@ -228,7 +228,9 @@ fn convert_space_to_comma_args(
     let mut is_end_movement = false;
     if let Some(db) = db {
         if in_action {
-            let hex_str = command.strip_prefix("0x").unwrap_or_else(|| command.as_ref());
+            let hex_str = command
+                .strip_prefix("0x")
+                .unwrap_or_else(|| command.as_ref());
             if let Ok(id) = u16::from_str_radix(hex_str, 16)
                 && let Some((name, _)) = db.get_movement_by_id(id)
             {

@@ -2,14 +2,14 @@
 
 ## Scope
 
-The first real `rotom init` should do four things:
+`rotom init` prepares a project for Rotom by doing four things:
 
 - create `rotom.toml` if it does not exist yet
 - create `.rotom/`
 - seed `.rotom/command_database/`
 - detect enough workspace info to write sensible defaults
 
-Everything else belongs to later cache/dependency work.
+The generated config is intentionally small; compile state and dependency tracking live under `.rotom/status/` as they are needed.
 
 ## Project layout
 
@@ -22,15 +22,15 @@ project/
     └── status/
 ```
 
-`command_database` is the project-local DB copy.
+`command_database` stores the project-local copy of the script command database.
 
-`cache` is for persistent Rotom/Uxie cache data later.
+`cache` stores cached Uxie header and include data.
 
-`status` is for later compile-state tracking.
+`status` stores file hashes and dependency metadata for compile-state tracking.
 
 ## Database bootstrap
 
-Init should bootstrap `.rotom/command_database/` like this:
+Init bootstraps `.rotom/command_database/` like this:
 
 1. If the directory already exists and is not empty, leave it alone.
 2. Otherwise download the latest rolling DB release:
@@ -39,7 +39,7 @@ Init should bootstrap `.rotom/command_database/` like this:
 
 ## Config shape
 
-Current target:
+Typical generated config:
 
 ```toml
 format_version = 1
@@ -64,23 +64,16 @@ default_file = ".rotom/command_database/platinum_v2.json"
 
 ## Detection
 
-For now init only needs simple detection:
+Init detects the project type by checking for known file and directory markers:
 
-- `decomp`
-  - usual markers like `include/constants`, `scripts.order`, `src/script_manager.c`, `src/fieldmap.c`, `files/fielddata/script/scr_seq`
-- `dspre`
-  - usual markers like `header.bin`, `config.yaml`, `unpacked/`
+- `decomp` — detected by the presence of `include/constants`, `scripts.order`, `src/script_manager.c`, `src/fieldmap.c`, or `files/fielddata/script/scr_seq`
+- `dspre` — detected by the presence of `header.bin`, `config.yaml`, or `unpacked/`
 
-Family detection can stay simple too:
+Within a decomp project, the game family is inferred from project-specific markers. Within a DSPRE project, it is read from the Uxie ROM header.
 
-- decomp: infer from known project markers
-- DSPRE: use Uxie ROM header detection
+## Related Runtime State
 
-## Later work
+Other project-local state is kept separate from the config:
 
-The next layer after this is:
-
-- have compile/decompile use `rotom.toml` by default
-- use `.rotom/cache/` for persistent Uxie header/include caches
-- track include dependencies and stale state in `.rotom/status/`
-- add proper native C-header dependency handling in the compile pipeline
+- `.rotom/cache/` stores cached Uxie header and include data
+- `.rotom/status/` tracks file hashes and dependency metadata for compile state

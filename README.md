@@ -71,18 +71,30 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 cargo build --release
 ```
 
-### Compile a single script
+### Initialize a project
 ```bash
-rotom compile -d database.json -i script.rotom -o script.bin
+rotom init /path/to/project
 ```
 
-### Decompile a single binary
+`rotom init` creates `rotom.toml` and seeds `.rotom/command_database/`. Project compile/decompile commands use that config by default.
+
+### Compile a project
 ```bash
-rotom decompile -d database.json -i script.bin -o script.rotom
+rotom compile
+```
+
+### Compile a single script with an explicit database
+```bash
+rotom compile -d .rotom/command_database/platinum_v2.json -i script.rotom -o script.bin
+```
+
+### Decompile a single binary with an explicit database
+```bash
+rotom decompile -d .rotom/command_database/platinum_v2.json -i script.bin -o script.rotom
 ```
 
 > [!IMPORTANT]
-> These commands also accept entire folders
+> The single-file commands also accept folders for batch compilation/decompilation.
 
 ---
 

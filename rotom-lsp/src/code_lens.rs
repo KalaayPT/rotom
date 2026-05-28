@@ -47,11 +47,7 @@ pub fn is_rotom_script_uri(uri: &Url) -> bool {
 /// Produce `CodeLens` hints for a Rotom source file.
 ///
 /// Shows reference counts above scripts, labels, aliases, and actions.
-pub fn compute_script_code_lens(
-    source: &str,
-    uri: &Url,
-    db: Option<&DatabaseV2>,
-) -> Vec<CodeLens> {
+pub fn compute_script_code_lens(source: &str, uri: &Url, db: Option<&DatabaseV2>) -> Vec<CodeLens> {
     let Some(ast) = parse_source(source) else {
         return Vec::new();
     };
@@ -206,7 +202,9 @@ fn collect_alias_names(items: &[Statement], aliases: &mut HashSet<String>) {
                 collect_alias_names(body, aliases);
             }
             StatementKind::WhileStatement { body, .. } => collect_alias_names(body, aliases),
-            StatementKind::IfStatement { body, elseblock, .. } => {
+            StatementKind::IfStatement {
+                body, elseblock, ..
+            } => {
                 collect_alias_names(body, aliases);
                 if let Some(else_b) = elseblock {
                     collect_alias_names(else_b, aliases);

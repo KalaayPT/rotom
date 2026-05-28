@@ -70,11 +70,16 @@ impl<'a> Emitter<'a> {
             .collect();
         // Sort by slot ID to ensure correct ordering
         self.jump_table_slots.sort_by_key(|(slot_id, _)| *slot_id);
-        for (_, func_name) in self.jump_table_slots.clone() {
+        let jump_targets: Vec<String> = self
+            .jump_table_slots
+            .iter()
+            .map(|(_, func_name)| func_name.clone())
+            .collect();
+        for func_name in jump_targets {
             // Placeholder for script offset
             self.relocations.push(Relocation {
                 offset: self.pc,
-                target: func_name.clone(),
+                target: func_name,
             });
             self.emit_u32(0);
         }

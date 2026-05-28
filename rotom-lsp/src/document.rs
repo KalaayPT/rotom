@@ -197,6 +197,7 @@ fn make_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower_lsp::lsp_types::{Position as LspPosition, Range};
 
     fn group_names(symbols: &[DocumentSymbol]) -> Vec<&str> {
         symbols.iter().map(|symbol| symbol.name.as_str()).collect()
@@ -232,5 +233,64 @@ Helper:
             .expect("Labels group should have children");
         assert_eq!(labels[0].name, "Helper");
         assert_eq!(labels[0].kind, SymbolKind::FUNCTION);
+    }
+
+    #[test]
+    fn apply_changes_replaces_text_after_multibyte_character() {
+        let cache = DocumentCache::new();
+        let uri = Url::parse("file:///tmp/multibyte.rotom").expect("valid test URI");
+        cache.insert(uri.clone(), "script Café #1:\n    End\n".to_string());
+
+        cache.apply_changes(
+            &uri,
+            vec![TextDocumentContentChangeEvent {
+                range: Some(Range {
+                    start: LspPosition {
+                        line: 0,
+                        character: 12,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 14,
+                    },
+                }),
+                range_length: None,
+                text: "Main".to_string(),
+            }],
+        );
+
+        let doc = cache.get(&uri).expect("document should remain cached");
+        assert_eq!(doc.text, "script Café Main:\n    End\n");
+    }
+
+    #[test]
+    fn apply_changes_replaces_text_after_surrogate_pair() {
+        let cache = DocumentCache::new();
+        let uri = Url::parse("file:///tmp/emoji.rotom").expect("valid test URI");
+        cache.insert(
+            uri.clone(),
+            "// 🔥 marker\nscript Main #1:\n    End\n".to_string(),
+        );
+
+        cache.apply_changes(
+            &uri,
+            vec![TextDocumentContentChangeEvent {
+                range: Some(Range {
+                    start: LspPosition {
+                        line: 0,
+                        character: 6,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 12,
+                    },
+                }),
+                range_length: None,
+                text: "note".to_string(),
+            }],
+        );
+
+        let doc = cache.get(&uri).expect("document should remain cached");
+        assert_eq!(doc.text, "// 🔥 note\nscript Main #1:\n    End\n");
     }
 }

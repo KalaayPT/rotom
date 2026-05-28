@@ -6,12 +6,13 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeLens, CodeLensOptions, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentSymbolResponse, GotoDefinitionResponse, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
-    InlayHintOptions, MessageType, OneOf, SaveOptions, ServerCapabilities, SignatureHelp,
-    SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions,
+    DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolResponse, FileChangeType,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, InlayHint, InlayHintOptions, MessageType, OneOf,
+    SaveOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -50,6 +51,9 @@ struct MessageRefIndex {
     by_file: DashMap<PathBuf, Vec<(u16, u16)>>,
     /// Per-message reverse index consumed by archive `CodeLens` requests.
     by_message: DashMap<(u16, u16), Vec<MessageRef>>,
+    /// One lock per script file, used to prevent two concurrent reindex
+    /// passes from inserting duplicate message references for the same file.
+    reindex_locks: DashMap<PathBuf, Arc<std::sync::Mutex<()>>>,
 }
 
 /// File-local constants for a `.rotom` buffer; may carry the directive parse for diagnostics reuse.
@@ -95,6 +99,35 @@ impl RotomServer {
 
         self.projects.insert(project_root, state.clone());
         Some(state)
+    }
+
+    /// Remove cached project state for the project containing `path`, if any.
+    fn invalidate_project_for_path(&self, path: &std::path::Path) {
+        if let Some(project_root) = find_project_root(path) {
+            self.projects.remove(&project_root);
+        }
+    }
+
+    /// Returns `true` when a file change at `path` warrants clearing
+    /// the project-level cache (database, config, header, or generated file).
+    fn should_invalidate_project_state(path: &std::path::Path) -> bool {
+        let file_name = path.file_name().and_then(|s| s.to_str());
+        if file_name == Some("rotom.toml") {
+            return true;
+        }
+
+        let extension = path.extension().and_then(|s| s.to_str());
+        if matches!(extension, Some("json" | "h" | "inc")) {
+            return true;
+        }
+
+        path.components().any(|component| {
+            let text = component.as_os_str().to_string_lossy();
+            matches!(
+                text.as_ref(),
+                ".rotom" | "command_database" | "include" | "generated"
+            )
+        })
     }
 
     fn load_project_state(
@@ -232,6 +265,9 @@ impl RotomServer {
     }
 
     /// Rebuild references for a single file after save.
+    ///
+    /// Acquires a per-file mutex to prevent concurrent calls for the same
+    /// canonical path from producing duplicate `by_message` entries.
     fn reindex_message_ref_file(
         refs: &MessageRefIndex,
         state: &ProjectState,
@@ -240,6 +276,13 @@ impl RotomServer {
         path: &std::path::Path,
     ) {
         let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let guard = refs
+            .reindex_locks
+            .entry(canonical_path.clone())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())));
+        let lock = Arc::clone(&guard);
+        drop(guard);
+        let _reindex_guard = lock.lock().expect("reindex lock poisoned");
         if let Some((_, old_pairs)) = refs.by_file.remove(&canonical_path) {
             for pair in old_pairs {
                 if let Some(mut existing) = refs.by_message.get_mut(&pair) {
@@ -690,6 +733,9 @@ impl LanguageServer for RotomServer {
         let Some(path) = uri.to_file_path().ok() else {
             return;
         };
+        if Self::should_invalidate_project_state(&path) {
+            self.invalidate_project_for_path(&path);
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("rotom") {
             return;
         }
@@ -701,6 +747,27 @@ impl LanguageServer for RotomServer {
         };
         Self::reindex_message_ref_file(&state.message_refs, &state, workspace, &state.db, &path);
         let _ = self.client.code_lens_refresh().await;
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let mut invalidated = false;
+        for change in params.changes {
+            if change.typ == FileChangeType::CREATED
+                || change.typ == FileChangeType::CHANGED
+                || change.typ == FileChangeType::DELETED
+            {
+                let Ok(path) = change.uri.to_file_path() else {
+                    continue;
+                };
+                if Self::should_invalidate_project_state(&path) {
+                    self.invalidate_project_for_path(&path);
+                    invalidated = true;
+                }
+            }
+        }
+        if invalidated {
+            let _ = self.client.code_lens_refresh().await;
+        }
     }
 
     async fn inlay_hint(
@@ -997,5 +1064,91 @@ mod tests {
                 .map(|v| v.len()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn project_state_invalidation_matches_config_and_database_paths() {
+        assert!(RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/rotom.toml")
+        ));
+        assert!(RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/.rotom/command_database/platinum_v2.json")
+        ));
+        assert!(RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/include/constants/vars.h")
+        ));
+        assert!(!RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/res/field/scripts/script_001.rotom")
+        ));
+    }
+
+    #[test]
+    fn reindex_serialization_prevents_duplicates_on_repeat_call() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("expanded/textArchives")).expect("archives");
+        std::fs::create_dir_all(root.join("scripts")).expect("scripts");
+        std::fs::write(
+            root.join("expanded/textArchives/0199.json"),
+            "{\n  \"messages\": [\n    {\"id\": \"msg_0199_00000\", \"en_US\": \"A\"},\n    {\"id\": \"msg_0199_00001\", \"en_US\": \"B\"}\n  ]\n}\n",
+        )
+        .expect("archive");
+        let file = root.join("scripts/s.rotom");
+        std::fs::write(&file, "script s # 0:\n    MessageFromBank 199, 1\n").expect("write");
+
+        let state = test_state(root);
+        let workspace = state.workspace.as_ref().expect("ws").clone();
+
+        // Call reindex twice — the lock serializes so no duplicates appear.
+        RotomServer::reindex_message_ref_file(
+            &state.message_refs,
+            &state,
+            &workspace,
+            &state.db,
+            &file,
+        );
+        RotomServer::reindex_message_ref_file(
+            &state.message_refs,
+            &state,
+            &workspace,
+            &state.db,
+            &file,
+        );
+
+        let refs = state
+            .message_refs
+            .by_message
+            .get(&(199, 1))
+            .map(|v| v.len());
+        assert_eq!(refs, Some(1), "no duplicate entries after repeat reindex");
+    }
+
+    #[test]
+    fn reindex_lock_entry_created_after_reindex() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("expanded/textArchives")).expect("archives");
+        std::fs::create_dir_all(root.join("scripts")).expect("scripts");
+        std::fs::write(
+            root.join("expanded/textArchives/0199.json"),
+            "{\n  \"messages\": [\n    {\"id\": \"msg_0199_00000\", \"en_US\": \"A\"},\n    {\"id\": \"msg_0199_00001\", \"en_US\": \"B\"}\n  ]\n}\n",
+        )
+        .expect("archive");
+        let file = root.join("scripts/s.rotom");
+        std::fs::write(&file, "script s # 0:\n    MessageFromBank 199, 1\n").expect("write");
+
+        let state = test_state(root);
+        let workspace = state.workspace.as_ref().expect("ws").clone();
+        RotomServer::reindex_message_ref_file(
+            &state.message_refs,
+            &state,
+            &workspace,
+            &state.db,
+            &file,
+        );
+
+        // The lock entry should exist for the canonical path after reindex.
+        let canonical = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+        assert!(state.message_refs.reindex_locks.contains_key(&canonical));
     }
 }

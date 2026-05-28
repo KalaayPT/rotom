@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Rotom Contributors"]
 description = "Language Server Protocol implementation for the Rotom scripting language"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/KalaayPT/rotom-lang"
 
 [dependencies]
@@ -15,7 +15,6 @@ serde_json = "1"
 rotom = { path = ".." }
 uxie = "0.7.0"
 # tree-sitter-rotom = { path = "../tree-sitter-rotom" }  # future: for incremental parsing
-lsp-types = "0.95"
 dashmap = "6"
 
 [dev-dependencies]

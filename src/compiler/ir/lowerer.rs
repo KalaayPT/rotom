@@ -575,7 +575,10 @@ impl<'a> Lowerer<'a> {
 
         let mut param_map: HashMap<String, String> = HashMap::new();
         for (param, arg) in shape.params.iter().zip(source_args.iter()) {
-            param_map.insert(param.name.clone(), Self::format_arg_for_substitution(arg)?);
+            param_map.insert(
+                param.name.clone(),
+                arg.to_macro_arg_source().map_err(lowering_error)?,
+            );
         }
 
         let mut rewritten = Vec::with_capacity(emit_args.len());
@@ -624,7 +627,7 @@ impl<'a> Lowerer<'a> {
 
         let mut param_map: HashMap<String, String> = HashMap::new();
         for (param, arg) in params.iter().zip(args_with_defaults.iter()) {
-            let formatted = Self::format_arg_for_substitution(arg)?;
+            let formatted = arg.to_macro_arg_source().map_err(lowering_error)?;
             param_map.insert(param.name.clone(), formatted);
         }
 
@@ -763,78 +766,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn format_arg_for_substitution(expr: &Expression) -> ParseResult<String> {
-        match &expr.node {
-            ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(s) | ExpressionKind::Label(s) => Ok(s.clone()),
-            ExpressionKind::String(segs) => Ok(segs
-                .iter()
-                .map(|(s, _)| s.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")),
-            ExpressionKind::Prefix { operator, id } => {
-                let inner = Self::format_arg_for_substitution(id)?;
-                let op_str = match operator {
-                    TokenType::Minus => "-",
-                    TokenType::Plus => "+",
-                    TokenType::Not => "!",
-                    _ => {
-                        return Err(lowering_error(format!(
-                            "Unsupported prefix operator {:?} in macro argument",
-                            operator
-                        )));
-                    }
-                };
-                Ok(format!("{}{}", op_str, inner))
-            }
-            ExpressionKind::Infix {
-                left,
-                operator,
-                right,
-            } => {
-                let left_str = Self::format_arg_for_substitution(left)?;
-                let right_str = Self::format_arg_for_substitution(right)?;
-                let op_str = match operator {
-                    TokenType::Plus => "+",
-                    TokenType::Minus => "-",
-                    TokenType::Mul => "*",
-                    TokenType::LesserThan => "<",
-                    TokenType::GreaterThan => ">",
-                    TokenType::LesserEqual => "<=",
-                    TokenType::GreaterEqual => ">=",
-                    TokenType::Equal => "==",
-                    TokenType::NotEqual => "!=",
-                    TokenType::And => "&&",
-                    TokenType::Or => "||",
-                    _ => {
-                        return Err(lowering_error(format!(
-                            "Unsupported operator {:?} in macro argument",
-                            operator
-                        )));
-                    }
-                };
-                Ok(format!("{} {} {}", left_str, op_str, right_str))
-            }
-            ExpressionKind::Call { function, args } => {
-                let ExpressionKind::Identifier(name) = &function.node else {
-                    return Err(lowering_error(
-                        "Call-like constant expressions must use a simple name".to_string(),
-                    ));
-                };
-
-                let mut formatted_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    formatted_args.push(Self::format_arg_for_substitution(arg)?);
-                }
-
-                Ok(format!("{}({})", name, formatted_args.join(", ")))
-            }
-            ExpressionKind::Error => Err(lowering_error(
-                "Invalid expression in macro argument".to_string(),
-            )),
-        }
-    }
-
     fn command_call_parts<'b>(
         &self,
         expr: &'b Expression,
@@ -844,78 +775,6 @@ impl<'a> Lowerer<'a> {
                 Some((function.as_ref(), args.as_slice()))
             }
             _ => None,
-        }
-    }
-
-    fn format_expression_for_constant_eval(expr: &Expression) -> ParseResult<String> {
-        match &expr.node {
-            ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(s) | ExpressionKind::Label(s) => Ok(s.clone()),
-            ExpressionKind::String(segs) => Ok(segs
-                .iter()
-                .map(|(s, _)| s.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")),
-            ExpressionKind::Prefix { operator, id } => {
-                let inner = Self::format_expression_for_constant_eval(id)?;
-                let op = match operator {
-                    TokenType::Minus => "-",
-                    TokenType::Plus => "+",
-                    TokenType::Not => "!",
-                    _ => {
-                        return Err(lowering_error(format!(
-                            "Unsupported prefix operator {:?} in constant expression",
-                            operator
-                        )));
-                    }
-                };
-                Ok(format!("{}{}", op, inner))
-            }
-            ExpressionKind::Infix {
-                left,
-                operator,
-                right,
-            } => {
-                let left_str = Self::format_expression_for_constant_eval(left)?;
-                let right_str = Self::format_expression_for_constant_eval(right)?;
-                let op = match operator {
-                    TokenType::Plus => "+",
-                    TokenType::Minus => "-",
-                    TokenType::Mul => "*",
-                    TokenType::LesserThan => "<",
-                    TokenType::GreaterThan => ">",
-                    TokenType::LesserEqual => "<=",
-                    TokenType::GreaterEqual => ">=",
-                    TokenType::Equal => "==",
-                    TokenType::NotEqual => "!=",
-                    TokenType::And => "&&",
-                    TokenType::Or => "||",
-                    _ => {
-                        return Err(lowering_error(format!(
-                            "Unsupported operator {:?} in constant expression",
-                            operator
-                        )));
-                    }
-                };
-                Ok(format!("({} {} {})", left_str, op, right_str))
-            }
-            ExpressionKind::Call { function, args } => {
-                let ExpressionKind::Identifier(name) = &function.node else {
-                    return Err(lowering_error(
-                        "Call-like constant expressions must use a simple name".to_string(),
-                    ));
-                };
-
-                let mut formatted_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    formatted_args.push(Self::format_expression_for_constant_eval(arg)?);
-                }
-
-                Ok(format!("{}({})", name, formatted_args.join(", ")))
-            }
-            ExpressionKind::Error => Err(lowering_error(
-                "Invalid expression in constant evaluation".to_string(),
-            )),
         }
     }
 
@@ -949,7 +808,7 @@ impl<'a> Lowerer<'a> {
             if result.contains(&placeholder)
                 && let Some(arg) = resolved_args.get(i).and_then(|arg| arg.as_ref())
             {
-                let formatted = Self::format_arg_for_substitution(arg)?;
+                let formatted = arg.to_macro_arg_source().map_err(lowering_error)?;
                 result = result.replace(&placeholder, &formatted);
             }
         }
@@ -1146,7 +1005,7 @@ impl<'a> Lowerer<'a> {
 
             let mut param_map: HashMap<String, String> = HashMap::new();
             for (param, arg) in shape.params.iter().zip(args_with_defaults.iter()) {
-                let formatted = Self::format_arg_for_substitution(arg)?;
+                let formatted = arg.to_macro_arg_source().map_err(lowering_error)?;
                 param_map.insert(param.name.clone(), formatted);
             }
 
@@ -1355,7 +1214,7 @@ impl<'a> Lowerer<'a> {
                     )));
                 }
 
-                let expr_text = Self::format_expression_for_constant_eval(expr)?;
+                let expr_text = expr.to_constant_eval_source().map_err(lowering_error)?;
                 if let Some(constants) = self.constants
                     && let Some(value) = constants.evaluate_expression(&expr_text)
                 {

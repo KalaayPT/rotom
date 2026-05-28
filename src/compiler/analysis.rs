@@ -849,7 +849,9 @@ impl<'a> Analyzer<'a> {
                     ));
                 }
 
-                let expr_text = Self::format_expression_for_constant_eval(expr)?;
+                let expr_text = expr
+                    .to_constant_eval_source()
+                    .map_err(|message| analysis_error(expr.span.clone(), message))?;
                 if let Some(constants) = self.constants
                     && let Some(value) = constants.evaluate_expression(&expr_text)
                 {
@@ -870,83 +872,6 @@ impl<'a> Analyzer<'a> {
                     ),
                 ))
             }
-        }
-    }
-
-    fn format_expression_for_constant_eval(expr: &Expression) -> ParseResult<String> {
-        match &expr.node {
-            ExpressionKind::Number(n) => Ok(n.to_string()),
-            ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => Ok(name.clone()),
-            ExpressionKind::Prefix { operator, id } => {
-                let inner = Self::format_expression_for_constant_eval(id)?;
-                let op = match operator {
-                    super::token::TokenType::Minus => "-",
-                    super::token::TokenType::Plus => "+",
-                    super::token::TokenType::Not => "!",
-                    _ => {
-                        return Err(analysis_error(
-                            expr.span.clone(),
-                            format!(
-                                "Unsupported prefix operator {:?} in constant expression",
-                                operator
-                            ),
-                        ));
-                    }
-                };
-                Ok(format!("{}{}", op, inner))
-            }
-            ExpressionKind::Infix {
-                left,
-                operator,
-                right,
-            } => {
-                let left_str = Self::format_expression_for_constant_eval(left)?;
-                let right_str = Self::format_expression_for_constant_eval(right)?;
-                let op = match operator {
-                    super::token::TokenType::Plus => "+",
-                    super::token::TokenType::Minus => "-",
-                    super::token::TokenType::Mul => "*",
-                    super::token::TokenType::LesserThan => "<",
-                    super::token::TokenType::GreaterThan => ">",
-                    super::token::TokenType::LesserEqual => "<=",
-                    super::token::TokenType::GreaterEqual => ">=",
-                    super::token::TokenType::Equal => "==",
-                    super::token::TokenType::NotEqual => "!=",
-                    super::token::TokenType::And => "&&",
-                    super::token::TokenType::Or => "||",
-                    _ => {
-                        return Err(analysis_error(
-                            expr.span.clone(),
-                            format!("Unsupported operator {:?} in constant expression", operator),
-                        ));
-                    }
-                };
-                Ok(format!("({} {} {})", left_str, op, right_str))
-            }
-            ExpressionKind::Call { function, args } => {
-                let ExpressionKind::Identifier(name) = &function.node else {
-                    return Err(analysis_error(
-                        expr.span.clone(),
-                        "Call-like constant expressions must use a simple name".to_string(),
-                    ));
-                };
-
-                let mut formatted_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    formatted_args.push(Self::format_expression_for_constant_eval(arg)?);
-                }
-
-                Ok(format!("{}({})", name, formatted_args.join(", ")))
-            }
-            ExpressionKind::String(segs) => Ok(segs
-                .iter()
-                .map(|(s, _)| s.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")),
-            ExpressionKind::Error => Err(analysis_error(
-                expr.span.clone(),
-                "Invalid expression in constant evaluation".to_string(),
-            )),
         }
     }
 
