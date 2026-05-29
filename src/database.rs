@@ -2,14 +2,12 @@
 //!
 //! Supports the normalized V2 JSON schema from scrcmd-database.
 
-#![allow(dead_code)]
-
 use dashmap::DashMap;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::compiler::ParseResult;
 use crate::compiler::diagnostic::{CompileError, database_error};
@@ -138,6 +136,21 @@ impl Direction {
 // V2 Database Schema
 // ============================================================================
 
+/// Reverse lookups into [`DatabaseV2::commands`], built lazily on first use.
+///
+/// Decompilation looks commands up by opcode for every instruction, and
+/// compilation resolves legacy names for commands written with their DSPRE
+/// spelling. A linear scan over `commands` for each of these would be quadratic.
+/// The index is populated on first use and shares the lifetime of its
+/// `DatabaseV2`, so reloading the database (a new instance) automatically
+/// discards the stale index.
+#[derive(Debug, Default)]
+pub(crate) struct CommandIdIndex {
+    script: HashMap<u16, String>,
+    movement: HashMap<u16, String>,
+    legacy: HashMap<String, String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DatabaseV2 {
     pub meta: DatabaseMeta,
@@ -148,6 +161,8 @@ pub struct DatabaseV2 {
     pub overworld_directions: HashMap<String, String>,
     #[serde(default)]
     pub special_overworlds: HashMap<String, String>,
+    #[serde(skip)]
+    pub(crate) id_index: OnceLock<CommandIdIndex>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -291,17 +306,19 @@ impl DatabaseV2 {
         game_family_from_hint(&self.meta.version)
     }
 
+    /// Resolves a legacy (DSPRE) command name to its canonical command.
+    fn get_by_legacy_name(&self, name: &str) -> Option<&Command> {
+        let canonical = self.id_index().legacy.get(name)?;
+        self.commands.get(canonical)
+    }
+
     /// Resolves a command by name, first checking the command map directly, then legacy names, and finally script command aliases, such as placeholder names or dummy commands.
     pub fn get_command(&self, name: &str) -> ParseResult<&Command> {
         if let Some(cmd) = self.commands.get(name) {
             return Ok(cmd);
         }
 
-        if let Some((_, cmd)) = self
-            .commands
-            .iter()
-            .find(|(_, cmd)| cmd.legacy_name.as_deref() == Some(name))
-        {
+        if let Some(cmd) = self.get_by_legacy_name(name) {
             return Ok(cmd);
         }
 
@@ -323,11 +340,9 @@ impl DatabaseV2 {
         {
             Some(cmd) => Ok(cmd),
             None => {
-                if let Some((_, cmd)) = self
-                    .commands
-                    .iter()
-                    .find(|(_, cmd)| cmd.legacy_name.as_deref() == Some(name))
-                    .filter(|(_, cmd)| cmd.cmd_type == CommandType::ScriptCmd)
+                if let Some(cmd) = self
+                    .get_by_legacy_name(name)
+                    .filter(|cmd| cmd.cmd_type == CommandType::ScriptCmd)
                 {
                     Ok(cmd)
                 } else if let Some((_, cmd)) = self.get_script_cmd_by_alias(name) {
@@ -350,11 +365,9 @@ impl DatabaseV2 {
         {
             Some(cmd) => Ok(cmd),
             None => {
-                if let Some((_, cmd)) = self
-                    .commands
-                    .iter()
-                    .find(|(_, cmd)| cmd.legacy_name.as_deref() == Some(name))
-                    .filter(|(_, cmd)| cmd.cmd_type == CommandType::Movement)
+                if let Some(cmd) = self
+                    .get_by_legacy_name(name)
+                    .filter(|cmd| cmd.cmd_type == CommandType::Movement)
                 {
                     Ok(cmd)
                 } else {
@@ -379,10 +392,34 @@ impl DatabaseV2 {
             .filter(|(_, cmd)| cmd.cmd_type == CommandType::Movement)
     }
 
+    fn id_index(&self) -> &CommandIdIndex {
+        self.id_index.get_or_init(|| {
+            let mut index = CommandIdIndex::default();
+            for (name, cmd) in &self.commands {
+                if let Some(legacy) = &cmd.legacy_name {
+                    index
+                        .legacy
+                        .entry(legacy.clone())
+                        .or_insert_with(|| name.clone());
+                }
+                let Some(id) = cmd.id else { continue };
+                match cmd.cmd_type {
+                    CommandType::ScriptCmd => {
+                        index.script.entry(id).or_insert_with(|| name.clone());
+                    }
+                    CommandType::Movement => {
+                        index.movement.entry(id).or_insert_with(|| name.clone());
+                    }
+                    _ => {}
+                }
+            }
+            index
+        })
+    }
+
     pub fn get_script_cmd_by_id(&self, id: u16) -> Option<(&String, &Command)> {
-        self.commands
-            .iter()
-            .find(|(_, cmd)| cmd.cmd_type == CommandType::ScriptCmd && cmd.id == Some(id))
+        let name = self.id_index().script.get(&id)?;
+        self.commands.get_key_value(name.as_str())
     }
 
     pub fn get_script_cmd_by_alias(&self, name: &str) -> Option<(&String, &Command)> {
@@ -436,9 +473,8 @@ impl DatabaseV2 {
     }
 
     pub fn get_movement_by_id(&self, id: u16) -> Option<(&String, &Command)> {
-        self.commands
-            .iter()
-            .find(|(_, cmd)| cmd.cmd_type == CommandType::Movement && cmd.id == Some(id))
+        let name = self.id_index().movement.get(&id)?;
+        self.commands.get_key_value(name.as_str())
     }
 }
 
@@ -1391,6 +1427,7 @@ mod tests {
             sounds: HashMap::new(),
             overworld_directions: HashMap::new(),
             special_overworlds: HashMap::new(),
+            id_index: OnceLock::new(),
         }
     }
 

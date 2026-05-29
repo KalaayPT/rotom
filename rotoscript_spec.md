@@ -47,7 +47,7 @@ Reserved words that cannot be used as identifiers:
 
 A Rotom script is a flat sequence of:
 1. **Aliases** (compile-time constants)
-2. **Functions** (public entry points with jump table slots)
+2. **Scripts** (public entry points with jump table slots)
 3. **Labels** (private code blocks, not in jump table)
 4. **Actions** (movement data blocks)
 
@@ -80,7 +80,7 @@ EndMovement
 
 ### 2.1 Script Declarations
 
-Functions are public entry points that appear in the jump table. They require a slot number.
+Scripts are public entry points that appear in the jump table. They require a slot number.
 
 ```rotom
 // Public script with jump-table slot #1
@@ -101,7 +101,7 @@ script InteractWithSign #6:
 ### 2.2 Labels (Private Code Blocks)
 
 Labels are code blocks that are NOT in the jump table. They are used for:
-- Shared code that multiple functions jump to
+- Shared code that multiple scripts jump to
 - Helper routines
 - Fall-through code organization
 
@@ -160,7 +160,7 @@ Aliases are compile-time constants that map a name to a number. All aliases are 
 
 * Syntax: `alias Value as Name`
 * Defined at the top level of the file
-* Visible in all functions and labels
+* Visible in all scripts and labels
 
 ```rotom
 alias 0x8000 as VAR_TEMP
@@ -233,7 +233,7 @@ Note: `else if` is parsed as a nested if statement within the else block.
 
 Compiler Behavior:
 * Generates a Compare command followed by a JumpIf (inverted logic).
-* Normalization: The hardware strictly requires Compare VAR, VALUE. If you write if 5 > x, the compiler swaps operands to Compare x, 5 and flips the operator to <=.
+* Normalization: The hardware strictly requires Compare VAR, VALUE. If you write if 5 > x, the compiler swaps the operands to Compare x, 5 (so the comparison reads x < 5). The JumpIf then skips the body when the condition is false, using the inverted comparison: JumpIf GREATER_EQUAL.
 
 ### 4.2 Match Statements
 
@@ -278,7 +278,7 @@ endwhile
 * `Jump .local_label` - Jump to an inline label within the same script
 * `Call ScriptName` - Call a script/helper, execution returns after `Return`
 
-Restriction: You cannot Jump to a variable alias. You can only jump to Labels or Functions.
+Restriction: You cannot Jump to a variable alias. You can only jump to Labels or Scripts.
 
 ### 4.5 Expressions in Conditions
 
@@ -394,7 +394,7 @@ error: Undefined symbol: 'undefined_var'
     * Scripts end at next script/label/action/EOF
     * Actions are self-contained (end at EndMovement)
 3. **Semantic Analysis:**
-    * Registers Symbols (functions, labels, actions, aliases).
+    * Registers Symbols (scripts, labels, actions, aliases).
     * Validates references and label existence.
     * Enforces "Movement-Only" rules for Actions.
     * Checks for undefined references and duplicate definitions.
@@ -425,7 +425,7 @@ The compiled script binary consists of:
     * Code emitted in source order (fall-through preserved)
 3. **Movement Data:** Separate section for action bytecode
     * Movement commands are 2-byte ID + 2-byte parameter
-    * Actions are interleaved with functions in binary (preserving source order)
+    * Actions are interleaved with scripts in binary (preserving source order)
     * Default parameter for most movements is 1 (e.g., `WalkNorth` = `WalkNorth 1`)
     * Movements also accept explicit arguments even when DB says 0 params (e.g., `Delay8 4`)
 

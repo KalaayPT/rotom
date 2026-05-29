@@ -51,8 +51,6 @@ tempfile = "3.23.0"
 [features]
 lsp-types = ["dep:lsp-types"]
 
-[profile.release]
-debug = true
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }

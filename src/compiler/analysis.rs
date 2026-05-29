@@ -1143,6 +1143,7 @@ mod tests {
             sounds: HashMap::new(),
             overworld_directions: HashMap::new(),
             special_overworlds: HashMap::new(),
+            id_index: std::sync::OnceLock::new(),
         }
     }
 

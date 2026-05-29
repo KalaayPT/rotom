@@ -10,7 +10,7 @@ Inspired by [poryscript](https://github.com/huderlem/poryscript) for Gen 3.
 
 ## What This Project Does
 
-Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
+Rotom provides a complete compiler toolchain for the Nintendo DS scripting engine:
 
 ### Core Features
 - **High-level syntax** with control flow (`if/else`, `while`, `Jump`)
@@ -18,7 +18,7 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - **JSON Levelscripts:** levelscripts now exist in declarative JSON format
 - **Byte-Matching Compilation:** de- and compilation preserve all semantics and oddities from original script files.
 - **Decomp integration** - Automatically loads constants from your pokeplatinum/pokediamond headers/jsons
-- **Fall-through semantics** - Preserves the game engine's organization where functions flow into each other
+- **Fall-through semantics** - Preserves the game engine's organization where scripts flow into each other
 - **Decompiler** - Disassemble binary scripts back to source (normal scripts to `.rotom`, levelscripts to JSON)
 - **Editor support** - LSP support and editor integrations for diagnostics, completion, hover, go-to-definition, inlay hints, syntax highlighting, etc.
 
@@ -42,7 +42,7 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - Levelscript decompiler (binary → JSON)
 - Normal script decompiler (binary → `.rotom` source)
 - Bytecode emission with jump table ordering (sorted by slot ID)
-- Movement command semantics (default parameters, interleaving with functions)
+- Movement command semantics (default parameters, interleaving with scripts)
 - Fall-through code generation matching decomp style and engine functionality
 - Multi-format batch compilation with parallel processing
 - Rich error reporting with source locations
@@ -68,9 +68,12 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 ## Quick Start
 
 ### Installation
+
 ```bash
-cargo build --release
+cargo install --path .
 ```
+
+This builds the `rotom` CLI and installs it on your `PATH`. See [INSTALL.md](INSTALL.md) for other options (building without installing, the `rotom-lsp` server, and editor setup).
 
 ### Initialize a project
 ```bash
