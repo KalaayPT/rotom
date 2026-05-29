@@ -255,7 +255,7 @@ pub fn is_levelscript_path(path: &Path) -> bool {
 
 /// Disassemble binary script bytes into an intermediate representation.
 ///
-/// The returned [`ScriptOutput`] can be fed to [`ir_to_source`] to obtain
+/// The returned [`ScriptOutput`] can be fed to [`ir_to_source()`] to obtain
 /// human-readable Rotoscript.
 pub fn decompile_to_ir(bytes: Vec<u8>, db: &DatabaseV2) -> DecompileResult<ScriptOutput> {
     disassemble_bytes(db, bytes)

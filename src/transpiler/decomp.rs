@@ -26,7 +26,7 @@
 //!     Message 0
 //!     End
 //!
-//! action MovementName
+//! action MovementName:
 //!     WalkNorth
 //!     EndMovement
 //! ```

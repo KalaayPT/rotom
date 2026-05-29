@@ -196,7 +196,7 @@ pub struct Command {
 ///
 /// [`Self::params`] / [`Self::emit_args`] describe the source-level argument shape.
 ///
-/// For [`CommandType::Macro`](crate::database::CommandType::Macro), [`Self::macro_expansion`] is
+/// For [`CommandType::Macro`], [`Self::macro_expansion`] is
 /// the `$`-substituted template lines for the **same** variant as [`Self::params`], falling back
 /// to the command-level [`Command::expansion`] when the variant does not define its own lines.
 #[derive(Debug, Clone, Copy)]

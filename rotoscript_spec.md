@@ -72,7 +72,7 @@ HelperCode:
     Return
 
 // 4. Actions
-action MovePlayer
+action MovePlayer:
     WalkLeft 1
     FaceUp
 EndMovement
@@ -358,7 +358,7 @@ Special blocks containing only movement commands.
 * Usage: Actions are referenced by specific commands (e.g., `ApplyMovement OW_ID, ActionName`).
 
 ```rotom
-action WalkPattern
+action WalkPattern:
     WalkRight 3
     WalkDown 2
     FaceLeft
@@ -451,7 +451,7 @@ Rotom includes a transpiler for DSPRE script format:
 |--------------|--------------|
 | `Script N:` | `script script_N #N:` |
 | `Function N:` | `func_N:` (bare label) |
-| `Action N:` | `action action_N` |
+| `Action N:` | `action action_N:` |
 | `Script#N` | `script_N` |
 | `Function#N` | `func_N` |
 | `UseScript_#N` | `Jump script_N` |

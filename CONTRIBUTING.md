@@ -10,8 +10,7 @@ Any contributions to the Rotom project are very welcome! I don't have much time 
 - [`uxie`](https://github.com/KalaayPT/uxie) handles Gen 4 project/workspace data. If the logic belongs to ROM or
   workspace data access, it probably belongs there instead of rotom.
 - [`tree-sitter-rotom`](https://github.com/KalaayPT/tree-sitter-rotom) owns the grammar and highlighting queries used by editors.
-- Editor extensions for VS Code, Zed, and Neovim are thin wrappers around the LSP server and can be found in `rotom-extensions`.
-TODO: publish repos, add links
+- Editor extensions for VS Code, Zed, and Neovim are thin wrappers around the LSP server and can be found in `rotom-extensions` (unpublished).
 
 ## Building
 
@@ -24,7 +23,7 @@ a fallback copy.
 
 ## Testing
 
-Test your your changes before sending them.
+Test your changes before sending them.
 
 ```bash
 cargo test -p rotom

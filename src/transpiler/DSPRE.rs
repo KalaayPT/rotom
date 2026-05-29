@@ -31,7 +31,7 @@
 //!     Jump script_3
 //! End
 //!
-//! action action_1
+//! action action_1:
 //!     LookRight 0x1
 //! EndMovement
 //! ```

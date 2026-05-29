@@ -26,7 +26,7 @@ Rotom provides a complete compiler toolchain for the Nintendo DS scripting engin
 - **Scripts** with explicit jump table slots, callable from events/levelscripts: `script Main #1:`
 - **Private labels** for internal code organization (these were called functions in DSPRE): `HelperCode:`
 - **Aliases** for constants: `alias 0x800C as VAR_RESULT`
-- **Actions** for movement data: `action WalkPattern ... EndMovement`
+- **Actions** for movement data: `action WalkPattern: ... EndMovement`
 - **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, `match/endmatch`, `break`
 - **Autovar**: Commands that return results can be used directly in conditions (e.g., `if CheckPlayerOnBike() then`), inspired by the feature of the same name from PoryScript
 
@@ -104,7 +104,7 @@ rotom decompile -d .rotom/command_database/platinum_v2.json -i script.bin -o scr
 
 Rotom includes `rotom-lsp`, a Language Server Protocol server for editor features such as diagnostics, autocomplete, hover, go-to-definition, inlay hints, signature help, and code lenses.
 
-Editor integrations for VS Code, Zed, and Neovim are being developed alongside Rotom and are published separately. Tree-sitter grammar and highlighting support live in [`tree-sitter-rotom`](https://github.com/KalaayPT/tree-sitter-rotom).
+Editor integrations for VS Code, Zed, and Neovim are being developed alongside Rotom in [rotom-extensions](TBD). Tree-sitter grammar and highlighting support live in [`tree-sitter-rotom`](https://github.com/KalaayPT/tree-sitter-rotom).
 
 ---
 
@@ -133,7 +133,7 @@ TalkToNPC:
     Return
 
 // === Movement action ===
-action NPC_WalkAway
+action NPC_WalkAway:
     WalkDown 3
     WalkLeft 2
     FaceDown

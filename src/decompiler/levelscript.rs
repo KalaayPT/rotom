@@ -74,7 +74,7 @@ pub struct LevelScript {
     #[serde(default)]
     pub var_conditions: Vec<LevelScriptVarConditionEntry>,
     /// Additional trailing zero padding beyond normal 4-byte alignment.
-    /// Not serialized to JSON — preserved as a [`BinaryQuirk`] in compile state.
+    /// Not serialized to JSON — preserved as a [`crate::compile_state::BinaryQuirk`] in compile state.
     #[serde(skip)]
     pub padding: u8,
 }
