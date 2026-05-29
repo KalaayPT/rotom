@@ -9,10 +9,8 @@ use super::diagnostic::serialize_range;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum TokenType {
     Script, // "script"
-    Public, // "public"
     Action, // "action"
     Alias,  // "alias"
-    Global, // "global"
 
     Num(i32),                     // integer
     Identifier(String),           // variable,
@@ -74,10 +72,8 @@ pub enum TokenType {
 pub fn normalize_control_keyword(raw: &str) -> Option<TokenType> {
     match raw.to_ascii_lowercase().as_str() {
         "script" => Some(TokenType::Script),
-        "public" => Some(TokenType::Public),
         "action" => Some(TokenType::Action),
         "alias" => Some(TokenType::Alias),
-        "global" => Some(TokenType::Global),
         "true" => Some(TokenType::True),
         "false" => Some(TokenType::False),
         "if" => Some(TokenType::If),
@@ -109,10 +105,8 @@ impl fmt::Display for TokenType {
         match self {
             // --- Keywords ---
             TokenType::Script => write!(f, "keyword 'script'"),
-            TokenType::Public => write!(f, "keyword 'public'"),
             TokenType::Action => write!(f, "keyword 'action'"),
             TokenType::Alias => write!(f, "keyword 'alias'"),
-            TokenType::Global => write!(f, "keyword 'global'"),
             TokenType::If => write!(f, "keyword 'if'"),
             TokenType::Then => write!(f, "keyword 'then'"),
             TokenType::Else => write!(f, "keyword 'else'"),
@@ -212,5 +206,11 @@ mod tests {
         );
         assert_eq!(normalize_control_keyword("return"), Some(TokenType::Return));
         assert_eq!(normalize_control_keyword("IF"), Some(TokenType::If));
+    }
+
+    #[test]
+    fn test_public_and_global_are_identifiers() {
+        assert_eq!(normalize_control_keyword("public"), None);
+        assert_eq!(normalize_control_keyword("global"), None);
     }
 }

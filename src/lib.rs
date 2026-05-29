@@ -376,7 +376,15 @@ pub(crate) fn compile_file_internal(
         // Warm step: pre-load text archive so message_ids is populated before
         // ConstantDb::get is called during analysis/lowering.
         if let Some(archive_id) = workspace.text_archive_for_script_file(&source_stem) {
-            let _ = workspace.ensure_archive_loaded(archive_id);
+            workspace.ensure_archive_loaded(archive_id).map_err(|e| {
+                CompileFailure::with_source(
+                    input,
+                    &rotom_source,
+                    CompileError::Io {
+                        message: format!("failed to load text archive {archive_id}: {e}"),
+                    },
+                )
+            })?;
         }
 
         if extension == "rotom" && load_file_constants {
@@ -1406,6 +1414,44 @@ script Main #1:
         fs::remove_dir_all(&temp_dir).ok();
 
         assert_eq!(compiled, expected);
+    }
+
+    #[test]
+    fn compile_path_rotom_reports_text_archive_preload_errors() {
+        let temp_dir =
+            unique_temp_dir("compile_path_reports_text_archive_preload_errors");
+        write_test_decomp_project(&temp_dir);
+
+        // Numeric stem "1" maps to text archive ID 17 via Platinum's hardcoded
+        // global script table (min_script_id=2500, script_file_id=1, text_archive_id=17).
+        // That archive doesn't exist in the minimal fixture, so preload fails.
+        let input_path = temp_dir.join("1.rotom");
+        let output_path = temp_dir.join("1.bin");
+        fs::write(&input_path, minimal_script_source())
+            .expect("failed to write input script");
+
+        let db = load_test_db();
+        let mut constants = ConstantDb::new();
+        let workspace = Arc::new(
+            uxie::Workspace::open_decomp(&temp_dir)
+                .expect("failed to open decomp workspace"),
+        );
+        constants.set_message_ids(workspace.shared_message_ids());
+
+        let result = compile_path(&input_path, &output_path, db, &constants, &workspace)
+            .expect("compile_path should return a batch result");
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(result.successes.len(), 0);
+        assert_eq!(result.failures.len(), 1);
+        assert!(
+            result.failures[0]
+                .error
+                .to_string()
+                .contains("failed to load text archive"),
+            "unexpected error: {}",
+            result.failures[0].error
+        );
     }
 
     #[test]

@@ -319,13 +319,13 @@ impl<'a> Lowerer<'a> {
         default: Option<&[Statement]>,
         macro_depth: usize,
     ) -> ParseResult<()> {
-        let subject_val = self.resolve_arg(effective_subject)?.unwrap_value();
+        let subject_val = self.resolve_arg(effective_subject)?.value("match subject")?;
         let label_end = self.new_label("end_match");
         let mut need_end_label = false;
 
         for (i, case) in cases.iter().enumerate() {
             if let Some(call_target) = Self::can_optimize_case_to_gotoif(case) {
-                let case_value = self.resolve_arg(&case.values[0])?.unwrap_value();
+                let case_value = self.resolve_arg(&case.values[0])?.value("match case value")?;
                 self.output.push(IrOpcode::Command {
                     name: "CompareVarValue".to_string(),
                     args: vec![Arg::Value(subject_val), Arg::Value(case_value)],
@@ -1136,8 +1136,8 @@ impl<'a> Lowerer<'a> {
                 operator,
                 right,
             } => {
-                let left_val = self.resolve_arg(left)?.unwrap_value();
-                let right_val = self.resolve_arg(right)?.unwrap_value();
+                let left_val = self.resolve_arg(left)?.value("left arithmetic operand")?;
+                let right_val = self.resolve_arg(right)?.value("right arithmetic operand")?;
                 let result = match operator {
                     TokenType::Plus => left_val + right_val,
                     TokenType::Minus => left_val - right_val,
@@ -1152,7 +1152,7 @@ impl<'a> Lowerer<'a> {
                 Ok(Arg::Value(result))
             }
             ExpressionKind::Prefix { operator, id } => {
-                let val = self.resolve_arg(id)?.unwrap_value();
+                let val = self.resolve_arg(id)?.value("prefix operand")?;
                 let result = match operator {
                     TokenType::Minus => -val,
                     _ => {
@@ -1170,7 +1170,7 @@ impl<'a> Lowerer<'a> {
                     && matches!(&args[0].node, ExpressionKind::String(_)) =>
             {
                 let ExpressionKind::String(segs) = &args[0].node else {
-                    unreachable!()
+                    return Err(lowering_error("format() requires a string literal argument"));
                 };
                 let wrapped = uxie::format_message(
                     &segs
@@ -1206,7 +1206,9 @@ impl<'a> Lowerer<'a> {
             ExpressionKind::Call { function, .. } => {
                 if self.command_call_parts(expr).is_some() {
                     let ExpressionKind::Identifier(name) = &function.node else {
-                        unreachable!();
+                        return Err(lowering_error(
+                            "command call expression must use an identifier name",
+                        ));
                     };
                     return Err(lowering_error(format!(
                         "Command '{}' cannot be used as a plain value here",

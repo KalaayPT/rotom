@@ -152,7 +152,7 @@ impl<'a> Emitter<'a> {
         while !self.output.len().is_multiple_of(4) {
             self.emit_u8(0);
         }
-        Ok(self.output.clone())
+        Ok(std::mem::take(&mut self.output))
     }
     pub fn emit_ir_opcode(&mut self, ir_op: &IrOpcode) -> ParseResult<()> {
         match ir_op {

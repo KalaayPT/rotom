@@ -239,7 +239,9 @@ fn matches_prefix(name: &str, prefix: &str) -> bool {
     if prefix.is_empty() {
         return true;
     }
-    name.to_lowercase().starts_with(&prefix.to_lowercase())
+
+    name.get(..prefix.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
 }
 
 fn symbol_kind_to_completion_kind(kind: SymbolKind) -> CompletionItemKind {
@@ -305,6 +307,24 @@ mod tests {
         assert!(matches_prefix("Message", "mess"));
         assert!(matches_prefix("message", "Mess"));
         assert!(!matches_prefix("ApplyMovement", "mess"));
+    }
+
+    #[test]
+    fn matches_prefix_is_case_insensitive() {
+        assert!(matches_prefix("Message", "mes"));
+        assert!(matches_prefix("CheckPlayerOnBike", "checkplayer"));
+        assert!(matches_prefix("VAR_RESULT", "var_"));
+    }
+
+    #[test]
+    fn matches_prefix_rejects_longer_or_different_prefixes() {
+        assert!(!matches_prefix("Msg", "Message"));
+        assert!(!matches_prefix("Message", "Wait"));
+    }
+
+    #[test]
+    fn matches_prefix_accepts_empty_prefix() {
+        assert!(matches_prefix("Message", ""));
     }
 
     #[test]

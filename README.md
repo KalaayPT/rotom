@@ -20,6 +20,7 @@ Rotom provides a complete compiler toolchain for Nintendo DS scripting engine:
 - **Decomp integration** - Automatically loads constants from your pokeplatinum/pokediamond headers/jsons
 - **Fall-through semantics** - Preserves the game engine's organization where functions flow into each other
 - **Decompiler** - Disassemble binary scripts back to source (normal scripts to `.rotom`, levelscripts to JSON)
+- **Editor support** - LSP support and editor integrations for diagnostics, completion, hover, go-to-definition, inlay hints, syntax highlighting, etc.
 
 ### Language Features
 - **Scripts** with explicit jump table slots, callable from events/levelscripts: `script Main #1:`
@@ -95,6 +96,12 @@ rotom decompile -d .rotom/command_database/platinum_v2.json -i script.bin -o scr
 
 > [!IMPORTANT]
 > The single-file commands also accept folders for batch compilation/decompilation.
+
+### Editor Support
+
+Rotom includes `rotom-lsp`, a Language Server Protocol server for editor features such as diagnostics, autocomplete, hover, go-to-definition, inlay hints, signature help, and code lenses.
+
+Editor integrations for VS Code, Zed, and Neovim are being developed alongside Rotom and are published separately. Tree-sitter grammar and highlighting support live in [`tree-sitter-rotom`](https://github.com/KalaayPT/tree-sitter-rotom).
 
 ---
 

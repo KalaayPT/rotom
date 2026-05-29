@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Rotom Contributors"]
 description = "Language Server Protocol implementation for the Rotom scripting language"
 license = "MIT"
-repository = "https://github.com/KalaayPT/rotom-lang"
+repository = "https://github.com/KalaayPT/rotom"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

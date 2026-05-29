@@ -35,8 +35,25 @@ pub fn compute_diagnostics(
     if let Ok(diagnostics) = result {
         diagnostics
     } else {
-        eprintln!("[rotom-lsp] compute_diagnostics panicked, returning empty diagnostics");
-        vec![]
+        eprintln!("[rotom-lsp] compute_diagnostics panicked");
+        vec![internal_error_diagnostic("diagnostic computation panicked")]
+    }
+}
+
+fn internal_error_diagnostic(reason: &str) -> Diagnostic {
+    Diagnostic {
+        range: tower_lsp::lsp_types::Range {
+            start: tower_lsp::lsp_types::Position::new(0, 0),
+            end: tower_lsp::lsp_types::Position::new(0, 0),
+        },
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: None,
+        code_description: None,
+        source: Some("rotom".to_string()),
+        message: format!("rotom-lsp internal error: {reason}"),
+        related_information: None,
+        tags: None,
+        data: None,
     }
 }
 
@@ -151,6 +168,17 @@ mod tests {
             diagnostics.is_empty(),
             "valid source should have no diagnostics"
         );
+    }
+
+    #[test]
+    fn internal_error_diagnostic_is_visible_to_editor() {
+        let diagnostic = internal_error_diagnostic("diagnostic computation panicked");
+
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diagnostic.source.as_deref(), Some("rotom"));
+        assert!(diagnostic.message.contains("internal error"));
+        assert_eq!(diagnostic.range.start.line, 0);
+        assert_eq!(diagnostic.range.start.character, 0);
     }
 
     #[test]

@@ -116,18 +116,27 @@ impl RotomServer {
             return true;
         }
 
-        let extension = path.extension().and_then(|s| s.to_str());
-        if matches!(extension, Some("json" | "h" | "inc")) {
+        let components: Vec<_> = path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect();
+
+        if components
+            .windows(2)
+            .any(|pair| pair[0] == ".rotom" && pair[1] == "command_database")
+        {
             return true;
         }
 
-        path.components().any(|component| {
-            let text = component.as_os_str().to_string_lossy();
-            matches!(
-                text.as_ref(),
-                ".rotom" | "command_database" | "include" | "generated"
-            )
-        })
+        if components
+            .iter()
+            .any(|component| matches!(component.as_str(), "include" | "generated"))
+        {
+            let extension = path.extension().and_then(|s| s.to_str());
+            return matches!(extension, Some("json" | "h" | "inc"));
+        }
+
+        false
     }
 
     fn load_project_state(
@@ -817,6 +826,7 @@ mod tests {
     use crate::code_lens::build_message_code_lens;
     use rotom::database::ConstantDb;
     use rotom::database::DatabaseV2;
+    use std::path::Path;
     use std::sync::Arc;
     use uxie::game::Game;
 
@@ -1080,6 +1090,24 @@ mod tests {
         assert!(!RotomServer::should_invalidate_project_state(
             std::path::Path::new("/tmp/project/res/field/scripts/script_001.rotom")
         ));
+    }
+
+    #[test]
+    fn should_invalidate_project_state_for_project_config_and_database() {
+        assert!(RotomServer::should_invalidate_project_state(Path::new("rotom.toml")));
+        assert!(RotomServer::should_invalidate_project_state(Path::new(".rotom/command_database/platinum_v2.json")));
+    }
+
+    #[test]
+    fn should_invalidate_project_state_for_include_inputs() {
+        assert!(RotomServer::should_invalidate_project_state(Path::new("include/constants/items.h")));
+        assert!(RotomServer::should_invalidate_project_state(Path::new("generated/events.inc")));
+    }
+
+    #[test]
+    fn should_not_invalidate_project_state_for_status_or_cache_outputs() {
+        assert!(!RotomServer::should_invalidate_project_state(Path::new(".rotom/status/compile_state.json")));
+        assert!(!RotomServer::should_invalidate_project_state(Path::new(".rotom/cache/include-cache.json")));
     }
 
     #[test]

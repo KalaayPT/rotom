@@ -43,12 +43,24 @@ impl fmt::Display for Arg {
 }
 
 impl Arg {
+    pub fn value(&self, context: &str) -> crate::compiler::ParseResult<i32> {
+        match self {
+            Arg::Value(v) => Ok(*v),
+            Arg::Pointer(target) => Err(crate::compiler::diagnostic::lowering_error(format!(
+                "expected numeric value for {context}, found pointer to '{target}'"
+            ))),
+        }
+    }
+
+    #[cfg(test)]
     pub fn unwrap_value(&self) -> i32 {
         match self {
             Arg::Value(v) => *v,
             Arg::Pointer(_) => panic!("called unwrap_value on {:?}", self),
         }
     }
+
+    #[cfg(test)]
     pub fn unwrap_pointer(&self) -> String {
         match self {
             Arg::Pointer(s) => s.clone(),
@@ -126,4 +138,26 @@ impl IrFunction {
 pub enum OperandType {
     Variable, // VarPointer (0x8000)
     Value,    // raw number (5)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Arg;
+
+    #[test]
+    fn value_returns_inner_number() {
+        assert_eq!(Arg::Value(42).value("test context").unwrap(), 42);
+    }
+
+    #[test]
+    fn value_rejects_pointer_with_context() {
+        let error = Arg::Pointer("target".to_string())
+            .value("match subject")
+            .expect_err("pointer should not be accepted as a value");
+
+        assert!(
+            error.to_string().contains("match subject"),
+            "error should include caller context: {error}"
+        );
+    }
 }

@@ -31,8 +31,7 @@ Labels define locations in code for jumps or pointers.
 * **Top-Level Labels:** Defined at the file level with `Name:` syntax. Create a new code block.
     * Syntax: `MyLabel:`
 * **Inline Labels:** Defined inside a script body. Start with a dot.
-    * Syntax: `.loop_start:` or `.loop_start`
-    * Note: The colon is optional for inline labels. Both forms are equivalent.
+    * Syntax: `.loop_start:`
 
 ### 1.5 Keywords
 Reserved words that cannot be used as identifiers:
