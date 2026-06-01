@@ -1,18 +1,22 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeLens, CodeLensOptions, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
+    DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolResponse, FileChangeType,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, InlayHint, InlayHintOptions, MessageType, OneOf,
-    SaveOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Url, WorkDoneProgressOptions,
+    FileSystemWatcher, GlobPattern, GotoDefinitionResponse, Hover, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
+    InlayHintOptions, MessageType, OneOf, Registration, SaveOptions, ServerCapabilities,
+    SignatureHelp, SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WatchKind, WorkDoneProgressOptions,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -71,6 +75,8 @@ pub struct RotomServer {
     /// Pending diagnostic tasks per document. Old tasks are aborted when a new
     /// change arrives so we only publish diagnostics after typing pauses.
     pending_diagnostics: DashMap<Url, tokio::task::JoinHandle<()>>,
+    /// Whether the client supports dynamic file-watcher registration.
+    client_supports_watched_file_dynamic_registration: AtomicBool,
 }
 
 impl RotomServer {
@@ -80,6 +86,7 @@ impl RotomServer {
             documents: DocumentCache::new(),
             projects: DashMap::new(),
             pending_diagnostics: DashMap::new(),
+            client_supports_watched_file_dynamic_registration: AtomicBool::new(false),
         }
     }
 
@@ -137,6 +144,42 @@ impl RotomServer {
         }
 
         false
+    }
+
+    /// Register project inputs whose changes should clear cached database, config, and constants.
+    fn watched_file_registrations() -> Vec<Registration> {
+        let watch_kind = Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete);
+        let watchers = [
+            "**/rotom.toml",
+            "**/.rotom/command_database/**/*.json",
+            "**/include/**/*.{h,inc,json}",
+            "**/generated/**/*.{h,inc,json}",
+        ]
+        .into_iter()
+        .map(|pattern| FileSystemWatcher {
+            glob_pattern: GlobPattern::String(pattern.to_string()),
+            kind: watch_kind,
+        })
+        .collect();
+
+        vec![Registration {
+            id: "rotom-watched-files".to_string(),
+            method: "workspace/didChangeWatchedFiles".to_string(),
+            register_options: Some(serde_json::json!(
+                DidChangeWatchedFilesRegistrationOptions { watchers }
+            )),
+        }]
+    }
+
+    /// Return whether the client can accept dynamic watched-file registration.
+    fn supports_watched_file_dynamic_registration(params: &InitializeParams) -> bool {
+        params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+            .and_then(|capabilities| capabilities.dynamic_registration)
+            .unwrap_or(false)
     }
 
     fn load_project_state(
@@ -424,7 +467,13 @@ impl RotomServer {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for RotomServer {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        self.client_supports_watched_file_dynamic_registration
+            .store(
+                Self::supports_watched_file_dynamic_registration(&params),
+                Ordering::Relaxed,
+            );
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -491,6 +540,25 @@ impl LanguageServer for RotomServer {
         self.client
             .log_message(MessageType::INFO, "Rotom LSP initialized")
             .await;
+        if !self
+            .client_supports_watched_file_dynamic_registration
+            .load(Ordering::Relaxed)
+        {
+            return;
+        }
+
+        if let Err(error) = self
+            .client
+            .register_capability(Self::watched_file_registrations())
+            .await
+        {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("Failed to register watched files: {error}"),
+                )
+                .await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -828,6 +896,10 @@ mod tests {
     use rotom::database::DatabaseV2;
     use std::path::Path;
     use std::sync::Arc;
+    use tower_lsp::lsp_types::{
+        ClientCapabilities, DidChangeWatchedFilesClientCapabilities, InitializeParams,
+        WorkspaceClientCapabilities,
+    };
     use uxie::game::Game;
 
     fn test_db(path: &std::path::Path) -> Arc<DatabaseV2> {
@@ -1108,6 +1180,64 @@ mod tests {
     fn should_not_invalidate_project_state_for_status_or_cache_outputs() {
         assert!(!RotomServer::should_invalidate_project_state(Path::new(".rotom/status/compile_state.json")));
         assert!(!RotomServer::should_invalidate_project_state(Path::new(".rotom/cache/include-cache.json")));
+    }
+
+    #[test]
+    fn watched_file_registration_covers_project_inputs() {
+        let registrations = RotomServer::watched_file_registrations();
+        assert_eq!(registrations.len(), 1);
+        assert_eq!(registrations[0].method, "workspace/didChangeWatchedFiles");
+
+        let options = registrations[0]
+            .register_options
+            .as_ref()
+            .expect("watch registration should carry options");
+        let patterns: Vec<String> = options["watchers"]
+            .as_array()
+            .expect("watchers should be an array")
+            .iter()
+            .map(|watcher| {
+                watcher["globPattern"]
+                    .as_str()
+                    .expect("glob pattern should be a string")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(
+            patterns,
+            vec![
+                "**/rotom.toml",
+                "**/.rotom/command_database/**/*.json",
+                "**/include/**/*.{h,inc,json}",
+                "**/generated/**/*.{h,inc,json}",
+            ]
+        );
+    }
+
+    #[test]
+    fn watched_file_registration_requires_dynamic_registration_capability() {
+        assert!(!RotomServer::supports_watched_file_dynamic_registration(
+            &InitializeParams::default()
+        ));
+
+        let params = InitializeParams {
+            capabilities: ClientCapabilities {
+                workspace: Some(WorkspaceClientCapabilities {
+                    did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
+                        dynamic_registration: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(RotomServer::supports_watched_file_dynamic_registration(
+            &params
+        ));
     }
 
     #[test]

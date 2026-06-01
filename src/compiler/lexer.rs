@@ -44,18 +44,27 @@ impl<'a> Lexer<'a> {
     fn peek_next(&self) -> Option<char> {
         self.chars.clone().nth(1)
     }
-    fn skip_whitespace_and_comments(&mut self) {
+    /// Skip trivia before a token, returning an error token for malformed comments.
+    fn skip_whitespace_and_comments(&mut self) -> Option<Token> {
         loop {
+            let start = self.current_pos;
             match self.chars.peek() {
                 Some(' ' | '\t' | '\r') => {
                     self.read_char();
                 }
                 Some('/') => match self.peek_next() {
                     Some('/') => self.skip_line(),
-                    Some('*') => self.skip_block_comment(),
-                    _ => return,
+                    Some('*') => {
+                        if !self.skip_block_comment() {
+                            return Some(Token {
+                                kind: TokenType::Error("unclosed block comment".to_string()),
+                                span: start..self.current_pos,
+                            });
+                        }
+                    }
+                    _ => return None,
                 },
-                _ => return,
+                _ => return None,
             }
         }
     }
@@ -68,7 +77,8 @@ impl<'a> Lexer<'a> {
         }
         self.read_char();
     }
-    fn skip_block_comment(&mut self) {
+    /// Skip a block comment, returning `false` if EOF is reached before `*/`.
+    fn skip_block_comment(&mut self) -> bool {
         self.read_char();
         self.read_char();
         loop {
@@ -77,17 +87,14 @@ impl<'a> Lexer<'a> {
                     if self.peek_next() == Some('/') {
                         self.read_char();
                         self.read_char();
-                        break;
+                        return true;
                     }
                     self.read_char();
                 }
                 Some(_) => {
                     self.read_char();
                 }
-                None => {
-                    // TODO: EOF
-                    break;
-                }
+                None => return false,
             }
         }
     }
@@ -97,7 +104,9 @@ impl<'a> Lexer<'a> {
     /// all tokens including a final `EOF` token.
     #[allow(clippy::too_many_lines)]
     pub fn next_token(&mut self) -> Token {
-        self.skip_whitespace_and_comments();
+        if let Some(error) = self.skip_whitespace_and_comments() {
+            return error;
+        }
         let start = self.current_pos;
         let kind = match self.read_char() {
             Some('#') => match self.chars.peek() {
@@ -496,6 +505,26 @@ mod tests {
         }
         let eof_token = lexer.next_token();
         assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_unclosed_block_comment_is_error() {
+        let mut lexer = Lexer::new("script Main #1:\n    /* no terminator\n    End\n");
+
+        assert_eq!(lexer.next_token().kind, TokenType::Script);
+        assert_eq!(
+            lexer.next_token().kind,
+            TokenType::Identifier("Main".to_string())
+        );
+        assert_eq!(lexer.next_token().kind, TokenType::Hash);
+        assert_eq!(lexer.next_token().kind, TokenType::Num(1));
+        assert_eq!(lexer.next_token().kind, TokenType::Colon);
+        assert_eq!(lexer.next_token().kind, TokenType::Newline);
+        assert_eq!(
+            lexer.next_token().kind,
+            TokenType::Error("unclosed block comment".to_string())
+        );
+        assert_eq!(lexer.next_token().kind, TokenType::EOF);
     }
 
     #[test]
