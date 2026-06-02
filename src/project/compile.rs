@@ -15,18 +15,18 @@ use crate::compile_state::{COMPILER_VERSION, CompileState, FileState, FileStatus
 
 enum WorkerResult {
     Skip {
-        relative_path: String,
+        relative_path: PathBuf,
         source_hash: u64,
-        dependency_hashes: HashMap<String, u64>,
+        dependency_hashes: HashMap<PathBuf, u64>,
     },
     Failure {
-        relative_path: String,
+        relative_path: PathBuf,
         failure: CompileFailure,
     },
     Success {
-        relative_path: String,
+        relative_path: PathBuf,
         source_hash: u64,
-        dependency_hashes: HashMap<String, u64>,
+        dependency_hashes: HashMap<PathBuf, u64>,
         result: CompiledFile,
     },
 }
@@ -40,9 +40,9 @@ struct CompileSession {
     status_path: PathBuf,
 }
 
-fn relative_project_path(root: &Path, path: &Path) -> Result<String> {
+fn relative_project_path(root: &Path, path: &Path) -> Result<PathBuf> {
     if let Ok(relative) = path.strip_prefix(root) {
-        return Ok(relative.to_string_lossy().replace('\\', "/"));
+        return Ok(relative.to_owned());
     }
 
     let canonical_root = root.canonicalize().map_err(|source| ProjectError::Io {
@@ -61,7 +61,7 @@ fn relative_project_path(root: &Path, path: &Path) -> Result<String> {
             path: canonical_path.clone(),
         }
     })?;
-    Ok(relative.to_string_lossy().replace('\\', "/"))
+    Ok(relative.to_owned())
 }
 
 pub fn project_output_path(
@@ -137,7 +137,7 @@ pub fn compile_project(
                 Err(error) => {
                     progress.inc(1);
                     return Ok(WorkerResult::Failure {
-                        relative_path: input.to_string_lossy().to_string(),
+                        relative_path: input.clone(),
                         failure: CompileFailure {
                             path: input.clone(),
                             error: CompileError::Io {
@@ -154,7 +154,7 @@ pub fn compile_project(
                 Err(source) => {
                     progress.inc(1);
                     return Ok(WorkerResult::Failure {
-                        relative_path,
+                        relative_path: relative_path,
                         failure: CompileFailure {
                             path: input.clone(),
                             error: CompileError::Io {
@@ -353,7 +353,7 @@ fn dependency_hashes_for_script(
     root: &Path,
     input: &Path,
     constants: &ConstantDb,
-) -> std::result::Result<(HashMap<String, u64>, Option<ConstantDb>), CompileFailure> {
+) -> std::result::Result<(HashMap<PathBuf, u64>, Option<ConstantDb>), CompileFailure> {
     let extension = input
         .extension()
         .and_then(|e| e.to_str())
@@ -490,7 +490,7 @@ fn load_compile_session(root: &Path, config: &RotomConfig, force: bool) -> Resul
 /// Finalize a compile session by dropping stale entries for files that no longer
 /// exist in the project, updating global metadata, and atomically writing the
 /// refreshed compile-state file to disk.
-fn finish_compile_session(session: &mut CompileSession, current_paths: Vec<String>) -> Result<()> {
+fn finish_compile_session(session: &mut CompileSession, current_paths: Vec<PathBuf>) -> Result<()> {
     session.state.retain_only(current_paths);
     session
         .state
@@ -860,7 +860,11 @@ mod tests {
     use crate::{DatabaseV2, GameFamily};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::LazyLock;
     use tempfile::tempdir;
+
+    static TEST_SCRIPT_PATH: LazyLock<PathBuf> =
+        LazyLock::new(|| PathBuf::from("scripts/test.rotom"));
 
     fn project_config(project_type: ProjectTypeConfig) -> RotomConfig {
         RotomConfig {
@@ -961,11 +965,11 @@ mod tests {
 
         assert_eq!(
             relative_project_path(root, &nested).unwrap(),
-            "scripts/test.rotom"
+            *TEST_SCRIPT_PATH
         );
         assert_eq!(
             relative_project_path(root, &nested.canonicalize().unwrap()).unwrap(),
-            "scripts/test.rotom"
+            *TEST_SCRIPT_PATH
         );
         assert!(relative_project_path(root, Path::new("/tmp/not-in-project.rotom")).is_err());
     }
@@ -1187,7 +1191,10 @@ mod tests {
             &fs::read_to_string(root.join(".rotom/status/compile-state.json")).unwrap(),
         )
         .unwrap();
-        let entry = state.entries.get("scripts/0001.rotom").unwrap();
+        let entry = state
+            .entries
+            .get(&PathBuf::from("scripts/0001.rotom"))
+            .unwrap();
         let recompile = compile_project(root, &config, false).unwrap();
 
         assert_eq!(entry.status, FileStatus::Decompiled);
@@ -1284,7 +1291,10 @@ mod tests {
             &fs::read_to_string(root.join(".rotom/status/compile-state.json")).unwrap(),
         )
         .unwrap();
-        let entry = state.entries.get("res/field/scripts/test.rotom").unwrap();
+        let entry = state
+            .entries
+            .get(&PathBuf::from("res/field/scripts/test.rotom"))
+            .unwrap();
 
         assert_eq!(first.successes.len(), 1);
         assert_eq!(second.successes.len(), 0);
@@ -1292,12 +1302,12 @@ mod tests {
         assert!(
             entry
                 .dependency_hashes
-                .contains_key("res/field/scripts/local_dep.inc")
+                .contains_key(&PathBuf::from("res/field/scripts/local_dep.inc"))
         );
         assert!(
             !entry
                 .dependency_hashes
-                .contains_key("res/field/scripts/test.rotom")
+                .contains_key(&PathBuf::from("res/field/scripts/test.rotom"))
         );
     }
 

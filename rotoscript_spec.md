@@ -253,7 +253,7 @@ endmatch
 * **Syntax:** `match <subject> with ... endmatch`
 * **Cases:** `case <value>:` or `case <value1>, <value2>:` for multiple values
 * **Default:** Optional `else:` block for unmatched values
-* **Per-case optimization:** Any case that contains only a single `Call` command with a single value is optimized to emit `CompareVarValue` + `GoToIf EQUAL <target>` instead of the typical compare/jump/body/goto pattern. This optimization is applied per-case, so mixed match statements benefit from it.
+* **Per-case optimization:** A case with a single value whose body is a lone `Call` or `Jump` is optimized to emit `CompareVarValue` + a conditional branch to the target — `CallIf EQUAL` for `Call`, `GoToIf EQUAL` for `Jump` — instead of the typical compare/jump/body/goto pattern. This optimization is applied per-case, so mixed match statements benefit from it.
 
 Match statements also work with autovar commands:
 ```rotom

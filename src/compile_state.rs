@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const COMPILE_STATE_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -12,7 +12,7 @@ pub struct CompileState {
     pub version: u32,
     pub db_hash: u64,
     pub compiler_version: String,
-    pub entries: HashMap<String, FileState>,
+    pub entries: HashMap<PathBuf, FileState>,
 }
 /// Represents a binary quirk that may be present in a compiled binary file that is an exception to the normal pattern.
 /// Used for byte matching.
@@ -30,7 +30,7 @@ pub struct BinaryQuirk {
 pub struct FileState {
     pub source_hash: u64,
     pub output_hash: u64,
-    pub dependency_hashes: HashMap<String, u64>,
+    pub dependency_hashes: HashMap<PathBuf, u64>,
     pub status: FileStatus,
     pub last_compiled: DateTime<Utc>,
     #[serde(default)]
@@ -49,7 +49,7 @@ impl FileState {
     pub fn compiled(
         source_hash: u64,
         output_hash: u64,
-        dependency_hashes: HashMap<String, u64>,
+        dependency_hashes: HashMap<PathBuf, u64>,
     ) -> Self {
         Self {
             source_hash,
@@ -75,7 +75,7 @@ impl FileState {
     pub fn dirty(
         source_hash: u64,
         output_hash: u64,
-        dependency_hashes: HashMap<String, u64>,
+        dependency_hashes: HashMap<PathBuf, u64>,
     ) -> Self {
         Self {
             source_hash,
@@ -90,7 +90,7 @@ impl FileState {
     pub fn transpiled(
         source_hash: u64,
         output_hash: u64,
-        dependency_hashes: HashMap<String, u64>,
+        dependency_hashes: HashMap<PathBuf, u64>,
     ) -> Self {
         Self {
             source_hash,
@@ -187,10 +187,10 @@ impl CompileState {
 
     pub fn file_is_stale(
         &self,
-        relative_path: &str,
+        relative_path: &Path,
         source_hash: u64,
         output_hash: Option<u64>,
-        dependency_hashes: &HashMap<String, u64>,
+        dependency_hashes: &HashMap<PathBuf, u64>,
     ) -> bool {
         let Some(entry) = self.entries.get(relative_path) else {
             return true;
@@ -203,8 +203,8 @@ impl CompileState {
             || entry.dependency_hashes != *dependency_hashes
     }
 
-    pub fn retain_only(&mut self, relative_paths: impl IntoIterator<Item = String>) {
-        let keep: HashSet<String> = relative_paths.into_iter().collect();
+    pub fn retain_only(&mut self, relative_paths: impl IntoIterator<Item = PathBuf>) {
+        let keep: HashSet<PathBuf> = relative_paths.into_iter().collect();
         self.entries.retain(|path, _| keep.contains(path));
     }
 
@@ -218,14 +218,21 @@ impl CompileState {
 #[cfg(test)]
 mod tests {
     use super::{COMPILER_VERSION, CompileState, FileState, FileStatus};
-    use std::collections::HashMap;
+    use std::{collections::HashMap, path::PathBuf, sync::LazyLock};
     use tempfile::tempdir;
+
+    static TEST_SCRIPT_PATH: LazyLock<PathBuf> =
+        LazyLock::new(|| PathBuf::from("scripts/test.rotom"));
 
     fn sample_state() -> CompileState {
         let mut entries = HashMap::new();
         entries.insert(
-            "scripts/test.rotom".to_string(),
-            FileState::compiled(10, 20, HashMap::from([("include/test.h".to_string(), 30)])),
+            TEST_SCRIPT_PATH.clone(),
+            FileState::compiled(
+                10,
+                20,
+                HashMap::from([(PathBuf::from("include/test.h"), 30)]),
+            ),
         );
 
         CompileState {
@@ -260,24 +267,29 @@ mod tests {
     #[test]
     fn file_is_stale_detects_missing_dirty_or_changed_inputs() {
         let mut dependency_hashes = HashMap::new();
-        dependency_hashes.insert("include/test.h".to_string(), 30);
+        dependency_hashes.insert(PathBuf::from("include/test.h"), 30);
         let mut state = sample_state();
 
-        assert!(!state.file_is_stale("scripts/test.rotom", 10, Some(20), &dependency_hashes));
-        assert!(state.file_is_stale("scripts/missing.rotom", 10, Some(20), &dependency_hashes));
-        assert!(state.file_is_stale("scripts/test.rotom", 11, Some(20), &dependency_hashes));
-        assert!(state.file_is_stale("scripts/test.rotom", 10, None, &dependency_hashes));
-        assert!(state.file_is_stale("scripts/test.rotom", 10, Some(21), &dependency_hashes));
-
-        dependency_hashes.insert("include/test.h".to_string(), 31);
-        assert!(state.file_is_stale("scripts/test.rotom", 10, Some(20), &dependency_hashes));
-
-        state.entries.get_mut("scripts/test.rotom").unwrap().status = FileStatus::Dirty;
+        assert!(!state.file_is_stale(&TEST_SCRIPT_PATH, 10, Some(20), &dependency_hashes));
         assert!(state.file_is_stale(
-            "scripts/test.rotom",
+            &PathBuf::from("scripts/missing.rotom"),
             10,
             Some(20),
-            &HashMap::from([("include/test.h".to_string(), 30,)])
+            &dependency_hashes
+        ));
+        assert!(state.file_is_stale(&TEST_SCRIPT_PATH, 11, Some(20), &dependency_hashes));
+        assert!(state.file_is_stale(&TEST_SCRIPT_PATH, 10, None, &dependency_hashes));
+        assert!(state.file_is_stale(&TEST_SCRIPT_PATH, 10, Some(21), &dependency_hashes));
+
+        dependency_hashes.insert(PathBuf::from("include/test.h"), 31);
+        assert!(state.file_is_stale(&TEST_SCRIPT_PATH, 10, Some(20), &dependency_hashes));
+
+        state.entries.get_mut(&*TEST_SCRIPT_PATH).unwrap().status = FileStatus::Dirty;
+        assert!(state.file_is_stale(
+            &TEST_SCRIPT_PATH,
+            10,
+            Some(20),
+            &HashMap::from([(PathBuf::from("include/test.h"), 30,)])
         ));
     }
 
@@ -285,14 +297,14 @@ mod tests {
     fn retain_only_drops_removed_sources() {
         let mut state = sample_state();
         state.entries.insert(
-            "scripts/other.rotom".to_string(),
+            PathBuf::from("scripts/other.rotom"),
             FileState::compiled(1, 2, HashMap::new()),
         );
 
-        state.retain_only(["scripts/test.rotom".to_string()]);
+        state.retain_only([TEST_SCRIPT_PATH.clone()]);
 
         assert_eq!(state.entries.len(), 1);
-        assert!(state.entries.contains_key("scripts/test.rotom"));
+        assert!(state.entries.contains_key(&*TEST_SCRIPT_PATH));
     }
 
     #[test]

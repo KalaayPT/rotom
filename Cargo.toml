@@ -7,6 +7,7 @@ name = "rotom"
 version = "0.1.0"
 edition = "2024"
 description = "scripting language and toolchain for pokemon gen 4 game scripts"
+authors = ["Kalaay"]
 license = "MIT"
 repository = "https://github.com/KalaayPT/rotom"
 

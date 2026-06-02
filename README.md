@@ -82,6 +82,15 @@ rotom init /path/to/project
 
 `rotom init` creates `rotom.toml` and seeds `.rotom/command_database/`. Project compile/decompile commands use that config by default.
 
+### Convert legacy scripts
+```bash
+rotom convert
+```
+
+Migrates a project's existing legacy scripts to Rotom source: DSPRE `.script` files and decomp `.s` files become `.rotom` (levelscripts become `.json`), with the originals backed up first. `rotom init` reports how many convertible files it finds; pass `--dry-run` to preview the conversions without writing anything.
+
+Note: for DSPRE, it actually freshly disassembles from the binaries. This is done to avoid database and symbol conflicts.
+
 ### Compile a project
 ```bash
 rotom compile
@@ -146,7 +155,7 @@ Use `match` to dispatch based on a variable's value:
 
 > [!IMPORTANT]
 > The branches are exclusive and have no fall-through semantics. 
-> Bare `Call` statements get optimized into `CallIf`s and any other statement creates exclusive `Jump` branching.
+> A case whose body is a single `Call` or `Jump` is optimized into a `CallIf` or `GoToIf` to the target respectively; any other case body uses exclusive `Jump` branching.
 > If you really need fall-through semantics, that effect can be achieved with labels. 
 
 ```rotom

@@ -1418,8 +1418,7 @@ script Main #1:
 
     #[test]
     fn compile_path_rotom_reports_text_archive_preload_errors() {
-        let temp_dir =
-            unique_temp_dir("compile_path_reports_text_archive_preload_errors");
+        let temp_dir = unique_temp_dir("compile_path_reports_text_archive_preload_errors");
         write_test_decomp_project(&temp_dir);
 
         // Numeric stem "1" maps to text archive ID 17 via Platinum's hardcoded
@@ -1427,14 +1426,12 @@ script Main #1:
         // That archive doesn't exist in the minimal fixture, so preload fails.
         let input_path = temp_dir.join("1.rotom");
         let output_path = temp_dir.join("1.bin");
-        fs::write(&input_path, minimal_script_source())
-            .expect("failed to write input script");
+        fs::write(&input_path, minimal_script_source()).expect("failed to write input script");
 
         let db = load_test_db();
         let mut constants = ConstantDb::new();
         let workspace = Arc::new(
-            uxie::Workspace::open_decomp(&temp_dir)
-                .expect("failed to open decomp workspace"),
+            uxie::Workspace::open_decomp(&temp_dir).expect("failed to open decomp workspace"),
         );
         constants.set_message_ids(workspace.shared_message_ids());
 

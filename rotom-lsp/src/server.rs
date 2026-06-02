@@ -1166,20 +1166,32 @@ mod tests {
 
     #[test]
     fn should_invalidate_project_state_for_project_config_and_database() {
-        assert!(RotomServer::should_invalidate_project_state(Path::new("rotom.toml")));
-        assert!(RotomServer::should_invalidate_project_state(Path::new(".rotom/command_database/platinum_v2.json")));
+        assert!(RotomServer::should_invalidate_project_state(Path::new(
+            "rotom.toml"
+        )));
+        assert!(RotomServer::should_invalidate_project_state(Path::new(
+            ".rotom/command_database/platinum_v2.json"
+        )));
     }
 
     #[test]
     fn should_invalidate_project_state_for_include_inputs() {
-        assert!(RotomServer::should_invalidate_project_state(Path::new("include/constants/items.h")));
-        assert!(RotomServer::should_invalidate_project_state(Path::new("generated/events.inc")));
+        assert!(RotomServer::should_invalidate_project_state(Path::new(
+            "include/constants/items.h"
+        )));
+        assert!(RotomServer::should_invalidate_project_state(Path::new(
+            "generated/events.inc"
+        )));
     }
 
     #[test]
     fn should_not_invalidate_project_state_for_status_or_cache_outputs() {
-        assert!(!RotomServer::should_invalidate_project_state(Path::new(".rotom/status/compile_state.json")));
-        assert!(!RotomServer::should_invalidate_project_state(Path::new(".rotom/cache/include-cache.json")));
+        assert!(!RotomServer::should_invalidate_project_state(Path::new(
+            ".rotom/status/compile_state.json"
+        )));
+        assert!(!RotomServer::should_invalidate_project_state(Path::new(
+            ".rotom/cache/include-cache.json"
+        )));
     }
 
     #[test]

@@ -387,9 +387,7 @@ fn compile(
     if result.is_success() {
         Ok(())
     } else {
-        // Even if we output JSON, we should probably exit with error code if something failed
-        // But for JSON consumers, the JSON itself tells the story.
-        // Let's keep the standard behavior: error code 1 if any failure.
+        // Exit non-zero on any failure; JSON consumers still get the full report above.
         Err(CompileError::Io {
             message: format!("{} file(s) failed to compile", result.failures.len()),
         })

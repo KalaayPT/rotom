@@ -274,7 +274,16 @@ impl<'a> Lowerer<'a> {
         Ok(subject.clone())
     }
 
-    fn can_optimize_case_to_gotoif(case: &crate::compiler::ast::MatchCase) -> Option<String> {
+    /// Detects a match case that is a single value whose body is exactly one
+    /// `Call` or `Jump` to a named target.
+    ///
+    /// Returns the conditional command to emit (`CallIf` for `Call`, `JumpIf`
+    /// for `Jump`) paired with the target name, or `None` when the case is not
+    /// optimizable. Returning the command preserves the branch's call/jump
+    /// semantics instead of collapsing both into a jump.
+    fn can_optimize_case_to_gotoif_callif(
+        case: &crate::compiler::ast::MatchCase,
+    ) -> Option<(&'static str, String)> {
         if let [_value] = case.values.as_slice()
             && let [stmt] = case.body.as_slice()
         {
@@ -285,7 +294,7 @@ impl<'a> Lowerer<'a> {
                             if let ExpressionKind::Identifier(name) | ExpressionKind::Label(name) =
                                 &first_arg.node
                             {
-                                Some(name.clone())
+                                Some(("CallIf", name.clone()))
                             } else {
                                 None
                             }
@@ -300,7 +309,7 @@ impl<'a> Lowerer<'a> {
                     if let ExpressionKind::Identifier(name) | ExpressionKind::Label(name) =
                         &target.node
                     {
-                        Some(name.clone())
+                        Some(("JumpIf", name.clone()))
                     } else {
                         None
                     }
@@ -319,19 +328,23 @@ impl<'a> Lowerer<'a> {
         default: Option<&[Statement]>,
         macro_depth: usize,
     ) -> ParseResult<()> {
-        let subject_val = self.resolve_arg(effective_subject)?.value("match subject")?;
+        let subject_val = self
+            .resolve_arg(effective_subject)?
+            .value("match subject")?;
         let label_end = self.new_label("end_match");
         let mut need_end_label = false;
 
         for (i, case) in cases.iter().enumerate() {
-            if let Some(call_target) = Self::can_optimize_case_to_gotoif(case) {
-                let case_value = self.resolve_arg(&case.values[0])?.value("match case value")?;
+            if let Some((cond_cmd, call_target)) = Self::can_optimize_case_to_gotoif_callif(case) {
+                let case_value = self
+                    .resolve_arg(&case.values[0])?
+                    .value("match case value")?;
                 self.output.push(IrOpcode::Command {
                     name: "CompareVarValue".to_string(),
                     args: vec![Arg::Value(subject_val), Arg::Value(case_value)],
                 });
                 self.output.push(IrOpcode::Command {
-                    name: "JumpIf".to_string(),
+                    name: cond_cmd.to_string(),
                     args: vec![
                         Arg::Value(ComparisonOperator::Equal as i32),
                         Arg::Pointer(call_target),
@@ -1170,7 +1183,9 @@ impl<'a> Lowerer<'a> {
                     && matches!(&args[0].node, ExpressionKind::String(_)) =>
             {
                 let ExpressionKind::String(segs) = &args[0].node else {
-                    return Err(lowering_error("format() requires a string literal argument"));
+                    return Err(lowering_error(
+                        "format() requires a string literal argument",
+                    ));
                 };
                 let wrapped = uxie::format_message(
                     &segs
@@ -2295,15 +2310,26 @@ func_c:
                     compare_count
                 );
 
-                let gotoif_count = ir_func
+                let callif_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "CallIf"))
+                    .count();
+                assert_eq!(
+                    callif_count, 3,
+                    "Should have exactly 3 CallIf for optimized call match. Got {}",
+                    callif_count
+                );
+
+                let jumpif_count = ir_func
                     .instructions
                     .iter()
                     .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "JumpIf"))
                     .count();
                 assert_eq!(
-                    gotoif_count, 3,
-                    "Should have exactly 3 JumpIf for optimized match. Got {}",
-                    gotoif_count
+                    jumpif_count, 0,
+                    "Call cases should emit CallIf, not JumpIf. Got {}",
+                    jumpif_count
                 );
 
                 let goto_count = ir_func
@@ -2440,15 +2466,26 @@ func_b:
         let items = lowerer.lower_script_file(&script_file).unwrap();
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                let gotoif_count = ir_func
+                let callif_count = ir_func
+                    .instructions
+                    .iter()
+                    .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "CallIf"))
+                    .count();
+                assert_eq!(
+                    callif_count, 2,
+                    "Should have 2 optimized CallIf for the call cases. Got {}",
+                    callif_count
+                );
+
+                let jumpif_count = ir_func
                     .instructions
                     .iter()
                     .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "JumpIf"))
                     .count();
                 assert_eq!(
-                    gotoif_count, 3,
-                    "Should have 2 optimized JumpIf + 1 standard JumpIf. Got {}",
-                    gotoif_count
+                    jumpif_count, 1,
+                    "Non-optimized Message case should emit 1 standard JumpIf. Got {}",
+                    jumpif_count
                 );
 
                 let goto_count = ir_func
