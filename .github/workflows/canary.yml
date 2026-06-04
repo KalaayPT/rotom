@@ -75,7 +75,6 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
           install: base-devel mingw-w64-x86_64-gcc
           path-type: inherit
 
@@ -129,7 +128,7 @@ jobs:
           body: |
             Rolling canary build from `${{ github.sha }}`.
 
-            This prerelease is replaced by each push to `main`.
+            This prerelease is automatically generated on any push to `main`.
           prerelease: true
           make_latest: false
           overwrite_files: true
