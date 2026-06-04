@@ -124,7 +124,7 @@ jobs:
         with:
           tag_name: canary
           target_commitish: ${{ github.sha }}
-          name: Canary ${{ env.CANARY_VERSION }}
+          name: ${{ env.CANARY_VERSION }}
           body: |
             Rolling canary build from `${{ github.sha }}`.
 

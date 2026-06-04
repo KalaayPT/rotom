@@ -10,17 +10,17 @@ Inspired by [poryscript](https://github.com/huderlem/poryscript) for Gen 3.
 
 ## What This Project Does
 
-Rotom provides a complete compiler toolchain for the Nintendo DS scripting engine:
+Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting engine:
 
 ### Core Features
 - **High-level syntax** with control flow (`if/else`, `while`, `Jump`)
-- **Full legacy tool support:** DSPRE `.script` and Decomp `.s` translation layer
+- **Full legacy tool support:** DSPRE `.script` and Decomp `.s` translation/conversion layer
 - **JSON Levelscripts:** levelscripts now exist in declarative JSON format
 - **Byte-Matching Compilation:** de- and compilation preserve all semantics and oddities from original script files.
 - **Decomp integration** - Automatically loads constants from your pokeplatinum/pokediamond headers/jsons
 - **Fall-through semantics** - Preserves the game engine's organization where scripts flow into each other
 - **Decompiler** - Disassemble binary scripts back to source (normal scripts to `.rotom`, levelscripts to JSON)
-- **Editor support** - LSP support and editor integrations for diagnostics, completion, hover, go-to-definition, inlay hints, syntax highlighting, etc.
+- **Editor support** - LSP support and editor integrations for diagnostics, completion, hover, go-to-definition, inlay hints, syntax highlighting, etc. (more on this later)
 
 ### Language Features
 - **Scripts** with explicit jump table slots, callable from events/levelscripts: `script Main #1:`
@@ -35,33 +35,21 @@ Rotom provides a complete compiler toolchain for the Nintendo DS scripting engin
 ## Project Status
 
 ### Completed
-- Full compiler pipeline from source to binary
-- DSPRE script format transpiler
-- Decomp assembly (`*.s`) transpiler for seamless integration
-- Levelscript transpiler (decomp `InitScriptEntry_*` macros → binary)
-- Levelscript decompiler (binary → JSON)
-- Normal script decompiler (binary → `.rotom` source)
-- Bytecode emission with jump table ordering (sorted by slot ID)
-- Movement command semantics (default parameters, interleaving with scripts)
-- Fall-through code generation matching decomp style and engine functionality
-- Multi-format batch compilation with parallel processing
-- Rich error reporting with source locations
+- Full byte-matching compiler/decompiler pipeline from source to binary and back
+- Transpiler for all DSPRE and decomps formats
+- LSP, syntax highlighting, editor extensions, error reporting
 - Constant loading from database, text banks (DSPRE) and decomp projects' JSON and header files
-- Test infrastructure with fixtures from pokeplatinum
-- 100% byte-matching verification against decomp scripts
+- Full test infrastructure with DSPRE and decomp fixtures
 
 ### Roadmap
-- Graph colouring for variable liveness analysis
-- "Register allocation" for automatic variable assignment
-- Constant folding for compile-time arithmetic
-- Complex expressions in conditions (`if x + 1 == 5`)
-- Optimization passes
-- Decompiler pattern matching for `match`/`while`/`if` reconstruction
-- Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT`
-- Fully-featured for loops, will need graph colouring for counting
-- Derive includes for utilized text banks from map headers and GlobalScript table (DSPRE)
 - Resolve GlobalScript IDs to script files and integrate in workspace symbol table
-
+- Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT`
+- Graph colouring for variable liveness analysis, which will allow for:
+  - Variable allocation for automatic assignment
+  - Complex expressions in conditions (`if x + 1 == 5`)
+  - Fully-featured for loops, will need graph colouring for counting
+- Decompiler pattern matching for `match`/`while`/`if` reconstruction
+- Derive includes for utilized text banks from map headers and GlobalScript table (DSPRE)
 
 ---
 
@@ -69,11 +57,7 @@ Rotom provides a complete compiler toolchain for the Nintendo DS scripting engin
 
 ### Installation
 
-```bash
-cargo install --path .
-```
-
-This builds the `rotom` CLI and installs it on your `PATH`. See [INSTALL.md](INSTALL.md) for other options (building without installing, the `rotom-lsp` server, and editor setup).
+See [INSTALL.md](INSTALL.md) for setting up rotom for DSPRE/decomp/hge projects and extension support.
 
 ### Initialize a project
 ```bash
@@ -87,7 +71,7 @@ rotom init /path/to/project
 rotom convert
 ```
 
-Migrates a project's existing legacy scripts to Rotom source: DSPRE `.script` files and decomp `.s` files become `.rotom` (levelscripts become `.json`), with the originals backed up first. `rotom init` reports how many convertible files it finds; pass `--dry-run` to preview the conversions without writing anything.
+Migrates a project's existing legacy scripts to Rotom source: DSPRE `.script` files and decomp `.s` files become `.rotom` (levelscripts become `.json`), with the originals backed up first. `rotom init` reports how many convertible files it finds and asks you whether to convert them rightaway, without needing to run this; pass `--dry-run` to preview the conversions without writing anything.
 
 Note: for DSPRE, it actually freshly disassembles from the binaries. This is done to avoid database and symbol conflicts.
 
@@ -96,12 +80,12 @@ Note: for DSPRE, it actually freshly disassembles from the binaries. This is don
 rotom compile
 ```
 
-### Compile a single script with an explicit database
+#### Compile a single script with an explicit database
 ```bash
 rotom compile -d .rotom/command_database/platinum_v2.json -i script.rotom -o script.bin
 ```
 
-### Decompile a single binary with an explicit database
+#### Decompile a single binary with an explicit database
 ```bash
 rotom decompile -d .rotom/command_database/platinum_v2.json -i script.bin -o script.rotom
 ```

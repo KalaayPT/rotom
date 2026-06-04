@@ -457,34 +457,3 @@ Rotom includes a transpiler for DSPRE script format:
 | `UseScript_#N` | `Jump script_N` |
 | `Overworld.0` | `0` (descriptor stripped) |
 | `arg1 arg2 arg3` | `arg1, arg2, arg3` (comma-separated) |
-
-## 10. Completed Features & Roadmap
-
-### Completed
-
-- [x] Codegen (byte-matching achieved for first scripts)
-- [x] DSPRE transpiler
-- [x] Jump table ordering (sorted by slot ID)
-- [x] Movement default parameters (1 when not specified)
-- [x] Action/script interleaving (preserves source order)
-- [x] Parameter reordering for commands with different arg order in decomps
-- [x] Macro support
-- [x] Simple decompilation
-- [x] Tests
-  - [x] Lexer tests
-  - [x] Parser tests
-  - [x] Semantic analysis tests
-  - [x] Codegen tests (byte-matching verification)
-- [x] better macro support (user-defined macros)
-- [x] roundtrip matching for dspre scripts
-- [x] Binary matching against pokeplatinum decompiled scripts
-
-### Future Work
-
-- [ ] Decompilation into high-level logic
-- [ ] compiler flag for raw/optimized compilation (e.g. fixing missing jump table markers)
-- [ ] Constant folding for compile-time arithmetic
-- [ ] Complex expressions in conditions (`if x + 1 == 5`)
-- [ ] Type checking against command parameter expectations
-- [ ] Optimization passes (dead code elimination, jump threading)
-- [ ] Register allocation for automatic variable assignment

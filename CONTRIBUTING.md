@@ -46,7 +46,7 @@ gitignored). The test harness obtains them as follows:
   pinned commits the first time you run the tests. This needs `git` and network
   access on the first run; later runs reuse the local clones. Pins live in
   `tests/common/fixture_pins.rs`.
-  - note: if these ever fail, it can be related to the db being more up to date than the pinned commit. try bumping the commit if that ever happens
+  - note: if these ever fail, it can be related to the db being more up to date than the pinned commit. try bumping the commit if that ever happens, and make sure to include this in your PR.
 - **DSPRE fixtures** must be supplied manually under
   `tests/fixtures/dspre/<game>_DSPRE_contents/`. Tests that need them are skipped
   when the tree is absent, so a fresh clone still passes the rest of the suite.
