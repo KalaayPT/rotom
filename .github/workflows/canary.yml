@@ -1,0 +1,137 @@
+name: Canary Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: canary-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Canary Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Compute version
+        id: version
+        run: |
+          base_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rotom") | .version')"
+          short_sha="${GITHUB_SHA::7}"
+          version="${base_version}-canary.${GITHUB_RUN_NUMBER}+${short_sha}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    name: Build Canary (Linux x86-64)
+    runs-on: ubuntu-latest
+    needs: version
+    env:
+      CANARY_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Package
+        run: |
+          NAME="rotom-${CANARY_VERSION}-linux-x86_64"
+          mkdir "$NAME"
+          cp target/release/rotom target/release/rotom-lsp target/release/libnitroarc_ffi.so "$NAME/"
+          tar -czf rotom-canary-linux-x86_64.tar.gz "$NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rotom-canary-linux-x86_64
+          path: rotom-canary-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Canary (Windows x86-64)
+    runs-on: windows-latest
+    needs: version
+    env:
+      CANARY_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: base-devel mingw-w64-x86_64-gcc
+          path-type: inherit
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Build
+        run: cargo build --release --workspace --target x86_64-pc-windows-gnu
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "rotom-${env:CANARY_VERSION}-windows-x86_64"
+          New-Item -ItemType Directory $name
+          Copy-Item "target/x86_64-pc-windows-gnu/release/rotom.exe",
+                    "target/x86_64-pc-windows-gnu/release/rotom-lsp.exe",
+                    "target/x86_64-pc-windows-gnu/release/nitroarc_ffi.dll" "$name/"
+          Compress-Archive -Path "$name/*" -DestinationPath "rotom-canary-windows-x86_64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rotom-canary-windows-x86_64
+          path: rotom-canary-windows-x86_64.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish Canary
+    runs-on: ubuntu-latest
+    needs:
+      - version
+      - build-linux
+      - build-windows
+    env:
+      CANARY_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: canary
+          target_commitish: ${{ github.sha }}
+          name: Canary ${{ env.CANARY_VERSION }}
+          body: |
+            Rolling canary build from `${{ github.sha }}`.
+
+            This prerelease is replaced by each push to `main`.
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          files: dist/*
+          fail_on_unmatched_files: true
