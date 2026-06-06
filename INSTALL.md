@@ -46,6 +46,10 @@ up the project automatically if you have the rotom extension installed and `roto
 
 ### pokeplatinum Decomp
 
+> [!IMPORTANT]
+> If at all possible, please try to update your pokeplatinum fork to the latest version.
+> Some commands may not work correctly with older versions, as they have been renamed or updated.
+
 Run this in the project root:
 
 ```bash
