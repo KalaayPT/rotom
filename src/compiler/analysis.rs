@@ -751,6 +751,7 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
+    /// Evaluate a database variant condition against this call's arguments.
     fn evaluate_variant_condition_with_arg_count(
         &self,
         condition: &str,
@@ -762,16 +763,11 @@ impl<'a> Analyzer<'a> {
             args,
             params,
             |expr| self.resolve_expression_to_int(expr).ok(),
-            |name| match name {
-                "VARS_START" => Some(0x4000),
-                "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
-                "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
-                _ => match self.resolve_symbol(name) {
-                    Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => {
-                        Some(i64::from(val))
-                    }
-                    _ => None,
-                },
+            |name| match self.resolve_symbol(name) {
+                Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => {
+                    Some(i64::from(val))
+                }
+                _ => None,
             },
         )
         .map_err(|_| {
@@ -785,17 +781,12 @@ impl<'a> Analyzer<'a> {
     fn resolve_expression_to_int(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
-            ExpressionKind::Identifier(name) => match name.as_str() {
-                "VARS_START" => Ok(0x4000),
-                "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
-                "SCRIPT_LOCAL_VARS_START" => Ok(0x8000),
-                _ => match self.resolve_symbol(name) {
-                    Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => Ok(val),
-                    _ => Err(analysis_error(
-                        expr.span.clone(),
-                        format!("Could not resolve '{}' to an integer expression", name),
-                    )),
-                },
+            ExpressionKind::Identifier(name) => match self.resolve_symbol(name) {
+                Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => Ok(val),
+                _ => Err(analysis_error(
+                    expr.span.clone(),
+                    format!("Could not resolve '{}' to an integer expression", name),
+                )),
             },
             ExpressionKind::Prefix { operator, id } => {
                 let value = self.resolve_expression_to_int(id)?;

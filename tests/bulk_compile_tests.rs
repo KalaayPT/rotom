@@ -261,8 +261,8 @@ fn load_platinum_db_and_constants() -> (DatabaseV2, ConstantDb) {
         .expect("Failed to load Platinum constants directory");
     let dspre_root = get_dspre_platinum_root();
     if dspre_root.is_dir() {
-        let language = RomHeader::open(&dspre_root)
-            .map_or(GameLanguage::English, |h| h.detect_language());
+        let language =
+            RomHeader::open(&dspre_root).map_or(GameLanguage::English, |h| h.detect_language());
         let _ = constants.load_dspre_text_archives(&dspre_root, language);
     }
     (db, constants)
@@ -278,8 +278,8 @@ fn load_heartgold_db_and_constants() -> (DatabaseV2, ConstantDb) {
         .expect("Failed to load HeartGold constants directory");
     let dspre_root = get_dspre_heartgold_root();
     if dspre_root.is_dir() {
-        let language = RomHeader::open(&dspre_root)
-            .map_or(GameLanguage::English, |h| h.detect_language());
+        let language =
+            RomHeader::open(&dspre_root).map_or(GameLanguage::English, |h| h.detect_language());
         let _ = constants.load_dspre_text_archives(&dspre_root, language);
     }
     (db, constants)
@@ -500,10 +500,7 @@ fn bulk_compile_scripts(
                 result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::MissingExpectedHash(_) => {
-                result
-                    .stats
-                    .missing_hashes
-                    .fetch_add(1, Ordering::Relaxed);
+                result.stats.missing_hashes.fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::IoError(_) => {
                 result.stats.io_errors.fetch_add(1, Ordering::Relaxed);
@@ -549,10 +546,7 @@ fn bulk_round_trip_binaries(
                 result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::MissingExpectedHash(_) => {
-                result
-                    .stats
-                    .missing_hashes
-                    .fetch_add(1, Ordering::Relaxed);
+                result.stats.missing_hashes.fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::IoError(_) => {
                 result.stats.io_errors.fetch_add(1, Ordering::Relaxed);
@@ -598,10 +592,7 @@ fn bulk_compile_dspre_scripts(
                 result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::MissingExpectedHash(_) => {
-                result
-                    .stats
-                    .missing_hashes
-                    .fetch_add(1, Ordering::Relaxed);
+                result.stats.missing_hashes.fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::IoError(_) => {
                 result.stats.io_errors.fetch_add(1, Ordering::Relaxed);
@@ -1198,10 +1189,7 @@ fn bulk_compile_heartgold_scripts(
                 result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::MissingExpectedHash(_) => {
-                result
-                    .stats
-                    .missing_hashes
-                    .fetch_add(1, Ordering::Relaxed);
+                result.stats.missing_hashes.fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::IoError(_) => {
                 result.stats.io_errors.fetch_add(1, Ordering::Relaxed);

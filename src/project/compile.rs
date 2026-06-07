@@ -154,7 +154,7 @@ pub fn compile_project(
                 Err(source) => {
                     progress.inc(1);
                     return Ok(WorkerResult::Failure {
-                        relative_path: relative_path,
+                        relative_path,
                         failure: CompileFailure {
                             path: input.clone(),
                             error: CompileError::Io {

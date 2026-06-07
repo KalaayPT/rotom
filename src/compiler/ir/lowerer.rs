@@ -653,6 +653,7 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// Evaluate a database macro condition against this call's arguments.
     fn evaluate_condition_with_arg_count(
         &self,
         condition: &str,
@@ -664,30 +665,25 @@ impl<'a> Lowerer<'a> {
             args,
             params,
             |expr| self.resolve_arg_to_int(expr).ok(),
-            |name| match name {
-                "VARS_START" => Some(0x4000),
-                "SCRIPT_LOCAL_VARS_START" => Some(0x8000),
-                "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Some(0x800D),
-                _ => {
-                    if let Some(cond) = ComparisonOperator::parse(name) {
-                        return Some(i64::from(cond as i32));
-                    }
-                    if let Some(&val) = self.active_aliases.get(name) {
-                        return Some(i64::from(val));
-                    }
-                    if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
-                        return Some(i64::from(*val));
-                    }
-                    if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
-                        return Some(i64::from(*val));
-                    }
-                    if let Some(db) = self.constants
-                        && let Some(val) = db.get(name)
-                    {
-                        return Some(i64::from(val));
-                    }
-                    None
+            |name| {
+                if let Some(cond) = ComparisonOperator::parse(name) {
+                    return Some(i64::from(cond as i32));
                 }
+                if let Some(&val) = self.active_aliases.get(name) {
+                    return Some(i64::from(val));
+                }
+                if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
+                    return Some(i64::from(*val));
+                }
+                if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
+                    return Some(i64::from(*val));
+                }
+                if let Some(db) = self.constants
+                    && let Some(val) = db.get(name)
+                {
+                    return Some(i64::from(val));
+                }
+                None
             },
         )
         .map_err(|_| {
@@ -698,37 +694,31 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// Resolve a macro argument expression to an integer.
     fn resolve_arg_to_int(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
-            ExpressionKind::Identifier(name) => match name.as_str() {
-                "VARS_START" => Ok(0x4000),
-                "SCRIPT_LOCAL_VARS_START" => Ok(0x8000),
-                "VARS_END" | "SCRIPT_LOCAL_VARS_END" => Ok(0x800D),
-                _ => {
-                    if let Some(&val) = self.active_aliases.get(name) {
-                        return Ok(val);
-                    }
-                    if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
-                        return Ok(*val);
-                    } else if let Some(SymbolType::Variable(val)) =
-                        self.global_symbols.resolve(name)
-                    {
-                        return Ok(*val);
-                    }
-
-                    if let Some(db) = self.constants
-                        && let Some(val) = db.get(name)
-                    {
-                        return Ok(val);
-                    }
-
-                    Err(lowering_error(format!(
-                        "Could not resolve '{}' to an integer for macro condition",
-                        name
-                    )))
+            ExpressionKind::Identifier(name) => {
+                if let Some(&val) = self.active_aliases.get(name) {
+                    return Ok(val);
                 }
-            },
+                if let Some(SymbolType::Constant(val)) = self.global_symbols.resolve(name) {
+                    return Ok(*val);
+                } else if let Some(SymbolType::Variable(val)) = self.global_symbols.resolve(name) {
+                    return Ok(*val);
+                }
+
+                if let Some(db) = self.constants
+                    && let Some(val) = db.get(name)
+                {
+                    return Ok(val);
+                }
+
+                Err(lowering_error(format!(
+                    "Could not resolve '{}' to an integer for macro condition",
+                    name
+                )))
+            }
             ExpressionKind::Prefix { operator, id } => {
                 let val = self.resolve_arg_to_int(id)?;
                 match operator {
