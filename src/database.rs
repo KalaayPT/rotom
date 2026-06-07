@@ -800,6 +800,22 @@ impl ConstantDb {
         count
     }
 
+    /// Merge DSPRE workspace symbols into this constant database.
+    ///
+    /// Unlike decomp symbols, these remain flat in `uxie_symbols` so per-file
+    /// clones keep DSPRE archive constants without creating a decomp include
+    /// overlay.
+    pub fn load_dspre_symbols(&mut self, mut symbols: SymbolTable) -> usize {
+        symbols.add_dspre_aliases();
+        let count = symbols.get_all_defines().len();
+        if let Some(existing) = &mut self.uxie_symbols {
+            existing.extend(symbols);
+        } else {
+            self.uxie_symbols = Some(symbols);
+        }
+        count
+    }
+
     pub fn load_dspre_text_archives<P: AsRef<Path>>(
         &mut self,
         root: P,

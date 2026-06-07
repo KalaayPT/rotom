@@ -28,12 +28,11 @@ fn param_semantic_family(param_name: &str) -> Option<uxie::ConstantFamily> {
         "trainer" | "trainerid" | "trainer_id" => Some(uxie::ConstantFamily::Trainer),
         "trainerclass" | "trainer_class" => Some(uxie::ConstantFamily::TrainerClass),
         "location" | "mapsec" => Some(uxie::ConstantFamily::Location),
-        "flag" | "shiny_flag" | "var_flag" => Some(uxie::ConstantFamily::Flag),
+        "flag" | "flagid" | "flag_id" | "shiny_flag" => Some(uxie::ConstantFamily::Flag),
         "var" | "variable" | "var_0" | "var_1" | "var_2" | "var_3" | "var_4" | "var_5"
-        | "var_6" | "variable_1" | "variable_2" | "retvar" | "var_dest" | "var_result"
-        | "var_or_addend" | "var_or_trno" | "countdown_variable" => {
-            Some(uxie::ConstantFamily::Variable)
-        }
+        | "var_6" | "varid" | "var_id" | "destvarid" | "dest_var_id" | "variable_1"
+        | "variable_2" | "retvar" | "var_dest" | "var_result" | "var_or_addend" | "var_or_trno"
+        | "countdown_variable" | "var_flag" => Some(uxie::ConstantFamily::Variable),
         "ability" => Some(uxie::ConstantFamily::Ability),
         "type" | "type_1" | "type_2" => Some(uxie::ConstantFamily::Type),
         _ => None,
@@ -48,15 +47,15 @@ fn format_arg(arg: &Arg, param_name: Option<&str>, constants: Option<&ConstantDb
             {
                 return cond.as_str().to_string();
             }
-            if *v >= 0x4000 {
-                return format!("0x{:X}", v);
-            }
             if let Some(name) = param_name
                 && let Some(family) = param_semantic_family(name)
                 && let Some(constants) = constants
                 && let Some(resolved) = constants.resolve_value_to_name(i64::from(*v), family)
             {
                 return resolved;
+            }
+            if *v >= 0x4000 {
+                return format!("0x{:X}", v);
             }
             v.to_string()
         }
@@ -165,6 +164,7 @@ mod tests {
     use super::*;
     use crate::compiler::ast::FunctionHeader;
     use crate::compiler::ir::IrFunction;
+    use crate::database::ConstantDb;
 
     fn create_test_db() -> &'static DatabaseV2 {
         DatabaseV2::test_platinum()
@@ -295,6 +295,50 @@ mod tests {
             source.contains("CallIf EQUAL, some_func"),
             "Expected 'CallIf EQUAL, some_func' but got: {}",
             source
+        );
+    }
+
+    #[test]
+    fn test_var_and_flag_args_format_symbolically_before_hex_fallback() {
+        let db = create_test_db();
+        let mut symbols = uxie::SymbolTable::new();
+        symbols.insert_define("VAR_TEMP_x4000".to_string(), 0x4000);
+        symbols.insert_define("FLAG_TEST".to_string(), 112);
+
+        let mut constants = ConstantDb::new();
+        constants.load_decomp_symbols(".", symbols);
+
+        let func = IrFunction {
+            headers: vec![FunctionHeader {
+                name: "TestFunc".to_string(),
+                id: Some(1),
+                is_public: true,
+            }],
+            instructions: vec![
+                IrOpcode::Command {
+                    name: "SetVarFromValue".to_string(),
+                    args: vec![Arg::Value(0x4000), Arg::Value(1)],
+                },
+                IrOpcode::Command {
+                    name: "SetFlag".to_string(),
+                    args: vec![Arg::Value(112)],
+                },
+            ],
+        };
+
+        let output = ScriptOutput::Normal {
+            items: vec![TopLevelItem::Function(func)],
+            jump_table_end_marker_count: 1,
+        };
+        let source = ir_to_source(&output, db, Some(&constants));
+
+        assert!(
+            source.contains("SetVarFromValue VAR_TEMP_x4000, 1"),
+            "expected symbolic var, got: {source}"
+        );
+        assert!(
+            source.contains("SetFlag FLAG_TEST"),
+            "expected symbolic flag, got: {source}"
         );
     }
 }
