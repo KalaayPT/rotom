@@ -1,14 +1,15 @@
 //! Bulk integration tests for the Rotom compiler pipeline
 //!
-//! These tests compile ALL scripts from the pokeplatinum decomp project
-//! and compare the resulting binaries against the known-good pre-built binaries.
+//! These tests compile field scripts from decomp projects and compare the
+//! resulting binaries against vendored hashes from known-good builds.
 //!
 //! ## Test Categories
 //! - **Normal Scripts**: Standard script files that do not match levelscript naming.
 //! - **Levelscripts**: Initialization scripts using `_init_` or `_hdr` naming.
 //!
 //! ## Environment Variables
-//! - `POKEPLATINUM_ROOT`: Path to pokeplatinum checkout (default: ~/dev/pokeplatinum)
+//! - `POKEPLATINUM_ROOT`: Path to pokeplatinum checkout (default: tests/fixtures/decomp/pokeplatinum)
+//! - `POKEHEARTGOLD_ROOT`: Path to pokeheartgold checkout (default: tests/fixtures/decomp/pokeheartgold)
 //!
 //! ## Usage
 //! ```bash
@@ -43,6 +44,7 @@ use rotom::{BinaryQuirk, compile};
 use uxie::{GameLanguage, RomHeader};
 
 mod common;
+mod known_hashes;
 use common::fixture_setup::ensure_decomp_fixtures;
 
 /// Result category for a single script compilation attempt
@@ -59,8 +61,8 @@ pub enum CompileOutcome {
     },
     /// Compilation failed (rotoscript -> binary)
     CompileError(String),
-    /// Expected binary file not found in build directory
-    MissingExpectedBinary(PathBuf),
+    /// Expected hash entry was not found in the vendored manifest.
+    MissingExpectedHash(PathBuf),
     /// Source file could not be read
     IoError(String),
 }
@@ -72,7 +74,7 @@ pub struct BulkCompileStats {
     pub matches: AtomicUsize,
     pub hash_mismatches: AtomicUsize,
     pub compile_errors: AtomicUsize,
-    pub missing_binaries: AtomicUsize,
+    pub missing_hashes: AtomicUsize,
     pub io_errors: AtomicUsize,
 }
 
@@ -95,15 +97,6 @@ fn get_pokeplatinum_root() -> PathBuf {
 
 fn get_scripts_dir() -> PathBuf {
     get_pokeplatinum_root().join("res/field/scripts")
-}
-
-fn get_binaries_dir() -> PathBuf {
-    get_pokeplatinum_root().join("build/res/field/scripts/scr_seq.narc.p")
-}
-
-fn script_to_binary_path(script_path: &Path) -> PathBuf {
-    let stem = script_path.file_stem().unwrap().to_str().unwrap();
-    get_binaries_dir().join(stem)
 }
 
 fn fixture_panic(path: &Path, what: &str) -> ! {
@@ -220,6 +213,15 @@ fn sha256_hex(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn known_field_script_hash(manifest: &str, root: &Path, script_path: &Path) -> Option<String> {
+    let relative = script_path.strip_prefix(root).unwrap_or(script_path);
+    let key = relative.to_string_lossy().replace('\\', "/");
+    manifest.lines().find_map(|line| {
+        let (hash, path) = line.split_once("  ")?;
+        (path == key).then(|| hash.to_string())
+    })
+}
+
 fn load_test_db_and_constants() -> (DatabaseV2, ConstantDb) {
     let db =
         DatabaseV2::load(DatabaseV2::test_platinum_path()).expect("Failed to load test database");
@@ -293,12 +295,7 @@ fn clone_map_events(
     constants
 }
 
-/// Compile a single pokeplatinum script and compare against the reference binary.
-///
-/// If the reference binary is missing, it is auto-generated from the current
-/// compiler output (golden-file style). This lets the test suite pass in
-/// environments where the full decomp project has not been built, while still
-/// catching compiler regressions on subsequent runs.
+/// Compile a single pokeplatinum script and compare against its built reference binary.
 fn compile_single_script(
     script_path: &Path,
     db: &DatabaseV2,
@@ -309,52 +306,14 @@ fn compile_single_script(
         Err(e) => return CompileOutcome::IoError(format!("{}", e)),
     };
 
-    let binary_path = script_to_binary_path(script_path);
-    let Ok(expected_bytes) = std::fs::read(&binary_path) else {
-        // Golden-file seeding: reference binary missing, so compile and
-        // write it out so future runs have something to compare against.
-        let decomp_root = get_pokeplatinum_root();
-        let constants = clone_map_events(base_constants, &decomp_root, script_path);
-        let is_levelscript = is_levelscript_source(&source);
-        let bytes = if is_levelscript {
-            match compile_levelscript_assembly_to_bytes(&source, &constants) {
-                Ok(b) => b,
-                Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
-            }
-        } else {
-            let transpile_result = match transpile_decomp(&source, Some(db)) {
-                Ok(result) => result,
-                Err(e) => {
-                    return CompileOutcome::CompileError(format!(
-                        "Decomp transpile error: {}",
-                        e
-                    ));
-                }
-            };
-            match compile(
-                &transpile_result.source,
-                db,
-                &constants,
-                transpile_result.binary_quirks,
-            ) {
-                Ok(out) => out.bytes,
-                Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
-            }
-        };
-        if let Some(parent) = binary_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if std::fs::write(&binary_path, &bytes).is_err() {
-            return CompileOutcome::IoError(format!(
-                "Failed to seed reference binary {}",
-                binary_path.display()
-            ));
-        }
-        return CompileOutcome::Match;
-    };
-    let expected_hash = sha256_hex(&expected_bytes);
-
     let decomp_root = get_pokeplatinum_root();
+    let Some(expected_hash) = known_field_script_hash(
+        known_hashes::POKEPLATINUM_FIELD_SCRIPT_HASHES,
+        &decomp_root,
+        script_path,
+    ) else {
+        return CompileOutcome::MissingExpectedHash(script_path.to_path_buf());
+    };
     let constants = clone_map_events(base_constants, &decomp_root, script_path);
 
     let is_levelscript = is_levelscript_source(&source);
@@ -390,7 +349,7 @@ fn compile_single_script(
         CompileOutcome::HashMismatch {
             expected_hash,
             actual_hash,
-            expected_size: expected_bytes.len(),
+            expected_size: 0,
             actual_size: actual_bytes.len(),
         }
     }
@@ -540,10 +499,10 @@ fn bulk_compile_scripts(
             CompileOutcome::CompileError(_) => {
                 result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
             }
-            CompileOutcome::MissingExpectedBinary(_) => {
+            CompileOutcome::MissingExpectedHash(_) => {
                 result
                     .stats
-                    .missing_binaries
+                    .missing_hashes
                     .fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::IoError(_) => {
@@ -589,10 +548,10 @@ fn bulk_round_trip_binaries(
             CompileOutcome::CompileError(_) => {
                 result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
             }
-            CompileOutcome::MissingExpectedBinary(_) => {
+            CompileOutcome::MissingExpectedHash(_) => {
                 result
                     .stats
-                    .missing_binaries
+                    .missing_hashes
                     .fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::IoError(_) => {
@@ -638,10 +597,10 @@ fn bulk_compile_dspre_scripts(
             CompileOutcome::CompileError(_) => {
                 result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
             }
-            CompileOutcome::MissingExpectedBinary(_) => {
+            CompileOutcome::MissingExpectedHash(_) => {
                 result
                     .stats
-                    .missing_binaries
+                    .missing_hashes
                     .fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::IoError(_) => {
@@ -677,7 +636,7 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
     let matches = stats.matches.load(Ordering::Relaxed) as u64;
     let hash_mismatches = stats.hash_mismatches.load(Ordering::Relaxed) as u64;
     let compile_errors = stats.compile_errors.load(Ordering::Relaxed) as u64;
-    let missing_binaries = stats.missing_binaries.load(Ordering::Relaxed) as u64;
+    let missing_hashes = stats.missing_hashes.load(Ordering::Relaxed) as u64;
     let io_errors = stats.io_errors.load(Ordering::Relaxed) as u64;
 
     println!();
@@ -702,9 +661,9 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
         100.0 * to_f64_count(compile_errors) / total_f
     );
     println!(
-        "Missing binaries:     {:>4} ({:>5.1}%)",
-        missing_binaries,
-        100.0 * to_f64_count(missing_binaries) / total_f
+        "Missing hashes:       {:>4} ({:>5.1}%)",
+        missing_hashes,
+        100.0 * to_f64_count(missing_hashes) / total_f
     );
     println!(
         "IO errors:            {:>4} ({:>5.1}%)",
@@ -735,16 +694,20 @@ fn print_bulk_compile_report(name: &str, result: &BulkCompileResult, verbose: bo
                         actual_size,
                         ..
                     } => {
-                        println!(
-                            "  {} - HASH MISMATCH (expected {} bytes, got {} bytes)",
-                            name, expected_size, actual_size
-                        );
+                        if *expected_size == 0 {
+                            println!("  {} - HASH MISMATCH (got {} bytes)", name, actual_size);
+                        } else {
+                            println!(
+                                "  {} - HASH MISMATCH (expected {} bytes, got {} bytes)",
+                                name, expected_size, actual_size
+                            );
+                        }
                     }
                     CompileOutcome::CompileError(msg) => {
                         println!("  {} - COMPILE ERROR: {}", name, msg);
                     }
-                    CompileOutcome::MissingExpectedBinary(path) => {
-                        println!("  {} - MISSING BINARY: {}", name, path.display());
+                    CompileOutcome::MissingExpectedHash(path) => {
+                        println!("  {} - MISSING HASH: {}", name, path.display());
                     }
                     CompileOutcome::IoError(msg) => {
                         println!("  {} - IO ERROR: {}", name, msg);
@@ -1141,6 +1104,7 @@ fn test_clone_map_events_does_not_mutate_base_constants() {
     );
 }
 
+/// Compile a single pokeheartgold script and compare against its built reference binary.
 fn compile_heartgold_single_script(
     script_path: &Path,
     db: &DatabaseV2,
@@ -1157,10 +1121,18 @@ fn compile_heartgold_single_script(
     let decomp_root = get_pokeheartgold_root();
     let constants = clone_map_events(base_constants, &decomp_root, script_path);
 
-    if is_levelscript {
+    let Some(expected_hash) = known_field_script_hash(
+        known_hashes::POKEHEARTGOLD_FIELD_SCRIPT_HASHES,
+        &decomp_root,
+        script_path,
+    ) else {
+        return CompileOutcome::MissingExpectedHash(script_path.to_path_buf());
+    };
+
+    let actual_bytes = if is_levelscript {
         match compile_levelscript_assembly_to_bytes(&source, &constants) {
-            Ok(_) => CompileOutcome::Match, // Compiled successfully
-            Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
+            Ok(bytes) => bytes,
+            Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
         }
     } else {
         let transpile_result = match transpile_decomp(&source, Some(db)) {
@@ -1175,8 +1147,20 @@ fn compile_heartgold_single_script(
             &constants,
             transpile_result.binary_quirks,
         ) {
-            Ok(_) => CompileOutcome::Match, // Compiled successfully
-            Err(e) => CompileOutcome::CompileError(format!("{:?}", e)),
+            Ok(out) => out.bytes,
+            Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
+        }
+    };
+
+    let actual_hash = sha256_hex(&actual_bytes);
+    if actual_hash == expected_hash {
+        CompileOutcome::Match
+    } else {
+        CompileOutcome::HashMismatch {
+            expected_hash,
+            actual_hash,
+            expected_size: 0,
+            actual_size: actual_bytes.len(),
         }
     }
 }
@@ -1207,13 +1191,21 @@ fn bulk_compile_heartgold_scripts(
             CompileOutcome::Match => {
                 result.stats.matches.fetch_add(1, Ordering::Relaxed);
             }
+            CompileOutcome::HashMismatch { .. } => {
+                result.stats.hash_mismatches.fetch_add(1, Ordering::Relaxed);
+            }
             CompileOutcome::CompileError(_) => {
                 result.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            CompileOutcome::MissingExpectedHash(_) => {
+                result
+                    .stats
+                    .missing_hashes
+                    .fetch_add(1, Ordering::Relaxed);
             }
             CompileOutcome::IoError(_) => {
                 result.stats.io_errors.fetch_add(1, Ordering::Relaxed);
             }
-            _ => {}
         }
 
         result.outcomes.lock().unwrap().insert(script_name, outcome);
@@ -1245,15 +1237,7 @@ fn run_heartgold_scripts_test(verbose: bool) -> BulkCompileResult {
 #[test]
 fn test_bulk_compile_heartgold_scripts() {
     let result = run_heartgold_scripts_test(false);
-    // Just report stats, don't fail - no reference binaries exist
-    let matches = result.stats.matches.load(Ordering::Relaxed) as u64;
-    let total = result.stats.total as u64;
-    println!(
-        "HeartGold decomp compile: {}/{} ({:.1}%)",
-        matches,
-        total,
-        percent(matches, total)
-    );
+    assert_100_percent_match(&result, "HeartGold decomp scripts");
 }
 
 #[test]
