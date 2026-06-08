@@ -348,15 +348,20 @@ pub(crate) fn compile_file_internal(
                 BinaryQuirk::default(),
             ),
             "s" => {
-                let result = transpiler::transpile_decomp(&source, Some(db)).map_err(|e| {
-                    CompileFailure::with_source(
-                        input,
-                        &source,
-                        CompileError::Transpile {
-                            message: format!("Decomp transpile error at line {}: {}", e.line, e),
-                        },
-                    )
-                })?;
+                let result =
+                    transpiler::transpile_decomp(&source, Some(db), Some(&workspace.project_path))
+                        .map_err(|e| {
+                            CompileFailure::with_source(
+                                input,
+                                &source,
+                                CompileError::Transpile {
+                                    message: format!(
+                                        "Decomp transpile error at line {}: {}",
+                                        e.line, e
+                                    ),
+                                },
+                            )
+                        })?;
                 (result.source, result.binary_quirks)
             }
             _ => {

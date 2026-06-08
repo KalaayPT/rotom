@@ -2615,6 +2615,11 @@ script Test #1:
         let db = create_test_db();
         let mut constants = crate::database::ConstantDb::new();
         constants.load_from_db(db);
+        let mut symbols = uxie::SymbolTable::new();
+        symbols
+            .load_database_var_flag_constants(crate::database::DatabaseV2::test_platinum_path())
+            .unwrap();
+        constants.load_dspre_symbols(symbols);
 
         let source = r"
 script Test #1:
@@ -2872,7 +2877,7 @@ TestLabel:
         }
 
         let source = std::fs::read_to_string(&script_path).unwrap();
-        let transpiled = crate::transpiler::decomp::transpile(&source, Some(db))
+        let transpiled = crate::transpiler::decomp::transpile(&source, Some(db), None)
             .expect("decomp transpile should succeed");
 
         let lexer = crate::compiler::Lexer::new(&transpiled.source);

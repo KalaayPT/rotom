@@ -6,7 +6,7 @@ use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use uxie::Workspace;
+use uxie::{GameLanguage, Workspace};
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::config::{ProjectTypeConfig, RotomConfig};
@@ -604,16 +604,14 @@ fn load_project_database_and_constants(
             constant_cache_rebuilt = rebuilt;
         }
         ProjectTypeConfig::Dspre => {
-            let ws = Workspace::open(root).map_err(|source| ProjectError::Io {
-                action: "Failed to open DSPRE workspace",
-                path: root.to_path_buf(),
-                source,
-            })?;
-            let language = ws.language;
-            let _ = constants.load_dspre_symbols((*ws.symbols).clone());
-            let _ = constants
-                .load_dspre_text_archives(root, language)
-                .map_err(ProjectError::from)?;
+            let language = if let Ok(ws) = Workspace::open(root) {
+                let language = ws.language;
+                let _ = constants.load_dspre_symbols((*ws.symbols).clone());
+                language
+            } else {
+                uxie::GameLanguage::English
+            };
+            let _ = constants.load_dspre_text_archives(root, language);
         }
         ProjectTypeConfig::HgEngine => {
             let mut ws = Workspace::open(root).map_err(|source| ProjectError::Io {

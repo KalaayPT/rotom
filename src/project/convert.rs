@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde_json::Value;
-use uxie::{GameFamily, Workspace};
+use uxie::{GameFamily, GameLanguage, Workspace};
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::compile::{dspre_binary_path_for_script, update_decompile_state};
@@ -410,13 +410,13 @@ pub fn convert_project(
             }
         }
         ProjectTypeConfig::Dspre => {
-            let ws = Workspace::open(root).map_err(|source| ProjectError::Io {
-                action: "Failed to open DSPRE workspace",
-                path: root.to_path_buf(),
-                source,
-            })?;
-            let language = ws.language;
-            let _ = constants.load_dspre_symbols((*ws.symbols).clone());
+            let language = if let Ok(ws) = Workspace::open(root) {
+                let language = ws.language;
+                let _ = constants.load_dspre_symbols((*ws.symbols).clone());
+                language
+            } else {
+                uxie::GameLanguage::English
+            };
             let _ = constants
                 .load_dspre_text_archives(root, language)
                 .map_err(ProjectError::from)?;
@@ -476,13 +476,15 @@ pub fn convert_project(
         } else {
             let output = input.with_extension("rotom");
             let mut converted = match config.workspace.project_type {
-                ProjectTypeConfig::Decomp => transpiler::transpile_decomp(&source, db.as_ref())
-                    .map(|result| result.source)
-                    .map_err(|error| ProjectError::ConvertDecomp {
-                        path: input.clone(),
-                        line: error.line,
-                        message: error.to_string(),
-                    })?,
+                ProjectTypeConfig::Decomp => {
+                    transpiler::transpile_decomp(&source, db.as_ref(), Some(root))
+                        .map(|result| result.source)
+                        .map_err(|error| ProjectError::ConvertDecomp {
+                            path: input.clone(),
+                            line: error.line,
+                            message: error.to_string(),
+                        })?
+                }
                 _ => continue,
             };
             if let Some(include_path) = config.global_include_path() {

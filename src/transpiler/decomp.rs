@@ -32,6 +32,7 @@
 //! ```
 
 use std::fmt::Write;
+use std::path::Path;
 
 use crate::BinaryQuirk;
 use crate::autovar::is_autovar_param;
@@ -117,7 +118,15 @@ struct RenderState {
 pub fn transpile(
     input: &str,
     db: Option<&crate::database::DatabaseV2>,
+    decomp_root: Option<&Path>,
 ) -> Result<TranspileResult, TranspileError> {
+    let expanded;
+    let input = if let Some(root) = decomp_root {
+        expanded = preexpand_generated_includes(input, root);
+        &expanded as &str
+    } else {
+        input
+    };
     let prepass = collect_prepass_data(input, db);
     render_transpile_body(input, &prepass, db)
 }
@@ -236,6 +245,7 @@ fn render_label_line(
     Ok(())
 }
 
+/// Render one parsed decomp statement into Rotoscript output.
 fn process_content_line(
     statement: &str,
     inline_comment: Option<&str>,
@@ -711,6 +721,7 @@ fn resolve_opcode_alias(db: &crate::database::DatabaseV2, cmd_name: &str) -> Opt
         .map(|(name, _)| name.clone())
 }
 
+/// Rewrites shortened decomp macro calls into Rotom's required-first source shape.
 fn reorder_decomp_args_to_binary(
     cmd_name: &str,
     args_str: &str,
@@ -778,6 +789,93 @@ fn reorder_decomp_args_to_binary(
 
     let final_args: Vec<&str> = result.into_iter().flatten().collect();
     final_args.join(", ")
+}
+
+/// Pre-expand build-generated `#include` directives before the main transpile
+/// pass so that the resulting `ScriptEntry` calls go through the normal
+/// prepass and get converted to rotom jump-table format.
+///
+/// Two includes are handled, mirroring the C generator tools exactly:
+///
+/// `res/trainers/trainer_scripts.h` (`trainerproc`):
+///   N × `ScriptEntry Battles_Trainer` (one per trainer JSON),
+///   then `ScriptEntry Battles_ApproachingTrainer`, then `ScriptEntryEnd`.
+///
+/// `res/items/hidden_item_scripts.h` (`itemproc`):
+///   (maxScriptID + 1) × `ScriptEntry HiddenItems_Item` derived from the
+///   `script` field of `gHiddenItems` in `include/data/field/hidden_items.h`,
+///   then `ScriptEntryEnd`.
+fn preexpand_generated_includes(input: &str, decomp_root: &Path) -> String {
+    if !input.contains("res/trainers/trainer_scripts.h")
+        && !input.contains("res/items/hidden_item_scripts.h")
+    {
+        return input.to_owned();
+    }
+
+    let mut out = String::with_capacity(input.len() + 4096);
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if let Some(replacement) = expand_one_generated_include(trimmed, decomp_root) {
+            out.push_str(&replacement);
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn expand_one_generated_include(include_line: &str, decomp_root: &Path) -> Option<String> {
+    let path = include_line
+        .strip_prefix("#include \"")?
+        .strip_suffix('"')?;
+
+    match path {
+        "res/trainers/trainer_scripts.h" => {
+            let trainer_count = std::fs::read_dir(decomp_root.join("res/trainers/data"))
+                .ok()?
+                .filter_map(std::result::Result::ok)
+                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
+                .count();
+            if trainer_count == 0 {
+                return None;
+            }
+            let mut out = String::new();
+            for _ in 0..trainer_count {
+                out.push_str("    ScriptEntry Battles_Trainer\n");
+            }
+            out.push_str("    ScriptEntry Battles_ApproachingTrainer\n");
+            out.push_str("    ScriptEntryEnd\n");
+            Some(out)
+        }
+        "res/items/hidden_item_scripts.h" => {
+            let header =
+                std::fs::read_to_string(decomp_root.join("include/data/field/hidden_items.h"))
+                    .ok()?;
+            let max_id = header
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    if !line.starts_with("HIDDEN_ITEM_ENTRY(") {
+                        return None;
+                    }
+                    // Format: HIDDEN_ITEM_ENTRY(item, qty, range, script),
+                    // rfind ')' then rfind ',' before it to get the script field.
+                    let close = line.rfind(')')?;
+                    let before_close = &line[..close];
+                    let last_comma = before_close.rfind(',')?;
+                    before_close[last_comma + 1..].trim().parse::<usize>().ok()
+                })
+                .max()?;
+            let mut out = String::new();
+            for _ in 0..=max_id {
+                out.push_str("    ScriptEntry HiddenItems_Item\n");
+            }
+            out.push_str("    ScriptEntryEnd\n");
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 fn lookahead_for_end_movement(lines: &[&str], start_idx: usize) -> bool {
@@ -994,7 +1092,7 @@ Helper:
     Return
 ";
 
-        let err = transpile(input, None).expect_err("duplicate labels should error");
+        let err = transpile(input, None, None).expect_err("duplicate labels should error");
         assert!(
             err.message.contains("duplicate label definition 'Main'"),
             "unexpected error message: {}",
@@ -1094,7 +1192,7 @@ MoveLabel:
     End
 ";
 
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("action MoveLabel"));
         assert!(
             output
@@ -1116,7 +1214,7 @@ Function1:
 Function2:
     End
 ";
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("script Function1 #1:"));
         assert!(output.source.contains("script Function2 #2:"));
     }
@@ -1134,7 +1232,7 @@ MainFunc:
 HelperLabel:
     Return
 ";
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("script MainFunc #1:"));
         assert!(output.source.contains("HelperLabel:"));
         assert!(!output.source.contains("script HelperLabel"));
@@ -1155,7 +1253,7 @@ TestMovement:
     WalkNorth
     EndMovement
 ";
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("script MainFunc #1:"));
         assert!(output.source.contains("action TestMovement"));
         assert!(output.source.contains("    WalkNorth"));
@@ -1176,7 +1274,7 @@ TestMovement:
     WalkNorth
     EndMovement
 ";
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("script MainFunc #1:"));
         assert!(output.source.contains("action TestMovement"));
         assert!(output.source.contains("    WalkNorth"));
@@ -1194,7 +1292,7 @@ TestMovement:
 Test:
     End
 "#;
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("#include \"macros/scrcmd.inc\""));
         assert!(output.source.contains("#include \"constants/map.h\""));
         assert!(output.source.contains("script Test #1:"));
@@ -1211,7 +1309,7 @@ Test:
     End
 ";
 
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("alias 7 as TEST_VALUE"));
         assert!(output.source.contains("alias 0x2A as TEST_HEX"));
     }
@@ -1226,7 +1324,7 @@ Test:
     End
 ";
 
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("alias ITEM_POKE_BALL as TEST_VALUE"));
     }
 
@@ -1240,7 +1338,7 @@ Test:
     End
 ";
 
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("// #define TEST_VALUE (1 << 2)"));
         assert!(!output.source.contains("alias (1 << 2) as TEST_VALUE"));
     }
@@ -1255,7 +1353,7 @@ Test:
     End
 ";
 
-        let err = transpile(input, None).expect_err("function-like macro should fail");
+        let err = transpile(input, None, None).expect_err("function-like macro should fail");
         assert!(err.message.contains("Function-like macro 'TEST_VALUE(x)'"));
         assert_eq!(err.line, 1);
     }
@@ -1270,7 +1368,7 @@ Test:
     End
 ";
 
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(!output.source.contains("#pragma"));
         assert!(output.source.contains("script Test #1:"));
     }
@@ -1296,7 +1394,7 @@ Test:
     ShowYesNoMenu VAR_RESULT
     End
 ";
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("    SetVar VAR_RESULT, 5"));
         assert!(output.source.contains("    Message 0"));
         assert!(output.source.contains("    ShowYesNoMenu VAR_RESULT"));
@@ -1330,7 +1428,7 @@ _01C8:
 _01E4:
     Return
 ";
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("    CopyVar 0x8008, VAR_UNK_412D"));
         assert!(output.source.contains("    CompareVarValue 0x8008, 0"));
         assert!(output.source.contains("    JumpIf EQUAL, _01C8"));
@@ -1372,7 +1470,7 @@ Test:
     goto _024E
     end
 ";
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(
             output
                 .source
@@ -1399,7 +1497,7 @@ Test:
     End
 ";
 
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("// file comment"));
         assert!(
             output
@@ -1428,7 +1526,7 @@ Move2:
     WalkSouth
     EndMovement
 ";
-        let output = transpile(input, None).expect("transpile should succeed");
+        let output = transpile(input, None, None).expect("transpile should succeed");
         assert!(output.source.contains("action Move1"));
         assert!(output.source.contains("action Move2"));
     }
@@ -1457,7 +1555,7 @@ AcuityLakefront_SetWarpsLakeAcuityNormal:
     Return
 ";
 
-        let output = transpile(content, None).expect("transpile should succeed");
+        let output = transpile(content, None, None).expect("transpile should succeed");
         assert!(output.source.contains("script _0012 #2:"));
         assert!(output.source.contains("script _004E #1:"));
         assert!(output.source.contains("action _00E8"));
@@ -1481,7 +1579,7 @@ Test:
     ChooseCustomMessageWord 0, VAR_RESULT, VAR_0x8004
     End
 ";
-        let output = transpile(input, Some(db)).expect("transpile should succeed");
+        let output = transpile(input, Some(db), None).expect("transpile should succeed");
         assert!(
             output
                 .source
@@ -1502,7 +1600,7 @@ Test:
     ChooseTwoCustomMessageWords 0, VAR_RESULT, VAR_0x8000, VAR_0x8001
     End
 ";
-        let output = transpile(input, Some(db)).expect("transpile should succeed");
+        let output = transpile(input, Some(db), None).expect("transpile should succeed");
         assert!(
             output
                 .source

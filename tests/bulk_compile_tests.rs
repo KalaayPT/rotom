@@ -37,8 +37,8 @@ use rotom::database::{ConstantDb, DatabaseV2};
 use rotom::decompiler::disassembler::ScriptOutput;
 use rotom::decompiler::ir_to_source;
 use rotom::is_levelscript_path;
-use rotom::transpiler::decomp::transpile as transpile_decomp;
 use rotom::transpiler::is_levelscript_source;
+use rotom::transpiler::transpile_decomp;
 use rotom::transpiler::transpile_dspre;
 use rotom::{BinaryQuirk, compile};
 use uxie::{GameLanguage, RomHeader};
@@ -88,13 +88,6 @@ fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-fn get_pokeplatinum_root() -> PathBuf {
-    std::env::var("POKEPLATINUM_ROOT").map_or_else(
-        |_| fixture_root().join("decomp/pokeplatinum"),
-        PathBuf::from,
-    )
-}
-
 fn get_scripts_dir() -> PathBuf {
     get_pokeplatinum_root().join("res/field/scripts")
 }
@@ -132,25 +125,20 @@ fn find_levelscripts() -> Vec<PathBuf> {
     scripts
 }
 
+fn get_pokeplatinum_root() -> PathBuf {
+    fixture_root().join("decomp/pokeplatinum")
+}
+
 fn get_pokeheartgold_root() -> PathBuf {
-    std::env::var("POKEHEARTGOLD_ROOT").map_or_else(
-        |_| fixture_root().join("decomp/pokeheartgold"),
-        PathBuf::from,
-    )
+    fixture_root().join("decomp/pokeheartgold")
 }
 
 fn get_dspre_platinum_root() -> PathBuf {
-    std::env::var("DSPRE_PLATINUM_ROOT").map_or_else(
-        |_| fixture_root().join("dspre/pt_DSPRE_contents"),
-        PathBuf::from,
-    )
+    fixture_root().join("dspre/pt_DSPRE_contents")
 }
 
 fn get_dspre_heartgold_root() -> PathBuf {
-    std::env::var("DSPRE_HEARTGOLD_ROOT").map_or_else(
-        |_| fixture_root().join("dspre/hg_DSPRE_contents"),
-        PathBuf::from,
-    )
+    fixture_root().join("dspre/hg_DSPRE_contents")
 }
 
 fn get_dspre_platinum_scripts_dir() -> PathBuf {
@@ -324,7 +312,7 @@ fn compile_single_script(
             Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
         }
     } else {
-        let transpile_result = match transpile_decomp(&source, Some(db)) {
+        let transpile_result = match transpile_decomp(&source, Some(db), Some(&decomp_root)) {
             Ok(result) => result,
             Err(e) => {
                 return CompileOutcome::CompileError(format!("Decomp transpile error: {}", e));
@@ -1126,7 +1114,7 @@ fn compile_heartgold_single_script(
             Err(e) => return CompileOutcome::CompileError(format!("{:?}", e)),
         }
     } else {
-        let transpile_result = match transpile_decomp(&source, Some(db)) {
+        let transpile_result = match transpile_decomp(&source, Some(db), Some(&decomp_root)) {
             Ok(result) => result,
             Err(e) => {
                 return CompileOutcome::CompileError(format!("Decomp transpile error: {}", e));
