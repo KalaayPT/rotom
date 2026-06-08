@@ -70,11 +70,24 @@ impl<'a> Emitter<'a> {
             .collect();
         // Sort by slot ID to ensure correct ordering
         self.jump_table_slots.sort_by_key(|(slot_id, _)| *slot_id);
-        let jump_targets: Vec<String> = self
-            .jump_table_slots
-            .iter()
-            .map(|(_, func_name)| func_name.clone())
-            .collect();
+
+        // Build the jump-target list, filling gaps with the next available entry.
+        // The analysis pass already warned the user about missing slots.
+        let table_size = self.jump_table_slots.last().map_or(0, |(id, _)| *id as usize + 1);
+        let mut table: Vec<Option<String>> = vec![None; table_size];
+        for (slot_id, name) in &self.jump_table_slots {
+            table[*slot_id as usize] = Some(name.clone());
+        }
+        // Scan right-to-left: propagate each defined entry back into preceding gaps.
+        let mut next: Option<String> = None;
+        for entry in table.iter_mut().rev() {
+            if entry.is_some() {
+                next = entry.clone();
+            } else {
+                *entry = next.clone();
+            }
+        }
+        let jump_targets: Vec<String> = table.into_iter().flatten().collect();
         for func_name in jump_targets {
             // Placeholder for script offset
             self.relocations.push(Relocation {

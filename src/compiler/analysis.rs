@@ -208,9 +208,43 @@ impl<'a> Analyzer<'a> {
                 _ => {}
             }
         }
+        self.check_slot_continuity(file);
         self.collect_alias_references(file);
         self.warn_unused_aliases();
         Ok(())
+    }
+
+    fn check_slot_continuity(&mut self, file: &ScriptFile) {
+        // Collect (1-based slot id, function span) for every public header.
+        let mut slots: Vec<(u32, std::ops::Range<usize>)> = file
+            .items
+            .iter()
+            .filter_map(|item| match &item.node {
+                StatementKind::Function { headers, .. } => Some(
+                    headers
+                        .iter()
+                        .filter(|h| h.is_public)
+                        .filter_map(|h| h.id.map(|id| (id, item.span.clone())))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        slots.sort_by_key(|(id, _)| *id);
+        slots.dedup_by_key(|(id, _)| *id);
+
+        // Slots must form [1, 2, 3, …]. Warn for each missing entry.
+        for (i, (slot_id, span)) in slots.iter().enumerate() {
+            let expected = i as u32 + 1;
+            for missing in expected..*slot_id {
+                self.warnings.push(CompileWarning::MissingSlot {
+                    slot: missing,
+                    span: span.clone(),
+                });
+            }
+        }
     }
 
     fn register_alias(&mut self, stmt: &Statement) -> ParseResult<()> {

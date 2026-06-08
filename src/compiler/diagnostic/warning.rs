@@ -20,6 +20,14 @@ pub enum CompileWarning {
         #[serde(serialize_with = "serialize_range")]
         previous_span: Range<usize>,
     },
+    /// A slot ID is absent from an otherwise-contiguous run of public scripts.
+    /// The emitter fills the gap by repeating the previous script's pointer,
+    /// but the author likely forgot a header.
+    MissingSlot {
+        slot: u32,
+        #[serde(serialize_with = "serialize_range")]
+        span: Range<usize>,
+    },
     /// A segment of a message string is wider than the dialog allows.
     /// For plain strings this means dialog overflow; for `format()` strings
     /// it means `format()` will insert an extra word-wrap break within it.
@@ -35,6 +43,7 @@ impl CompileWarning {
         match self {
             Self::UnusedAlias { span, .. }
             | Self::ShadowedAlias { span, .. }
+            | Self::MissingSlot { span, .. }
             | Self::MessageLineTooLong { span, .. } => span.clone(),
         }
     }
@@ -45,6 +54,10 @@ impl CompileWarning {
             Self::ShadowedAlias { name, .. } => {
                 format!("Alias '{name}' shadows a previous alias definition")
             }
+            Self::MissingSlot { slot, .. } => format!(
+                "Script slot #{slot} is empty; the next available script's pointer will be reused. \
+                 Did you forget a header?"
+            ),
             Self::MessageLineTooLong { line_index, .. } => format!(
                 "Message line {line_index} exceeds the maximum dialog width — \
                  add explicit line breaks or wrap with format()"
