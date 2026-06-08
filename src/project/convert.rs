@@ -2,6 +2,7 @@ use crate::{
     ConstantDb, DatabaseV2, DecompileFileResult, ScriptOutput, decompile_to_ir,
     is_levelscript_path, transpiler,
 };
+use crate::compile_state::BinaryQuirk;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +11,7 @@ use serde_json::Value;
 use uxie::{GameFamily, Workspace};
 use xxhash_rust::xxh3::xxh3_64;
 
-use super::compile::{dspre_binary_path_for_script, update_decompile_state};
+use super::compile::{dspre_binary_path_for_script, seed_convert_quirks, update_decompile_state};
 use super::config::{ProjectTypeConfig, RotomConfig};
 use super::dspre_db_migration::{
     dspre_edited_db_suggests_followplat, dspre_merge_shape_diff_score, find_local_scrcmd_v1_path,
@@ -426,6 +427,7 @@ pub fn convert_project(
 
     let mut dspre_from_binary_successes = Vec::new();
     let mut plans = Vec::with_capacity(files.len());
+    let mut quirks_to_seed = Vec::new();
     for input in files {
         let relative = input.strip_prefix(root).unwrap_or(&input);
         let backup = backup_dir.join(relative);
@@ -470,15 +472,20 @@ pub fn convert_project(
                         message: error.to_string(),
                     }
                 })?;
+            if result.extra_padding > 0 {
+                quirks_to_seed.push((output.clone(), BinaryQuirk {
+                    jump_table_end_marker_count: None,
+                    levelscript_padding: Some(result.extra_padding as u8),
+                }));
+            }
             let json = serde_json::to_string_pretty(&result.levelscript)
                 .map_err(|source| ProjectError::SerializeJson { source })?;
             (output, json)
         } else {
             let output = input.with_extension("rotom");
-            let mut converted = match config.workspace.project_type {
+            let transpile_result = match config.workspace.project_type {
                 ProjectTypeConfig::Decomp => {
                     transpiler::transpile_decomp(&source, db.as_ref(), Some(root))
-                        .map(|result| result.source)
                         .map_err(|error| ProjectError::ConvertDecomp {
                             path: input.clone(),
                             line: error.line,
@@ -487,6 +494,8 @@ pub fn convert_project(
                 }
                 _ => continue,
             };
+            quirks_to_seed.push((output.clone(), transpile_result.binary_quirks));
+            let mut converted = transpile_result.source;
             if let Some(include_path) = config.global_include_path() {
                 let include_line = format!("#include \"{include_path}\"");
                 if !converted.lines().any(|line| line.trim() == include_line) {
@@ -544,6 +553,10 @@ pub fn convert_project(
     if !options.dry_run && !dspre_from_binary_successes.is_empty() {
         let db_hash = dspre_db_hash.expect("DSPRE convert records DB hash above");
         update_decompile_state(root, config, db_hash, &dspre_from_binary_successes)?;
+    }
+
+    if !options.dry_run {
+        seed_convert_quirks(root, config, &quirks_to_seed)?;
     }
 
     Ok(ConvertReport {

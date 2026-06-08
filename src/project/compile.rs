@@ -11,7 +11,7 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use super::config::{ProjectTypeConfig, RotomConfig};
 use super::error::{ProjectError, Result};
-use crate::compile_state::{COMPILER_VERSION, CompileState, FileState, FileStatus};
+use crate::compile_state::{BinaryQuirk, COMPILER_VERSION, CompileState, FileState, FileStatus};
 
 enum WorkerResult {
     Skip {
@@ -474,7 +474,9 @@ fn load_compile_session(root: &Path, config: &RotomConfig, force: bool) -> Resul
     let force_compile =
         force || state.needs_rebuild(db_hash, COMPILER_VERSION, constant_cache_rebuilt);
     if force_compile {
-        state.entries.clear();
+        // Retain Dirty entries so binary_quirks seeded by seed_convert_quirks survive
+        // the force-rebuild (force_compile already prevents skipping any file).
+        state.entries.retain(|_, v| v.status == FileStatus::Dirty);
     }
 
     Ok(CompileSession {
@@ -547,6 +549,46 @@ pub(crate) fn update_decompile_state(
     }
 
     state.mark_metadata(db_hash, COMPILER_VERSION);
+    state.save(&status_path).map_err(|source| ProjectError::Io {
+        action: "Failed to write compile state",
+        path: status_path,
+        source,
+    })
+}
+
+/// Seed the compile state with [`BinaryQuirk`]s discovered by `rotom convert`
+/// so the subsequent `rotom compile` pass produces byte-identical output
+/// without re-running the transpiler.
+///
+/// Each entry is stored as [`FileStatus::Dirty`] so the first compile always
+/// writes the binary, but the quirks are available from the very first read at
+/// lines 236-240 of this file.
+pub(crate) fn seed_convert_quirks(
+    root: &Path,
+    config: &RotomConfig,
+    entries: &[(PathBuf, BinaryQuirk)],
+) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let status_path = config.status_dir(root).join("compile-state.json");
+    let mut state =
+        CompileState::load_or_default(&status_path).map_err(|source| ProjectError::Io {
+            action: "Failed to read compile state",
+            path: status_path.clone(),
+            source,
+        })?;
+
+    for (output_path, quirks) in entries {
+        let relative = relative_project_path(root, output_path)?;
+        let source_hash = fs::read(output_path)
+            .map(|b| xxh3_64(&b))
+            .unwrap_or(0);
+        let file_state = FileState::dirty(source_hash, 0, HashMap::new()).with_quirks(*quirks);
+        state.entries.insert(relative, file_state);
+    }
+
     state.save(&status_path).map_err(|source| ProjectError::Io {
         action: "Failed to write compile state",
         path: status_path,

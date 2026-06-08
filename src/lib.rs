@@ -342,7 +342,7 @@ pub(crate) fn compile_file_internal(
         )
     } else {
         let (rotom_source, binary_quirks) = match extension.as_str() {
-            "rotom" => (source.clone(), BinaryQuirk::default()),
+            "rotom" => (source.clone(), binary_quirks),
             "script" => (
                 transpiler::transpile_dspre(&source, Some(db)),
                 BinaryQuirk::default(),
