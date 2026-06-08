@@ -18,7 +18,7 @@ pub const POKEPLATINUM_PIN: DecompPin = DecompPin {
 pub const POKEHEARTGOLD_PIN: DecompPin = DecompPin {
     name: "pokeheartgold",
     repo_url: "https://github.com/pret/pokeheartgold.git",
-    commit: "79d73f74cc41e5615ff99b23588d416e96262fc0",
+    commit: "793ebe976cd99bbb3899ae6a8c8cac4ad0b7b50f",
 };
 
 pub const ALL_PINS: &[DecompPin] = &[POKEPLATINUM_PIN, POKEHEARTGOLD_PIN];

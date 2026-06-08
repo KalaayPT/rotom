@@ -78,6 +78,7 @@ enum Commands {
         verbose: bool,
     },
 
+    /// Initialize a new Rotom project, downloading or embedding the command database and writing `rotom.toml` etc.
     Init {
         /// Project root (defaults to current directory)
         #[arg(value_name = "ROOT")]
@@ -88,6 +89,7 @@ enum Commands {
         non_interactive: bool,
     },
 
+    /// Convert legacy script files to .rotom/.json format
     Convert {
         /// Project root (defaults to current directory or nearest rotom.toml ancestor)
         #[arg(value_name = "ROOT")]

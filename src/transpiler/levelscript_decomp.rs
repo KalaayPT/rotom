@@ -93,7 +93,7 @@ pub fn transpile_levelscript(
 
         if let Some(rest) = trimmed.strip_prefix("InitScriptEntry_OnTransition") {
             let script_id =
-                parse_script_id(rest.trim(), constants).map_err(|e| TranspileError {
+                parse_script_id(first_arg(rest), constants).map_err(|e| TranspileError {
                     message: format!("InitScriptEntry_OnTransition: {}", e),
                     line: line_num,
                 })?;
@@ -105,7 +105,7 @@ pub fn transpile_levelscript(
 
         if let Some(rest) = trimmed.strip_prefix("InitScriptEntry_OnLoad") {
             let script_id =
-                parse_script_id(rest.trim(), constants).map_err(|e| TranspileError {
+                parse_script_id(first_arg(rest), constants).map_err(|e| TranspileError {
                     message: format!("InitScriptEntry_OnLoad: {}", e),
                     line: line_num,
                 })?;
@@ -117,7 +117,7 @@ pub fn transpile_levelscript(
 
         if let Some(rest) = trimmed.strip_prefix("InitScriptEntry_OnResume") {
             let script_id =
-                parse_script_id(rest.trim(), constants).map_err(|e| TranspileError {
+                parse_script_id(first_arg(rest), constants).map_err(|e| TranspileError {
                     message: format!("InitScriptEntry_OnResume: {}", e),
                     line: line_num,
                 })?;
@@ -233,6 +233,10 @@ fn parse_u8_value(arg: &str) -> Result<u8, String> {
 
 fn parse_u16_value(arg: &str, constants: Option<&ConstantDb>) -> Result<u16, String> {
     parse_int_literal::<u16>(arg, constants)
+}
+
+fn first_arg(args: &str) -> &str {
+    args.split(',').next().unwrap_or("").trim()
 }
 
 fn parse_script_id(arg: &str, constants: Option<&ConstantDb>) -> Result<u32, String> {
