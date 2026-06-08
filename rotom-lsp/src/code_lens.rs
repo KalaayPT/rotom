@@ -283,9 +283,12 @@ fn emit_lenses(
     for item in items {
         match &item.node {
             StatementKind::Function { headers, body, .. } => {
+                let mut seen = HashSet::new();
                 for header in headers {
-                    let locations = refs.get(&header.name).map_or(&[] as &[_], |v| v.as_slice());
-                    lenses.push(make_ref_lens(&item.span, map, uri, locations));
+                    if seen.insert(header.name.as_str()) {
+                        let locations = refs.get(&header.name).map_or(&[] as &[_], |v| v.as_slice());
+                        lenses.push(make_ref_lens(&item.span, map, uri, locations));
+                    }
                 }
                 emit_lenses(body, uri, map, refs, lenses);
             }

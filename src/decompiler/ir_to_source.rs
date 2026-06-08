@@ -88,6 +88,33 @@ fn format_command_args(
         .collect()
 }
 
+/// Format a sorted list of 1-based slot IDs as a compact header specifier.
+///
+/// A single ID emits `#N`. Multiple IDs emit `#[...]`, grouping consecutive
+/// runs as ranges: `[1-3, 5]` instead of `[1, 2, 3, 5]`.
+fn format_slot_list(ids: &[u32]) -> String {
+    if ids.len() == 1 {
+        return format!("#{}", ids[0]);
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < ids.len() {
+        let start = ids[i];
+        let mut end = start;
+        while i + 1 < ids.len() && ids[i + 1] == ids[i] + 1 {
+            i += 1;
+            end = ids[i];
+        }
+        if end == start {
+            parts.push(format!("{start}"));
+        } else {
+            parts.push(format!("{start}-{end}"));
+        }
+        i += 1;
+    }
+    format!("#[{}]", parts.join(", "))
+}
+
 fn normal_script_to_source(
     items: &[TopLevelItem],
     db: &DatabaseV2,
@@ -102,14 +129,28 @@ fn normal_script_to_source(
 
         match item {
             TopLevelItem::Function(func) => {
-                for header in &func.headers {
-                    if header.is_public {
-                        if let Some(id) = header.id {
-                            let _ = writeln!(output, "script {} #{}:", header.name, id + 1);
-                        } else {
-                            let _ = writeln!(output, "script {}:", header.name);
-                        }
-                    } else {
+                // Collect public headers with IDs vs. those without (private labels).
+                // IDs are stored 0-based; convert to 1-based for display.
+                let public_ids: Vec<u32> = func
+                    .headers
+                    .iter()
+                    .filter(|h| h.is_public)
+                    .filter_map(|h| h.id.map(|id| id + 1))
+                    .collect();
+                let has_private = func.headers.iter().any(|h| !h.is_public);
+
+                if !public_ids.is_empty() {
+                    let name = &func
+                        .headers
+                        .iter()
+                        .find(|h| h.is_public)
+                        .unwrap()
+                        .name;
+                    let slot_list = format_slot_list(&public_ids);
+                    let _ = writeln!(output, "script {} {}:", name, slot_list);
+                }
+                if has_private {
+                    for header in func.headers.iter().filter(|h| !h.is_public) {
                         let _ = writeln!(output, "{}:", header.name);
                     }
                 }

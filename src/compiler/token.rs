@@ -51,6 +51,8 @@ pub enum TokenType {
     Assign,       // '='
     LParen,       // '('
     RParen,       // ')'
+    LBracket,     // '['
+    RBracket,     // ']'
     And,          // "&&" or "and"
     Or,           // "||" or "or"
     Not,          // "!"
@@ -155,6 +157,8 @@ impl fmt::Display for TokenType {
             TokenType::Assign => write!(f, "'='"),
             TokenType::LParen => write!(f, "'('"),
             TokenType::RParen => write!(f, "')'"),
+            TokenType::LBracket => write!(f, "'['"),
+            TokenType::RBracket => write!(f, "']'"),
 
             // --- Operators ---
             TokenType::Equal => write!(f, "'=='"),

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde_json::Value;
-use uxie::{GameFamily, GameLanguage, Workspace};
+use uxie::{GameFamily, Workspace};
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::compile::{dspre_binary_path_for_script, update_decompile_state};

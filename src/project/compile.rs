@@ -6,7 +6,7 @@ use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use uxie::{GameLanguage, Workspace};
+use uxie::Workspace;
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::config::{ProjectTypeConfig, RotomConfig};

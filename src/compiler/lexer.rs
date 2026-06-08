@@ -180,6 +180,8 @@ impl<'a> Lexer<'a> {
             }
             Some('(') => TokenType::LParen,
             Some(')') => TokenType::RParen,
+            Some('[') => TokenType::LBracket,
+            Some(']') => TokenType::RBracket,
             Some('&') => {
                 if matches!(self.chars.peek(), Some('&')) {
                     self.read_char();

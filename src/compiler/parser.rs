@@ -323,22 +323,56 @@ impl<'a> Parser<'a> {
                 unreachable!()
             };
 
-            // Require #N for script declarations
+            // Require #N or #[list] for script declarations
             self.expect_advance(&TokenType::Hash)?;
-            let id_token = self.expect_advance(&TokenType::Num(0))?;
-            let TokenType::Num(num) = id_token.kind else {
-                unreachable!()
+
+            let ids: Vec<u32> = if self.current_token_is(&TokenType::LBracket) {
+                // #[N, M-P, Q, ...] — bracketed list with optional ranges
+                self.advance(); // consume '['
+                let mut ids = Vec::new();
+                loop {
+                    let lo_token = self.expect_advance(&TokenType::Num(0))?;
+                    let TokenType::Num(lo) = lo_token.kind else { unreachable!() };
+                    let lo = lo as u32;
+                    if self.current_token_is(&TokenType::Minus) {
+                        self.advance(); // consume '-'
+                        let hi_token = self.expect_advance(&TokenType::Num(0))?;
+                        let TokenType::Num(hi) = hi_token.kind else { unreachable!() };
+                        let hi = hi as u32;
+                        if hi < lo {
+                            return Err(parse_error(
+                                lo_token.span,
+                                format!("Range {lo}-{hi} is empty: end must be >= start"),
+                            ));
+                        }
+                        ids.extend(lo..=hi);
+                    } else {
+                        ids.push(lo);
+                    }
+                    if self.current_token_is(&TokenType::Comma) {
+                        self.advance(); // consume ','
+                    } else {
+                        break;
+                    }
+                }
+                self.expect_advance(&TokenType::RBracket)?;
+                ids
+            } else {
+                let id_token = self.expect_advance(&TokenType::Num(0))?;
+                let TokenType::Num(num) = id_token.kind else { unreachable!() };
+                vec![num as u32]
             };
-            let id = num as u32;
 
             // Require colon after header
             self.expect_advance(&TokenType::Colon)?;
 
-            headers.push(FunctionHeader {
-                name,
-                id: Some(id),
-                is_public: true,
-            });
+            for id in ids {
+                headers.push(FunctionHeader {
+                    name: name.clone(),
+                    id: Some(id),
+                    is_public: true,
+                });
+            }
 
             // Skip newlines between stacked headers
             while self.current_token_is(&TokenType::Newline) {
