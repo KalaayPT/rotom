@@ -182,6 +182,7 @@ impl RotomServer {
             .unwrap_or(false)
     }
 
+    /// Load database, constants, and optional Uxie workspace for one project root.
     fn load_project_state(
         root: &std::path::Path,
         config: &RotomConfig,
@@ -217,10 +218,13 @@ impl RotomServer {
                 uxie::Workspace::open(root).ok().map(Arc::new)
             }
             ProjectTypeConfig::Dspre => {
-                let language = uxie::RomHeader::open(root)
-                    .map_or(uxie::game::GameLanguage::English, |h| h.detect_language());
-                let _ = constants.load_dspre_text_archives(root, language);
-                uxie::Workspace::open(root).ok().map(Arc::new)
+                if let Ok(ws) = uxie::Workspace::open(root) {
+                    let _ = constants.load_dspre_symbols((*ws.symbols).clone());
+                    let _ = constants.load_dspre_text_archives(root, ws.language);
+                    Some(Arc::new(ws))
+                } else {
+                    None
+                }
             }
             ProjectTypeConfig::HgEngine => {
                 if let Ok(mut ws) = uxie::Workspace::open(root) {

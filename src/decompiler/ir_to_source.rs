@@ -19,6 +19,7 @@ pub fn ir_to_source(
 
 /// Map a parameter name from the command database to a Uxie constant family.
 /// Not perfect given how variable the naming used by the decomps is.
+/// Map a command parameter name to the constant family used for reverse lookup.
 fn param_semantic_family(param_name: &str) -> Option<uxie::ConstantFamily> {
     match param_name.to_ascii_lowercase().as_str() {
         "item" | "itemid" | "item_id" => Some(uxie::ConstantFamily::Item),
@@ -28,6 +29,9 @@ fn param_semantic_family(param_name: &str) -> Option<uxie::ConstantFamily> {
         "trainer" | "trainerid" | "trainer_id" => Some(uxie::ConstantFamily::Trainer),
         "trainerclass" | "trainer_class" => Some(uxie::ConstantFamily::TrainerClass),
         "location" | "mapsec" => Some(uxie::ConstantFamily::Location),
+        "event_id" | "eventid" | "localid" | "local_id" | "object_id" | "objectid" => {
+            Some(uxie::ConstantFamily::EventId)
+        }
         "flag" | "flagid" | "flag_id" | "shiny_flag" => Some(uxie::ConstantFamily::Flag),
         "var" | "variable" | "var_0" | "var_1" | "var_2" | "var_3" | "var_4" | "var_5"
         | "var_6" | "varid" | "var_id" | "destvarid" | "dest_var_id" | "variable_1"
@@ -52,6 +56,10 @@ fn format_arg(arg: &Arg, param_name: Option<&str>, constants: Option<&ConstantDb
                 && let Some(constants) = constants
                 && let Some(resolved) = constants.resolve_value_to_name(i64::from(*v), family)
             {
+                return resolved;
+            } else if let Some(resolved) = constants.and_then(|c| {
+                c.resolve_value_to_name(i64::from(*v), uxie::ConstantFamily::Variable)
+            }) {
                 return resolved;
             }
             if *v >= 0x4000 {
@@ -339,6 +347,17 @@ mod tests {
         assert!(
             source.contains("SetFlag FLAG_TEST"),
             "expected symbolic flag, got: {source}"
+        );
+    }
+
+    #[test]
+    fn test_event_id_args_format_symbolically() {
+        let mut constants = ConstantDb::new();
+        constants.load_decomp_symbols(".", uxie::SymbolTable::new());
+
+        assert_eq!(
+            format_arg(&Arg::Value(0xFF), Some("event_id"), Some(&constants)),
+            "LOCALID_PLAYER"
         );
     }
 }
