@@ -5,6 +5,8 @@
 **rotom** is a high-level scripting language and toolchain for Pokémon Generation 4 (Diamond/Pearl/Platinum/HGSS) romhacking/modding projects.
 Inspired by [poryscript](https://github.com/huderlem/poryscript) for Gen 3.
 
+> [!IMPORTANT]
+> Rotom is still a work in progress. Expect things to change and break.
 
 ---
 
@@ -42,16 +44,24 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - LSP, syntax highlighting, editor extensions, error reporting
 - Constant loading from database, text banks (DSPRE) and decomp projects' JSON and header files
 - Full test infrastructure with DSPRE and decomp fixtures
+- Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT` (yoinked from decomps)
 
-### Roadmap
+### To Do
+- Vendor JSON DBs for CI purposes
 - Resolve GlobalScript IDs to script files and integrate in workspace symbol table
-- Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT`
+- Format string argument support, e.g. `format("Hello, {}!", BufferPlayerName)` for easy string formatting
 - Graph colouring for variable liveness analysis, which will allow for:
   - Variable allocation for automatic assignment
   - Complex expressions in conditions (`if x + 1 == 5`)
   - Fully-featured for loops, will need graph colouring for counting
 - Decompiler pattern matching for `match`/`while`/`if` reconstruction
 - Derive includes for utilized text banks from map headers and GlobalScript table (DSPRE)
+
+### Ideas from poryscript that havent made it to rotom yet (may or may not be implemented)
+- installing it as a submodule
+- jetbrains plugin
+- implicit truthiness, e.g. `if x` is equivalent to `if x != 0`
+- inline action definitions, e.g. `ApplyMovement LOCALID_PLAYER, action(WalkFastEast 2)` or similar
 
 ---
 
@@ -107,7 +117,7 @@ Editor integrations for VS Code, Zed, and Neovim are being developed alongside R
 
 ```rotom
 // === Constants ===
-alias 0x800C as VAR_RESULT
+alias 0x800C as VAR_RESULT // this is just an example, these constants are both included in the standard database
 alias 0x800D as VAR_LASTTALKED
 
 // === Public script (in jump table) ===
@@ -237,6 +247,8 @@ script Explanation #1:
     WaitButton
     End
 ```
+
+The formatter also respects manually inserted line breaks, so if you dont like a certain line break placement or want to end a line early, you can insert `\n` or `\r` to force a line break at that point.
 
 > [!IMPORTANT]
 > String literals and `format()` only work when compiling as part of a project; single-file compilation doesn't have the context to know where to store the text.

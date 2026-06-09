@@ -2,6 +2,8 @@
 
 Any contributions to the Rotom project are very welcome! I don't have much time to work on this myself, so I appreciate any help. Please follow the guidelines below to make the process smoother.
 
+The To-Do list in the README can be used as inspiration for what to work on.
+
 ## Where Things Live
 
 - `rotom` is the compiler, decompiler, CLI, project tooling, and LSP server.
