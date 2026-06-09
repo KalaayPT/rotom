@@ -10,7 +10,7 @@ Behavioral guidelines for agents working on this project.
 
 Before implementing:
 - State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them — don't pick silently.
+- If multiple interpretations exist, present them; don't pick silently.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
@@ -34,7 +34,7 @@ When editing existing code:
 - Don't "improve" adjacent code, comments, or formatting.
 - Don't refactor things that aren't broken.
 - Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it — don't delete it.
+- If you notice unrelated dead code, mention it; don't delete it.
 
 When your changes create orphans:
 - Remove imports/variables/functions that YOUR changes made unused.
@@ -67,7 +67,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 **When a dependency already solves the problem, don't rewrite it.**
 
 - Before adding evaluators, parsers, or resolvers in your crate, search the upstream crate's public API. It probably already has what you need.
-- If an upstream sister crate's method is private, make it public or add a thin public seam there — never copy the logic into your crate.
+- If an upstream sister crate's method is private, make it public or add a thin public seam there; never copy the logic into your crate.
 - Don't round-trip through text (serialize → deserialize) when you have structured data. Pass the structures directly.
 
 Ask yourself: "Is this logic already in the dependency's domain?" If yes, add the seam there, not here.
@@ -95,9 +95,9 @@ Ask yourself: "Is this logic already in the dependency's domain?" If yes, add th
 - If you see 5 functions that could be 3, simplify before extending.
 - Don't add `_with_options` and similar variants. Use default parameters, builder patterns, or just let callers pass what they need.
 - Don't add helper functions called exactly once. Inline them.
-- **Never add a module or shared helper for a few lines** that are only used once or twice — especially when call sites still pass closures anyway and gain nothing. Duplicate the snippet inline until several real call sites justify extraction (see §9).
-- When your changes make a module or function dead, delete it — don't leave it lying around.
-- Before defining a new type, search the codebase. If an equivalent type already exists — same shape, same domain — use it directly. Wrapper types that only exist to rename another type are never acceptable.
+- **Never add a module or shared helper for a few lines** that are only used once or twice, especially when call sites still pass closures anyway and gain nothing. Duplicate the snippet inline until several real call sites justify extraction (see §9).
+- When your changes make a module or function dead, delete it; don't leave it lying around.
+- Before defining a new type, search the codebase. If an equivalent type already exists (same shape, same domain), use it directly. Wrapper types that only exist to rename another type are never acceptable.
 
 ## 9. Ask Before Building Infrastructure
 
@@ -116,7 +116,7 @@ Ask yourself: "Is this logic already in the dependency's domain?" If yes, add th
   - One-line summary
   - Inputs / outputs
   - Errors or options where non-obvious
-- Deep internals can be shorter — a single clear sentence is enough.
+- Deep internals can be shorter; a single clear sentence is enough.
 - Don't document the obvious (`/// Returns true` on `is_success`).
 - Match Rust doc comment conventions (`///`).
 

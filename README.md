@@ -23,12 +23,14 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - **Editor support** - LSP support and editor integrations for diagnostics, completion, hover, go-to-definition, inlay hints, syntax highlighting, etc. (more on this later)
 
 ### Language Features
-- **Scripts** with explicit jump table slots, callable from events/levelscripts: `script Main #1:`
+- **Scripts** with explicit jump table slots, callable from events/levelscripts: `script Main #1:`, or `#[1-3, 5, 6]` for multiple slots at once
 - **Private labels** for internal code organization (these were called functions in DSPRE): `HelperCode:`
 - **Aliases** for constants: `alias 0x800C as VAR_RESULT`
 - **Actions** for movement data: `action WalkPattern: ... EndMovement`
 - **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, `match/endmatch`, `break`
 - **Autovar**: Commands that return results can be used directly in conditions (e.g., `if CheckPlayerOnBike() then`), inspired by the feature of the same name from PoryScript
+- **String literals**: Write message text directly in your script without needing to touch text archives. Use `format()` to let the compiler handle word wrapping
+- **Preprocessor**: `#include` / `#define` for decomp header integration
 
 ---
 
@@ -195,6 +197,49 @@ script ItemCheck #1:
     endif
     End
 ```
+
+### String Literals
+
+Instead of managing a separate text file and referencing messages by number, you can write text directly in your script:
+
+```rotom
+script NPC #1:
+    Message "Hello, trainer!"
+    WaitButton
+    End
+```
+
+This works with any command that takes a text argument: menu entries, bank-specific messages, and more:
+
+```rotom
+AddMenuEntryImm "Option A", 4
+MessageFromBank 1, "text here"
+```
+
+The compiler takes care of storing the text in the right place automatically.
+
+Strings can span multiple lines. Leading whitespace at the start of each new line is stripped, so you can indent freely without it showing up in-game:
+
+```rotom
+script LongSpeech #1:
+    Message "Hello there! I've been waiting
+             for a trainer as strong as you
+             to come along."
+    WaitButton
+    End
+```
+
+Wrap a string in `format()` to have the compiler automatically insert word-wrap breaks so the text fits the in-game dialog box:
+
+```rotom
+script Explanation #1:
+    Message format("This text is too long for one line but format will handle the wrapping for you automatically.")
+    WaitButton
+    End
+```
+
+> [!IMPORTANT]
+> String literals and `format()` only work when compiling as part of a project; single-file compilation doesn't have the context to know where to store the text.
 
 ### Break Statement
 

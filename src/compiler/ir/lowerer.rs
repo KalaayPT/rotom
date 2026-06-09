@@ -1033,21 +1033,42 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Resolve args, routing string literals for `text_slot` params into the
-    /// correct text archive for the command (e.g. the menu archive for `AddMenuEntryImm`).
+    /// correct text archive for the command.
+    ///
+    /// Two sources of archive override are tried in order:
+    /// 1. A fixed per-command archive (e.g. `AddMenuEntryImm` always writes to the menu archive).
+    /// 2. A sibling `text_archive` param in the same call (e.g. `MessageFromBank 1, "..."` writes
+    ///    to archive 1 — the value of the first argument).
     fn resolve_args_for_command(
         &self,
         command: &str,
         params: &[crate::database::ParamDef],
         args: &[Expression],
     ) -> ParseResult<Vec<Arg>> {
-        let archive_override = self.msg_archive_for_command(command);
+        // Fixed per-command override (menu archive commands, etc.)
+        let fixed_archive = self.msg_archive_for_command(command);
+
+        // Dynamic override: read the value of the `text_archive` param when present.
+        let dynamic_archive: Option<u16> = if fixed_archive.is_none() {
+            params
+                .iter()
+                .position(|p| p.name == "text_archive")
+                .and_then(|idx| args.get(idx))
+                .and_then(|arg| self.resolve_arg_to_int(arg).ok())
+                .and_then(|val| u16::try_from(val).ok())
+        } else {
+            None
+        };
+
+        let effective_archive = fixed_archive.or(dynamic_archive);
+
         args.iter()
             .enumerate()
             .map(|(i, arg)| {
-                let override_for_arg = if archive_override.is_some()
+                let override_for_arg = if effective_archive.is_some()
                     && params.get(i).is_some_and(|p| p.name == "text_slot")
                 {
-                    archive_override
+                    effective_archive
                 } else {
                     None
                 };
@@ -2898,6 +2919,72 @@ TestLabel:
             result.is_ok(),
             "scripts_common.s should compile successfully. Error: {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn test_message_from_bank_string_literal_uses_explicit_archive() {
+        // Regression: MessageFromBank 1, "text" was ignoring the archive argument
+        // and writing to the script file's default archive instead.
+        use std::fs;
+        use std::sync::Arc;
+
+        let db = crate::database::DatabaseV2::test_platinum();
+        let mut constants = crate::database::ConstantDb::new();
+        constants.load_from_db(db);
+
+        // Set up a minimal DSPRE project tree with only archive 1 on disk.
+        // The source stem "test_script" has no script→archive mapping,
+        // so the default fallback would fail — only the dynamic override from
+        // the text_archive argument (1) should make this compile.
+        let temp_dir = {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            std::env::temp_dir()
+                .join(format!("rotom_msgfrombank_test_{}", now))
+        };
+        let archives_dir = temp_dir.join("expanded/textArchives");
+        fs::create_dir_all(&archives_dir).unwrap();
+        fs::write(
+            archives_dir.join("0001.json"),
+            r#"{"key":0,"messages":[]}"#,
+        )
+        .unwrap();
+
+        let workspace = Arc::new(uxie::Workspace::new(
+            temp_dir.clone(),
+            uxie::game::Game::Platinum,
+        ));
+
+        let source = r#"
+script Test #1:
+    MessageFromBank 1, "hello world"
+    End
+"#;
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = crate::compiler::Analyzer::with_database(&constants, db);
+        analyzer.analyze(&script_file).unwrap();
+
+        let mut lowerer =
+            Lowerer::for_file(&analyzer.symbols, db, &constants, workspace.clone(), "test_script".to_string());
+
+        let result = lowerer.lower_script_file(&script_file);
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert!(
+            result.is_ok(),
+            "MessageFromBank with explicit archive should compile: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            workspace.read_message(1, 0),
+            Some("hello world".to_string()),
+            "text should be written to the explicitly specified archive 1"
         );
     }
 

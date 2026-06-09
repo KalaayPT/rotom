@@ -52,7 +52,7 @@ gitignored). The test harness obtains them as follows:
   when the tree is absent, so a fresh clone still passes the rest of the suite.
 
 The byte-matching lifecycle tests decompile and recompile the full fixture sets, so
-they take a while. Run them on release — they are a lot faster than in debug:
+they take a while. Run them on release, they are a lot faster than in debug:
 
 ```bash
 cargo test -p rotom --release

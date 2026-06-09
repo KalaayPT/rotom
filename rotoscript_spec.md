@@ -25,6 +25,7 @@
 ### 1.3 Literals
 * **Decimal Integers:** `0`, `42`, `-10`.
 * **Hexadecimal Integers:** `0x1A`, `0x4000`.
+* **String Literals:** `"Hello, trainer!"` double-quoted text; resolved to a message-archive index at compile time. See [Section 6. String Literals](#6-string-literals).
 
 ### 1.4 Labels
 Labels define locations in code for jumps or pointers.
@@ -40,6 +41,9 @@ Reserved words that cannot be used as identifiers:
 * **Control Flow:** `if`, `then`, `else`, `endif`, `while`, `do`, `endwhile`, `match`, `with`, `case`, `endmatch`, `Jump`
 * **Logical Operators:** `and`, `or`, `not`
 * **Literals:** `true`, `false`
+
+> [!NOTE]
+> Keywords are matched case-insensitively: `IF`, `ENDIF`, `ENDWHILE`, etc. are all accepted by the compiler. Lowercase is the canonical style; mixed-case keywords should not be intentionally used.
 
 ---
 
@@ -96,7 +100,20 @@ script InteractWithSign #6:
 ```
 
 * `script Name #N:` - Script with jump-table slot N (required). Slot IDs are 1-based.
-* The colon after the header is required
+* The colon after the header is required.
+
+#### Bracketed Slot Lists
+
+A single header can assign multiple jump-table slots at once with a `#[…]` list. The list supports individual IDs and `lo-hi` inclusive ranges, separated by commas. This is particularly useful for battle scripts and similar tables where one handler covers a sequential block of slot IDs.
+
+```rotom
+// Slots 5, 10, 11, 12, 13, 14, and 15 all point to Handler
+script Handler #[5, 10-15]:
+    Message 1
+    End
+```
+
+`#[N]` with a single value is equivalent to `#N`.
 
 ### 2.2 Labels (Private Code Blocks)
 
@@ -147,6 +164,42 @@ SlotMachine_Common:
 
 Note: These are commands that emit bytecode, not structural delimiters.
 
+### 2.5 Preprocessor Directives
+
+`#include` and `#define` can appear at the top level of a script file. Both are primarily intended for decomp projects, where the script can reference the same constant headers the C code uses, but they work in any project that has a configured workspace.
+
+#### `#include`
+
+Loads constants from an external header file (`.h`). In a decomp project the path is resolved relative to the project's `include/` directory, matching the decomp build's include search path:
+
+```rotom
+#include "constants/items.h"
+#include "constants/flags.h"
+
+script GivePotion #1:
+    AddItem ITEM_POTION, 1
+    End
+```
+
+An unresolved include path is a compile error in project mode.
+
+#### `#define`
+
+Defines a file-local numeric constant that the compiler resolves like any other constant name:
+
+```rotom
+#define REWARD_ITEM 44  // ITEM_GREAT_BALL
+
+script RewardPlayer #1:
+    AddItem REWARD_ITEM, 1
+    End
+```
+
+> [!NOTE]
+> `#define` exists primarily as a compatibility surface for decomp header files pulled in via `#include`. For constants you define directly in a script, prefer [`alias`](#31-aliases); it is the idiomatic Rotom form and integrates with LSP diagnostics and unused-constant warnings.
+
+Both directives require the compiler to have a project workspace configured. In single-file compilation mode they are parsed and silently accepted.
+
 ## 3. Aliases & Variables
 
 The Gen 4 Pokemon games have many persistent variables, but only 14 of them are script-local and script like CPU registers:
@@ -159,8 +212,8 @@ The Gen 4 Pokemon games have many persistent variables, but only 14 of them are 
 Aliases are compile-time constants that map a name to a number. All aliases are global.
 
 * Syntax: `alias Value as Name`
-* Defined at the top level of the file
-* Visible in all scripts and labels
+* Can be defined at the top level of the file or inside a script or label body
+* Visible from the point of definition onward: top-level aliases are file-global; body-level aliases are visible within the enclosing block and any nested blocks
 
 ```rotom
 alias 0x8000 as VAR_TEMP
@@ -253,7 +306,7 @@ endmatch
 * **Syntax:** `match <subject> with ... endmatch`
 * **Cases:** `case <value>:` or `case <value1>, <value2>:` for multiple values
 * **Default:** Optional `else:` block for unmatched values
-* **Per-case optimization:** A case with a single value whose body is a lone `Call` or `Jump` is optimized to emit `CompareVarValue` + a conditional branch to the target — `CallIf EQUAL` for `Call`, `GoToIf EQUAL` for `Jump` — instead of the typical compare/jump/body/goto pattern. This optimization is applied per-case, so mixed match statements benefit from it.
+* **Per-case optimization:** A case with a single value whose body is a lone `Call` or `Jump` is optimized to emit `CompareVarValue` + a conditional branch to the target (`CallIf EQUAL` for `Call`, `GoToIf EQUAL` for `Jump`) instead of the typical compare/jump/body/goto pattern. This optimization is applied per-case, so mixed match statements benefit from it.
 
 Match statements also work with autovar commands:
 ```rotom
@@ -277,6 +330,8 @@ endwhile
 * `Jump LabelName` - Unconditional jump to a label or script
 * `Jump .local_label` - Jump to an inline label within the same script
 * `Call ScriptName` - Call a script/helper, execution returns after `Return`
+
+`GoTo` is accepted as a synonym for `Jump` and compiles identically.
 
 Restriction: You cannot Jump to a variable alias. You can only jump to Labels or Scripts.
 
@@ -365,7 +420,54 @@ action WalkPattern:
 EndMovement
 ```
 
-## 6. Error Handling
+## 6. String Literals
+
+String literals let you write message text directly as a command argument. The compiler looks up the string in the file's associated text archive, adding it if it does not exist, and substitutes the resulting message index at compile time.
+
+```rotom
+script NPC #1:
+    Message "Hello, trainer!"
+    WaitButton
+    End
+```
+
+### 6.1 Syntax
+
+Strings are enclosed in double quotes (`"`). A `\"` sequence inside a string emits the chatot alias `["]`, which maps to the curly-quote character (charmap 0x01B4). There is no raw double-quote in the Gen 4 charmap, so this is the correct way to include one in dialog text.
+
+### 6.2 Multiline Strings
+
+A string can span multiple source lines by containing a real newline inside the quotes. Each line becomes a separate _segment_. Leading whitespace on continuation lines is stripped automatically, so the source can be indented to match the surrounding code without polluting the text content:
+
+```rotom
+Message "Hello, I'm on the first line,
+         and I'm on the second line."
+```
+
+The segments are joined with a space when written to the archive, so the example above stores `"Hello, I'm on the first line, and I'm on the second line."`. The game's dialog engine handles its own line-breaking when displaying the text.
+
+The compiler also tracks per-segment widths and emits a **`MessageLineTooLong`** warning when a segment exceeds the maximum dialog line width.
+
+### 6.3 Automatic Word Wrapping with `format()`
+
+Wrapping a string in `format()` instructs the compiler to insert automatic word-wrap breaks so the text fits within the in-game dialog box, without needing manual `\n`/`\r`/`\f` markers:
+
+```rotom
+Message format("A long line of dialogue that needs to fit neatly inside the dialog box.")
+```
+
+`format()` suppresses the `MessageLineTooLong` warning because line-breaking is handled automatically.
+
+> [!NOTE]
+> String literals and `format()` require the compiler to have a project workspace configured so it knows which text archive to write to. In single-file compilation mode they produce a compile error.
+
+### 6.4 Encoding Validation
+
+All string content is validated against the chatot charmap at compile time. Characters not present in the charmap produce a compile error with a precise source location.
+
+---
+
+## 7. Error Handling
 
 The compiler reports errors with source locations using the following categories:
 
@@ -387,7 +489,7 @@ error: Undefined symbol: 'undefined_var'
    |            ^^^^^^^^^^^^^
 ```
 
-## 7. Compiler Pipeline (Technical)
+## 8. Compiler Pipeline (Technical)
 
 1. **Lexer:** Source → Tokens.
 2. **Parser:** Tokens → AST (Statement nodes).
@@ -413,7 +515,7 @@ error: Undefined symbol: 'undefined_var'
     * Discovers all jump targets to identify label boundaries.
     * Generates flat Rotom source matching binary layout.
 
-## 8. Binary Format (Reference)
+## 9. Binary Format (Reference)
 
 The compiled script binary consists of:
 1. **Jump Table:** Array of 4-byte offsets pointing to public script entry points
@@ -429,7 +531,7 @@ The compiled script binary consists of:
     * Default parameter for most movements is 1 (e.g., `WalkNorth` = `WalkNorth 1`)
     * Movements also accept explicit arguments even when DB says 0 params (e.g., `Delay8 4`)
 
-### 8.1 Movement Command Behavior
+### 9.1 Movement Command Behavior
 
 Movement commands have special handling for parameters:
 
@@ -443,7 +545,7 @@ Movement commands have special handling for parameters:
 
 This allows natural syntax while maintaining binary compatibility with the game engine.
 
-## 9. DSPRE Compatibility
+## 10. DSPRE Compatibility
 
 Rotom includes a transpiler for DSPRE script format:
 

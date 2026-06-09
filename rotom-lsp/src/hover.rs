@@ -45,7 +45,7 @@ pub fn compute_hover(
             });
         }
 
-        // Check legacy names — show the canonical name prominently.
+        // Check legacy names, show the canonical name prominently.
         for (canonical, cmd) in &db.commands {
             if cmd.legacy_name.as_deref() == Some(&word) && canonical != &word {
                 let mut lines = Vec::new();
@@ -402,7 +402,7 @@ fn builtin_hover(word: &str) -> Option<String> {
              Explicit escape sequences (`\\n`, `\\r`, `\\f`) are always preserved as-is.\n\
              \n\
              ## Parameters\n\
-             - `string` — the message text"
+             - `string` - the message text"
                 .to_string(),
         ),
         _ => None,
@@ -413,7 +413,7 @@ fn format_param_desc(p: &rotom::database::ParamDef) -> String {
     let mut desc = format!("- `{}`", p.name);
     let _ = write!(desc, " ({:?})", p.param_type);
     if p.optional {
-        desc.push_str(" — *optional*");
+        desc.push_str(" - *optional*");
     }
     if let Some(default) = &p.default {
         let _ = write!(desc, ", default: `{default}`");
