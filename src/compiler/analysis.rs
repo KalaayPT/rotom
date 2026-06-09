@@ -605,21 +605,31 @@ impl<'a> Analyzer<'a> {
 
     /// Pick which param list this call should be checked against.
     ///
-    /// This keeps analysis and lowering in sync.
+    /// This keeps analysis and lowering in sync. Returns the shape and, if any
+    /// variant condition failed to evaluate, the name of the first failing condition.
     fn select_command_shape<'b>(
         &self,
         cmd: &'b Command,
         args: &[Expression],
-    ) -> ResolvedCommandShape<'b> {
+    ) -> (ResolvedCommandShape<'b>, Option<String>) {
         let first_arg_u8 = args
             .first()
             .and_then(|arg| self.resolve_expression_to_int(arg).ok())
             .and_then(|value| u8::try_from(value).ok());
 
-        cmd.resolve_source_call_shape(first_arg_u8, |condition, params| {
-            self.evaluate_variant_condition_with_arg_count(condition, args, params)
-                .unwrap_or(false)
-        })
+        let mut failed_condition: Option<String> = None;
+        let shape = cmd.resolve_source_call_shape(first_arg_u8, |condition, params| {
+            match self.evaluate_variant_condition_with_arg_count(condition, args, params) {
+                Ok(b) => b,
+                Err(_) => {
+                    if failed_condition.is_none() {
+                        failed_condition = Some(condition.to_string());
+                    }
+                    false
+                }
+            }
+        });
+        (shape, failed_condition)
     }
 
     /// Check if a command is autovar-compatible (has a result parameter with `VAR_RESULT` default)
@@ -733,7 +743,7 @@ impl<'a> Analyzer<'a> {
 
     /// Validate command parameters (count and types)
     fn validate_command(
-        &self,
+        &mut self,
         command: &str,
         args: &[Expression],
         span: &Range<usize>,
@@ -743,11 +753,19 @@ impl<'a> Analyzer<'a> {
         };
 
         // Analysis checks the args against the chosen source shape. Defaults and `emit_args`
-        // happen later during lowering.
-        let shape = self.select_command_shape(cmd, args);
-        let params = shape.params;
-        let actual_count = args.len();
+        // happen later during lowering. Clone params so the borrow through `shape` ends
+        // before `self.warnings.push` below.
+        let (shape, failed_condition) = self.select_command_shape(cmd, args);
+        let params = shape.params.to_vec();
         let is_macro = cmd.is_macro();
+        if let Some(condition) = failed_condition {
+            self.warnings.push(CompileWarning::VariantConditionUnresolvable {
+                command: command.to_string(),
+                condition,
+                span: span.clone(),
+            });
+        }
+        let actual_count = args.len();
         let required_count = params
             .iter()
             .filter(|p| !p.optional && p.default.is_none())

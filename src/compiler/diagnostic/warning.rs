@@ -36,6 +36,15 @@ pub enum CompileWarning {
         span: Range<usize>,
         line_index: usize,
     },
+    /// A database variant condition could not be evaluated at compile time (e.g. unknown
+    /// identifier in the condition expression). The default/else variant was used as a
+    /// fallback; the emitted binary may not match the intended variant.
+    VariantConditionUnresolvable {
+        command: String,
+        condition: String,
+        #[serde(serialize_with = "serialize_range")]
+        span: Range<usize>,
+    },
 }
 
 impl CompileWarning {
@@ -44,7 +53,8 @@ impl CompileWarning {
             Self::UnusedAlias { span, .. }
             | Self::ShadowedAlias { span, .. }
             | Self::MissingSlot { span, .. }
-            | Self::MessageLineTooLong { span, .. } => span.clone(),
+            | Self::MessageLineTooLong { span, .. }
+            | Self::VariantConditionUnresolvable { span, .. } => span.clone(),
         }
     }
 
@@ -61,6 +71,10 @@ impl CompileWarning {
             Self::MessageLineTooLong { line_index, .. } => format!(
                 "Message line {line_index} exceeds the maximum dialog width — \
                  add explicit line breaks or wrap with format()"
+            ),
+            Self::VariantConditionUnresolvable { command, condition, .. } => format!(
+                "Could not evaluate variant condition '{condition}' for command '{command}' \
+                 at compile time; the default variant will be used and the output may be incorrect"
             ),
         }
     }

@@ -433,11 +433,11 @@ impl<'a> Lowerer<'a> {
                 args: resolved_args,
             });
         } else {
-            let resolved_args = self.resolve_args(args)?;
-            self.output.push(IrOpcode::Command {
-                name: command.to_string(),
-                args: resolved_args,
-            });
+            unreachable!(
+                "command '{}' reached lowering without a database entry; \
+                 this shouldve been caught by analysis.",
+                command
+            );
         }
         Ok(())
     }
@@ -2942,16 +2942,11 @@ TestLabel:
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            std::env::temp_dir()
-                .join(format!("rotom_msgfrombank_test_{}", now))
+            std::env::temp_dir().join(format!("rotom_msgfrombank_test_{}", now))
         };
         let archives_dir = temp_dir.join("expanded/textArchives");
         fs::create_dir_all(&archives_dir).unwrap();
-        fs::write(
-            archives_dir.join("0001.json"),
-            r#"{"key":0,"messages":[]}"#,
-        )
-        .unwrap();
+        fs::write(archives_dir.join("0001.json"), r#"{"key":0,"messages":[]}"#).unwrap();
 
         let workspace = Arc::new(uxie::Workspace::new(
             temp_dir.clone(),
@@ -2970,8 +2965,13 @@ script Test #1:
         let mut analyzer = crate::compiler::Analyzer::with_database(&constants, db);
         analyzer.analyze(&script_file).unwrap();
 
-        let mut lowerer =
-            Lowerer::for_file(&analyzer.symbols, db, &constants, workspace.clone(), "test_script".to_string());
+        let mut lowerer = Lowerer::for_file(
+            &analyzer.symbols,
+            db,
+            &constants,
+            workspace.clone(),
+            "test_script".to_string(),
+        );
 
         let result = lowerer.lower_script_file(&script_file);
         fs::remove_dir_all(&temp_dir).ok();

@@ -5,6 +5,15 @@ project so your normal build can compile `.rotom` scripts automatically.
 
 Before changing a project build, make a backup!
 
+## Table of Contents
+- [Install Binaries](#install-binaries)
+- [Project Setup](#project-setup)
+  - [DSPRE Projects](#dspre-projects)
+  - [pokeplatinum Decomp](#pokeplatinum-decomp)
+  - [hg-engine Projects](#hg-engine-projects)
+- [Editor Support](#editor-support)
+- [Building From Source](#building-from-source)
+
 ## Install Binaries
 
 Download a release zip, extract it, and put the extracted folder on your
@@ -188,7 +197,9 @@ Replace the `$(MSGDATA_NARC)` rule:
 ## Editor Support
 
 `rotom-lsp` powers diagnostics, completion, hover, go-to-definition, inlay hints,
-signature help, and code lenses. Editor extensions are published separately.
+signature help, and code lenses. 
+
+Editor extensions can be found in the [Rotom Extensions Repo](https://github.com/KalaayPT/rotom-extensions).
 
 Tree-sitter grammar and highlighting live in
 [`tree-sitter-rotom`](https://github.com/KalaayPT/tree-sitter-rotom).

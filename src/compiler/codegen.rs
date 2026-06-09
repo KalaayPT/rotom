@@ -59,7 +59,10 @@ impl<'a> Emitter<'a> {
                 if let TopLevelItem::Function(f) = item {
                     Some(
                         f.jump_table_slots()
-                            .map(|(id, name)| (id.saturating_sub(1), name))
+                            .map(|(id, name)| {
+                                debug_assert!(id >= 1, "slot ID 0 must be rejected by analysis before codegen");
+                                (id - 1, name)
+                            })
                             .collect::<Vec<_>>(),
                     )
                 } else {

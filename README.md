@@ -10,6 +10,29 @@ Inspired by [poryscript](https://github.com/huderlem/poryscript) for Gen 3.
 
 ---
 
+## Table of Contents
+- [What This Project Does](#what-this-project-does)
+  - [Core Features](#core-features)
+  - [Language Features](#language-features)
+- [Project Status](#project-status)
+- [Quick Start](#quick-start)
+  - [Installation](#installation)
+  - [Initialize a project](#initialize-a-project)
+  - [Convert legacy scripts](#convert-legacy-scripts)
+  - [Compile a project](#compile-a-project)
+  - [Editor Support](#editor-support)
+- [Example: Rotom Syntax](#example-rotom-syntax)
+  - [Match Statements](#match-statements)
+  - [Autovar: Commands in Conditions](#autovar-commands-in-conditions)
+  - [String Literals](#string-literals)
+  - [Break Statement](#break-statement)
+- [Design Philosophy](#design-philosophy)
+- [Contributing](#contributing)
+- [License](#license)
+- [Related Projects](#related-projects)
+
+---
+
 ## What This Project Does
 
 Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting engine:
@@ -22,7 +45,7 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - **Decomp integration** - Automatically loads constants from your pokeplatinum/pokediamond headers/jsons
 - **Fall-through semantics** - Preserves the game engine's organization where scripts flow into each other
 - **Decompiler** - Disassemble binary scripts back to source (normal scripts to `.rotom`, levelscripts to JSON)
-- **Editor support** - LSP support and editor integrations for diagnostics, completion, hover, go-to-definition, inlay hints, syntax highlighting, etc. (more on this later)
+- **Editor support** - LSP support and editor integrations for diagnostics, completion, hover, go-to-definition, inlay hints, syntax highlighting, etc. (see [Editor Support](./INSTALL.md#editor-support))
 
 ### Language Features
 - **Scripts** with explicit jump table slots, callable from events/levelscripts: `script Main #1:`, or `#[1-3, 5, 6]` for multiple slots at once
@@ -114,6 +137,8 @@ Editor integrations for VS Code, Zed, and Neovim are being developed alongside R
 ---
 
 ## Example: Rotom Syntax
+
+in-depth technical information about the rotom spec can be found in [the spec](./rotoscript_spec.md)
 
 ```rotom
 // === Constants ===

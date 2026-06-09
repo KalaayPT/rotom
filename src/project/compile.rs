@@ -101,13 +101,24 @@ pub fn compile_project(
 
     // Workspace must be created before the immutable borrow so we can wire the
     // shared message_ids Arc into constants before any per-file clone_for_script.
-    let workspace = std::sync::Arc::new(Workspace::open(root).unwrap_or_else(|_| {
-        let game = config
-            .game_family()
-            .unwrap_or(GameFamily::Platinum)
-            .default_game();
-        Workspace::new(root.to_path_buf(), game)
-    }));
+    // NotFound is expected for new projects that haven't run `rotom init` yet.
+    let workspace = std::sync::Arc::new(match Workspace::open(root) {
+        Ok(ws) => ws,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let game = config
+                .game_family()
+                .unwrap_or(GameFamily::Platinum)
+                .default_game();
+            Workspace::new(root.to_path_buf(), game)
+        }
+        Err(source) => {
+            return Err(ProjectError::Io {
+                action: "Failed to open workspace",
+                path: root.to_path_buf(),
+                source,
+            })
+        }
+    });
     session
         .constants
         .set_message_ids(workspace.shared_message_ids());
@@ -616,12 +627,12 @@ fn load_project_database_and_constants(
     let db = DatabaseV2::load(&db_path).map_err(ProjectError::from)?;
 
     let mut constants = ConstantDb::new();
-    let _ = constants.load_from_db(&db);
+    constants.load_from_db(&db);
     let mut constant_cache_rebuilt = false;
 
     let database_dir = config.database_dir(root);
     if database_dir.exists() {
-        let _ = constants
+        constants
             .load_directory(&database_dir)
             .map_err(ProjectError::from)?;
     }
@@ -642,18 +653,18 @@ fn load_project_database_and_constants(
                 path: config.cache_dir(root),
                 source,
             })?;
-            let _ = constants.load_decomp_symbols(root, (*symbols).clone());
+            constants.load_decomp_symbols(root, (*symbols).clone());
             constant_cache_rebuilt = rebuilt;
         }
         ProjectTypeConfig::Dspre => {
             let language = if let Ok(ws) = Workspace::open(root) {
                 let language = ws.language;
-                let _ = constants.load_dspre_symbols((*ws.symbols).clone());
+                constants.load_dspre_symbols((*ws.symbols).clone());
                 language
             } else {
                 uxie::GameLanguage::English
             };
-            let _ = constants.load_dspre_text_archives(root, language);
+            constants.load_dspre_text_archives(root, language).ok();
         }
         ProjectTypeConfig::HgEngine => {
             let mut ws = Workspace::open(root).map_err(|source| ProjectError::Io {
@@ -667,7 +678,7 @@ fn load_project_database_and_constants(
                     path: root.to_path_buf(),
                     source,
                 })?;
-            let _ = constants.load_decomp_symbols(root, (*ws.symbols).clone());
+            constants.load_decomp_symbols(root, (*ws.symbols).clone());
         }
         ProjectTypeConfig::Generic => {}
     }

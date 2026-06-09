@@ -31,10 +31,6 @@ enum LabelKind {
     Script {
         slot_ids: Vec<u32>,
     },
-    #[allow(dead_code)]
-    Function {
-        id: u32,
-    },
     Action {
         id: u32,
     },
@@ -58,9 +54,6 @@ pub struct Disassembler<'a> {
     script_slots: BTreeMap<usize, Vec<u32>>,
     symbols: HashMap<usize, LabelInfo>,
     action_offsets: HashSet<usize>,
-
-    #[allow(dead_code)]
-    func_counter: u32,
     action_counter: u32,
 }
 
@@ -76,7 +69,6 @@ impl<'a> Disassembler<'a> {
             script_slots: BTreeMap::new(),
             symbols: HashMap::new(),
             action_offsets: HashSet::new(),
-            func_counter: 0,
             action_counter: 0,
         }
     }
@@ -288,9 +280,9 @@ impl<'a> Disassembler<'a> {
                 self.bytes[i + 3],
             ]);
 
-            let abs_offset = (rel_offset + ((i + 4) as i32)) as usize;
+            let abs_offset = i64::from(rel_offset) + (i as i64) + 4;
 
-            if 0 <= (abs_offset as isize) && abs_offset < len {
+            if abs_offset >= 0 && (abs_offset as usize) < len {
                 entry_count += 1;
             } else {
                 break;
@@ -400,7 +392,7 @@ impl<'a> Disassembler<'a> {
                 if let std::collections::hash_map::Entry::Vacant(e) = self.symbols.entry(target) {
                     e.insert(LabelInfo {
                         kind: LabelKind::Internal,
-                        name: format!("_L{:04X}", target),
+                        name: format!("label_{:04X}", target),
                     });
 
                     let mut local_targets: Vec<usize> = Vec::new();
@@ -422,7 +414,7 @@ impl<'a> Disassembler<'a> {
             if target >= code_start && target < self.bytes.len() {
                 self.symbols.entry(target).or_insert_with(|| LabelInfo {
                     kind: LabelKind::Internal,
-                    name: format!("_L{:04X}", target),
+                    name: format!("label_{:04X}", target),
                 });
             }
         }
@@ -494,7 +486,7 @@ impl<'a> Disassembler<'a> {
         for target in missed_targets {
             self.symbols.entry(target).or_insert_with(|| LabelInfo {
                 kind: LabelKind::Internal,
-                name: format!("_L{:04X}", target),
+                name: format!("label_{:04X}", target),
             });
         }
     }
@@ -604,7 +596,7 @@ impl<'a> Disassembler<'a> {
                     }
                     e.insert(LabelInfo {
                         kind: LabelKind::Internal,
-                        name: format!("_L{:04X}", target),
+                        name: format!("label_{:04X}", target),
                     });
 
                     let mut local_targets: Vec<usize> = Vec::new();
@@ -790,11 +782,6 @@ impl<'a> Disassembler<'a> {
                         })
                         .collect()
                 }
-                LabelKind::Function { id } => vec![FunctionHeader {
-                    name: info.name.clone(),
-                    id: Some(*id),
-                    is_public: false,
-                }],
                 LabelKind::Internal => vec![FunctionHeader {
                     name: info.name.clone(),
                     id: None,
@@ -804,7 +791,7 @@ impl<'a> Disassembler<'a> {
             }
         } else {
             vec![FunctionHeader {
-                name: format!("func_{:04X}", start),
+                name: format!("label_{:04X}", start),
                 id: None,
                 is_public: false,
             }]
