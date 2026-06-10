@@ -102,9 +102,14 @@ pub fn compile_project(
     // Workspace must be created before the immutable borrow so we can wire the
     // shared message_ids Arc into constants before any per-file clone_for_script.
     // NotFound is expected for new projects that haven't run `rotom init` yet.
+    // IsADirectory occurs when the project root exists but has no recognised
+    // DSPRE/decomp markers (e.g. a plain script directory); treat it the same way.
     let workspace = std::sync::Arc::new(match Workspace::open(root) {
         Ok(ws) => ws,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Err(e)
+            if e.kind() == std::io::ErrorKind::NotFound
+                || e.kind() == std::io::ErrorKind::IsADirectory =>
+        {
             let game = config
                 .game_family()
                 .unwrap_or(GameFamily::Platinum)

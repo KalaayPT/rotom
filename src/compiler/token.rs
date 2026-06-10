@@ -13,9 +13,8 @@ pub enum TokenType {
     Alias,  // "alias"
 
     Num(i32),                     // integer
-    Identifier(String),           // variable,
+    Identifier(String),           // variable or dot-prefixed name (.foo normalised here)
     Label(String),                // label definition (ends with :)
-    LocalLabel(String),           // local label reference (.name without colon)
     String(Vec<(String, usize)>), // string literal; each segment is (content, source_start_byte)
 
     // preprocessor
@@ -135,7 +134,6 @@ impl fmt::Display for TokenType {
             TokenType::Identifier(s) => write!(f, "identifier '{}'", s),
             TokenType::Num(n) => write!(f, "number '{}'", n),
             TokenType::Label(l) => write!(f, "label definition '{}'", l),
-            TokenType::LocalLabel(l) => write!(f, "local label reference '{}'", l),
             TokenType::String(s) => write!(
                 f,
                 "string \"{}\"",

@@ -163,8 +163,10 @@ impl<'a> Lexer<'a> {
                         TokenType::Identifier(string) => string,
                         keyword => format!("{}", keyword),
                     };
-                    // LocalLabel is just the .name part - colon is handled separately by parser
-                    TokenType::LocalLabel(format!(".{}", name))
+                    // Dot-prefixed names (.foo) are normalised to plain Identifier(".foo").
+                    // The dot is preserved in the name string for round-trip fidelity but
+                    // carries no semantic weight — there is no separate "inline label" scope.
+                    TokenType::Identifier(format!(".{}", name))
                 } else {
                     TokenType::Dot
                 }
@@ -389,20 +391,21 @@ mod tests {
     }
 
     #[test]
-    fn test_lexer_labels() {
+    fn test_lexer_dot_names() {
+        // Dot-prefixed names are normalised to Identifier with the dot in the name.
         let source = ".localLabel: .anotherLabel";
         let mut lexer = Lexer::new(source);
         let token1 = lexer.next_token();
         assert_eq!(
             token1.kind,
-            TokenType::LocalLabel(".localLabel".to_string())
+            TokenType::Identifier(".localLabel".to_string())
         );
         let token2 = lexer.next_token();
         assert_eq!(token2.kind, TokenType::Colon);
         let token3 = lexer.next_token();
         assert_eq!(
             token3.kind,
-            TokenType::LocalLabel(".anotherLabel".to_string())
+            TokenType::Identifier(".anotherLabel".to_string())
         );
         let eof_token = lexer.next_token();
         assert_eq!(eof_token.kind, TokenType::EOF);
@@ -670,7 +673,7 @@ mod tests {
             TokenType::Then,
             TokenType::Newline,
             TokenType::Jump,
-            TokenType::LocalLabel(".start".to_string()),
+            TokenType::Identifier(".start".to_string()),
             TokenType::Newline,
             TokenType::Else,
             TokenType::Newline,

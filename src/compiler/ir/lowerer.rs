@@ -1553,6 +1553,42 @@ script TestFunc #1:
 
     #[test]
     fn test_lower_label() {
+        // Idiomatic form: top-level label defined outside the script body.
+        let source = r"
+script TestFunc #1:
+    Message 1
+    Jump skip
+    Message 2
+
+skip:
+    Message 3
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+        assert_eq!(items.len(), 2, "expected TestFunc and skip as separate items");
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                assert_eq!(ir_func.instructions.len(), 3, "TestFunc: Message 1, Jump, Message 2");
+            }
+            TopLevelItem::Action(_) => panic!("Expected script"),
+        }
+        match &items[1] {
+            TopLevelItem::Function(ir_func) => {
+                assert_eq!(ir_func.instructions.len(), 2, "skip: Message 3, End");
+            }
+            TopLevelItem::Action(_) => panic!("Expected label function"),
+        }
+    }
+
+    #[test]
+    fn test_lower_dot_label_backward_compat() {
+        // Dot-prefix notation is still accepted for backward compatibility.
+        // .skip: terminates the script body just like a bare label would,
+        // producing two separate top-level items with identical binary output.
         let source = r"
 script TestFunc #1:
     Message 1
@@ -1567,18 +1603,18 @@ script TestFunc #1:
         let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
+        assert_eq!(items.len(), 2, "expected TestFunc and .skip as separate items");
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                assert!(ir_func.instructions.len() >= 5);
-
-                let label_count = ir_func
-                    .instructions
-                    .iter()
-                    .filter(|op| matches!(op, IrOpcode::Label(_)))
-                    .count();
-                assert_eq!(label_count, 1);
+                assert_eq!(ir_func.instructions.len(), 3, "TestFunc: Message 1, Jump, Message 2");
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
+        }
+        match &items[1] {
+            TopLevelItem::Function(ir_func) => {
+                assert_eq!(ir_func.instructions.len(), 2, ".skip: Message 3, End");
+            }
+            TopLevelItem::Action(_) => panic!("Expected label function"),
         }
     }
 

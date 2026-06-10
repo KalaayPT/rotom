@@ -28,11 +28,10 @@
 * **String Literals:** `"Hello, trainer!"` double-quoted text; resolved to a message-archive index at compile time. See [Section 6. String Literals](#6-string-literals).
 
 ### 1.4 Labels
-Labels define locations in code for jumps or pointers.
-* **Top-Level Labels:** Defined at the file level with `Name:` syntax. Create a new code block.
-    * Syntax: `MyLabel:`
-* **Inline Labels:** Defined inside a script body. Start with a dot.
-    * Syntax: `.loop_start:`
+Labels define locations in code that can be jumped to. Syntax: `Name:` at the file level.
+
+> [!NOTE]
+> The dot-prefix form `.Name:` (e.g. `.loop_start:`) is accepted by the compiler for backward compatibility but carries no semantic distinction. Prefer plain `Name:` labels.
 
 ### 1.5 Keywords
 Reserved words that cannot be used as identifiers:
@@ -65,12 +64,13 @@ alias 2550 as FLAG_Badge
 // 2. Public script (in jump table)
 script GymLeader #1:
     if FLAG_Badge == 1 then
-        Jump .already_fought
+        Jump AlreadyFought
     endif
-    .already_fought:
+
+AlreadyFought:
     End
 
-// 3. Private label (not in jump table)
+// 3. Label (not in jump table)
 HelperCode:
     Message 1
     Return
@@ -115,9 +115,9 @@ script Handler #[5, 10-15]:
 
 `#[N]` with a single value is equivalent to `#N`.
 
-### 2.2 Labels (Private Code Blocks)
+### 2.2 Labels
 
-Labels are code blocks that are NOT in the jump table. They are used for:
+Labels are code blocks that are not in the jump table. They are used for:
 - Shared code that multiple scripts jump to
 - Helper routines
 - Fall-through code organization
@@ -328,7 +328,6 @@ endwhile
 
 ### 4.4 Jumps and Calls
 * `Jump LabelName` - Unconditional jump to a label or script
-* `Jump .local_label` - Jump to an inline label within the same script
 * `Call ScriptName` - Call a script/helper, execution returns after `Return`
 
 `GoTo` is accepted as a synonym for `Jump` and compiles identically.

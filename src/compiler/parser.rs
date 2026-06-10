@@ -195,8 +195,7 @@ impl<'a> Parser<'a> {
                 | TokenType::EndMovement
                 | TokenType::Alias
                 | TokenType::Jump
-                | TokenType::LocalLabel(_) => return,
-                TokenType::Newline => {
+                | TokenType::Newline => {
                     self.advance();
                     return;
                 }
@@ -237,17 +236,6 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenType::Alias => self.parse_alias()?,
-            TokenType::LocalLabel(name) => {
-                let start = self.current_token.span.start;
-                let label_name = name;
-                self.advance();
-                self.expect_advance(&TokenType::Colon)?;
-                let end = self.current_token.span.start;
-                Spanned {
-                    node: StatementKind::Label(label_name),
-                    span: start..end,
-                }
-            }
             _ => {
                 return Err(parse_error(
                     self.current_token.span.clone(),
@@ -700,15 +688,6 @@ impl<'a> Parser<'a> {
         let start = self.current_token.span.start;
         self.expect_advance(&TokenType::Jump)?;
         let target_expr = match &self.current_token.kind {
-            TokenType::LocalLabel(name) => {
-                let span = self.current_token.span.clone();
-                let name_clone = name.clone();
-                self.advance();
-                Spanned {
-                    node: ExpressionKind::Label(name_clone),
-                    span,
-                }
-            }
             TokenType::Identifier(name) => {
                 let span = self.current_token.span.clone();
                 let name_clone = name.clone();
