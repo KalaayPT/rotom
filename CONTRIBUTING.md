@@ -12,7 +12,7 @@ The To-Do list in the README can be used as inspiration for what to work on.
 - [`uxie`](https://github.com/KalaayPT/uxie) handles Gen 4 project/workspace data. If the logic belongs to ROM or
   workspace data access, it probably belongs there instead of rotom.
 - [`tree-sitter-rotom`](https://github.com/KalaayPT/tree-sitter-rotom) owns the grammar and highlighting queries used by editors.
-- Editor extensions for VS Code, Zed, and Neovim are thin wrappers around the LSP server and can be found in `rotom-extensions` (unpublished).
+- Editor extensions for VS Code, Zed, and Neovim are thin wrappers around the LSP server and can be found in [`rotom-extensions`](https://github.com/KalaayPT/rotom-extensions).
 
 ## Building
 
