@@ -204,7 +204,8 @@ Both directives require the compiler to have a project workspace configured. In 
 
 The Gen 4 Pokemon games have many persistent variables, but only 14 of them are script-local and script like CPU registers:
 * 0x8000-0x800B: 12 normal variables
-* 0x800C: used as "result" variable, but can be used freely
+    * 0x8008: used for "switch" type checks in the original binaries, can be used freely
+* 0x800C: used as "result" variable, but can also be used freely
 * 0x800D: special: "last interacted" overworld, which triggered the script execution
 
 ### 3.1 Aliases
@@ -213,7 +214,7 @@ Aliases are compile-time constants that map a name to a number. All aliases are 
 
 * Syntax: `alias Value as Name`
 * Can be defined at the top level of the file or inside a script or label body
-* Visible from the point of definition onward: top-level aliases are file-global; body-level aliases are visible within the enclosing block and any nested blocks
+* Visible from the point of definition onward: any alias can only be used *after* it has been defined. This also allows for shadowing/redefinitions
 
 ```rotom
 alias 0x8000 as VAR_TEMP
@@ -256,7 +257,9 @@ The decompiler also outputs these symbolic names instead of numeric values.
 
 Script command operands use a 16-bit value space split at `0x4000`. When compiling or decompiling numeric operands, the heuristic is:
 * Immediate value: `0x0000`-`0x3FFF`
-* Variable ID: `0x4000`-`0xFFFF` (flags, script variables, etc.)
+* Variable ID: `0x4000`-`0xFFFF`
+
+These ranges are often used by commands to distinguish between whether to check a variable or an immediate value.
 
 ## 4. Control Flow
 
@@ -522,7 +525,7 @@ The compiled script binary consists of:
     * Terminated by `0xFD13` marker
 2. **Script Data:** Concatenated script and label bytecode
     * Commands are 2-byte IDs followed by parameters
-    * Parameters are 2 or 4 bytes depending on command definition
+    * Parameters are 1, 2 or 4 bytes depending on command definition
     * Code emitted in source order (fall-through preserved)
 3. **Movement Data:** Separate section for action bytecode
     * Movement commands are 2-byte ID + 2-byte parameter
