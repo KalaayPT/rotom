@@ -923,9 +923,27 @@ impl<'a> Lowerer<'a> {
                 ],
             });
             Ok(())
+        } else if let Ok((OperandType::Variable, var_id)) = self.analyze_operand(expr) {
+            self.output.push(IrOpcode::Command {
+                name: "CompareVarValue".to_string(),
+                args: vec![Arg::Value(var_id), Arg::Value(0)],
+            });
+            let cond = if invert {
+                ComparisonOperator::Equal
+            } else {
+                ComparisonOperator::Different
+            };
+            self.output.push(IrOpcode::Command {
+                name: "JumpIf".to_string(),
+                args: vec![
+                    Arg::Value(cond as i32),
+                    Arg::Pointer(target_label.to_string()),
+                ],
+            });
+            Ok(())
         } else {
             Err(lowering_error(format!(
-                "Condition must be a comparison expression (e.g., 'x == 1') or an autovar command call, found {:?}.",
+                "Condition must be a comparison expression (e.g., 'x == 1'), an autovar command call, or a variable, found {:?}.",
                 expr.node
             )))
         }
@@ -1569,10 +1587,18 @@ skip:
         let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
-        assert_eq!(items.len(), 2, "expected TestFunc and skip as separate items");
+        assert_eq!(
+            items.len(),
+            2,
+            "expected TestFunc and skip as separate items"
+        );
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                assert_eq!(ir_func.instructions.len(), 3, "TestFunc: Message 1, Jump, Message 2");
+                assert_eq!(
+                    ir_func.instructions.len(),
+                    3,
+                    "TestFunc: Message 1, Jump, Message 2"
+                );
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
         }
@@ -1603,10 +1629,18 @@ script TestFunc #1:
         let mut lowerer = Lowerer::new(&symbols, db);
 
         let items = lowerer.lower_script_file(&script_file).unwrap();
-        assert_eq!(items.len(), 2, "expected TestFunc and .skip as separate items");
+        assert_eq!(
+            items.len(),
+            2,
+            "expected TestFunc and .skip as separate items"
+        );
         match &items[0] {
             TopLevelItem::Function(ir_func) => {
-                assert_eq!(ir_func.instructions.len(), 3, "TestFunc: Message 1, Jump, Message 2");
+                assert_eq!(
+                    ir_func.instructions.len(),
+                    3,
+                    "TestFunc: Message 1, Jump, Message 2"
+                );
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
         }

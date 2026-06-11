@@ -68,6 +68,7 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - Constant loading from database, text banks (DSPRE) and decomp projects' JSON and header files
 - Full test infrastructure with DSPRE and decomp fixtures
 - Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT` (yoinked from decomps)
+- implicit truthiness, e.g. `if x` is equivalent to `if x != 0`
 
 ### To Do
 - Vendor JSON DBs for CI purposes
@@ -83,7 +84,6 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 ### Ideas from poryscript that havent made it to rotom yet (may or may not be implemented)
 - installing it as a submodule
 - jetbrains plugin
-- implicit truthiness, e.g. `if x` is equivalent to `if x != 0`
 - inline action definitions, e.g. `ApplyMovement LOCALID_PLAYER, action(WalkFastEast 2)` or similar
 
 ---
