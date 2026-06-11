@@ -774,7 +774,7 @@ impl<'a> Lowerer<'a> {
         expr: &'b Expression,
     ) -> Option<(&'b Expression, &'b [Expression])> {
         match &expr.node {
-            ExpressionKind::Call { function, args } if matches!(&function.node, ExpressionKind::Identifier(name) if self.db.commands.contains_key(name)) => {
+            ExpressionKind::Call { function, args } if matches!(&function.node, ExpressionKind::Identifier(name) if self.db.get_command(name).is_ok()) => {
                 Some((function.as_ref(), args.as_slice()))
             }
             _ => None,
