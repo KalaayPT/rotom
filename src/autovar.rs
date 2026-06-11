@@ -2,7 +2,7 @@ use crate::database::{Command, ParamDef};
 
 pub const VAR_RESULT: i32 = 0x800C;
 
-const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C"];
+const AUTOVAR_DEFAULT_VALUES: &[&str] = &["VAR_RESULT", "0x800C", "VAR_SPECIAL_RESULT"];
 
 pub fn is_autovar_param(param: &ParamDef) -> bool {
     // This intentionally treats only VAR_RESULT-style defaults as autovar.
