@@ -31,6 +31,7 @@
 //!     EndMovement
 //! ```
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::Path;
 
@@ -38,7 +39,6 @@ use crate::BinaryQuirk;
 use crate::autovar::is_autovar_param;
 use crate::compiler::{Lexer, Parser};
 use crate::database::CommandType;
-use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct TranspileResult {
@@ -114,6 +114,63 @@ struct RenderState {
     synthetic_unused_end_counter: usize,
 }
 
+/// Parses `asm/macros/scrcmd.inc` from `decomp_root` and returns a map from command name to
+/// the set of binary param indices that are macro-optional (have `=DEFAULT` in the `.macro`
+/// line). The macro body's `\paramName` references are in binary order, so we map optional
+/// macro params to their binary position by counting `\` references.
+fn parse_macro_optional_param_indices(decomp_root: &Path) -> HashMap<String, HashSet<usize>> {
+    let inc_path = decomp_root.join("asm/macros/scrcmd.inc");
+    let Ok(text) = std::fs::read_to_string(&inc_path) else {
+        return HashMap::new();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let mut result: HashMap<String, HashSet<usize>> = HashMap::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let Some(rest) = lines[i].trim().strip_prefix(".macro ") else {
+            i += 1;
+            continue;
+        };
+        let (macro_name, params_str) = rest.split_once(' ').unwrap_or((rest, ""));
+        let macro_name = macro_name.trim();
+
+        // Names of params that have =DEFAULT in the macro signature.
+        let optional_names: HashSet<&str> = params_str
+            .split(',')
+            .filter_map(|p| {
+                let p = p.trim();
+                let eq = p.find('=')?;
+                Some(p[..eq].trim())
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
+
+        // Walk the macro body: each `\paramName` is one binary param slot.
+        let mut binary_idx = 0usize;
+        for body_line in &lines[i + 1..] {
+            if body_line.trim().starts_with(".endm") {
+                break;
+            }
+            if body_line.contains('\\') {
+                let ref_name = body_line
+                    .split('\\')
+                    .nth(1)
+                    .and_then(|s| s.split_whitespace().next())
+                    .unwrap_or("");
+                if optional_names.contains(ref_name) {
+                    result
+                        .entry(macro_name.to_string())
+                        .or_default()
+                        .insert(binary_idx);
+                }
+                binary_idx += 1;
+            }
+        }
+        i += 1;
+    }
+    result
+}
+
 /// Transpile a decomp script to Rotoscript format
 pub fn transpile(
     input: &str,
@@ -127,14 +184,17 @@ pub fn transpile(
     } else {
         input
     };
+    let macro_optional = decomp_root
+        .map_or_else(HashMap::new, parse_macro_optional_param_indices);
     let prepass = collect_prepass_data(input, db);
-    render_transpile_body(input, &prepass, db)
+    render_transpile_body(input, &prepass, db, &macro_optional)
 }
 
 fn render_transpile_body(
     input: &str,
     prepass: &PrepassData,
     db: Option<&crate::database::DatabaseV2>,
+    macro_optional: &HashMap<String, HashSet<usize>>,
 ) -> Result<TranspileResult, TranspileError> {
     let mut output = String::new();
     let mut state = RenderState::default();
@@ -181,6 +241,7 @@ fn render_transpile_body(
                     line_idx + 1,
                     prepass,
                     db,
+                    macro_optional,
                     &mut state,
                     &mut output,
                 )?;
@@ -246,12 +307,14 @@ fn render_label_line(
 }
 
 /// Render one parsed decomp statement into Rotoscript output.
+#[allow(clippy::too_many_arguments)]
 fn process_content_line(
     statement: &str,
     inline_comment: Option<&str>,
     line_number: usize,
     prepass: &PrepassData,
     db: Option<&crate::database::DatabaseV2>,
+    macro_optional: &HashMap<String, HashSet<usize>>,
     state: &mut RenderState,
     output: &mut String,
 ) -> Result<(), TranspileError> {
@@ -299,7 +362,7 @@ fn process_content_line(
         return Ok(());
     }
 
-    render_command_line(statement, inline_comment, db, output);
+    render_command_line(statement, inline_comment, db, macro_optional, output);
     state.last_emitted_endmovement = split_command_and_args(statement)
         .0
         .eq_ignore_ascii_case("EndMovement");
@@ -389,6 +452,7 @@ fn render_command_line(
     statement: &str,
     inline_comment: Option<&str>,
     db: Option<&crate::database::DatabaseV2>,
+    macro_optional: &HashMap<String, HashSet<usize>>,
     output: &mut String,
 ) {
     let (raw_cmd_name, args) = split_command_and_args(statement);
@@ -397,7 +461,7 @@ fn render_command_line(
     output.push_str("    ");
     output.push_str(cmd_name.as_ref());
     if let Some(args) = args {
-        let normalized_args = normalize_command_args(cmd_name.as_ref(), args, db);
+        let normalized_args = normalize_command_args(cmd_name.as_ref(), args, db, macro_optional);
         if !normalized_args.is_empty() {
             output.push(' ');
             output.push_str(&normalized_args);
@@ -499,13 +563,14 @@ fn normalize_command_args(
     cmd_name: &str,
     args: &str,
     db: Option<&crate::database::DatabaseV2>,
+    macro_optional: &HashMap<String, HashSet<usize>>,
 ) -> String {
     if args.is_empty() {
         return String::new();
     }
 
     if let Some(db) = db {
-        reorder_decomp_args_to_binary(cmd_name, args, db)
+        reorder_decomp_args_to_binary(cmd_name, args, db, macro_optional)
     } else {
         args.to_owned()
     }
@@ -721,11 +786,18 @@ fn resolve_opcode_alias(db: &crate::database::DatabaseV2, cmd_name: &str) -> Opt
         .map(|(name, _)| name.clone())
 }
 
-/// Rewrites shortened decomp macro calls into Rotom's required-first source shape.
+/// Rewrites shortened decomp macro calls into binary parameter order.
+///
+/// Decomp `.macro` definitions can either keep args in binary order or move optional args
+/// (those with `=DEFAULT` syntax) to the end. A param having a `default` in the v2 DB does not
+/// mean the macro allows omitting it — some defaults are binary-level only. This function
+/// uses `macro_optional_indices` (parsed from `scrcmd.inc`) to identify which binary param
+/// positions are actually omittable in the macro.
 fn reorder_decomp_args_to_binary(
     cmd_name: &str,
     args_str: &str,
     db: &crate::database::DatabaseV2,
+    macro_optional_indices: &HashMap<String, HashSet<usize>>,
 ) -> String {
     let Ok(cmd) = db.get_command(cmd_name) else {
         return args_str.to_owned();
@@ -736,13 +808,17 @@ fn reorder_decomp_args_to_binary(
         return args_str.to_owned();
     }
 
+    let cmd_optional = macro_optional_indices.get(cmd_name);
     let mut required_indices: Vec<usize> = Vec::new();
     let mut optional_indices: Vec<usize> = Vec::new();
     for (i, p) in params.iter().enumerate() {
-        if p.default.is_none() || is_autovar_param(p) {
-            required_indices.push(i);
-        } else {
+        let is_optional = p.default.is_some()
+            && !is_autovar_param(p)
+            && cmd_optional.is_some_and(|s| s.contains(&i));
+        if is_optional {
             optional_indices.push(i);
+        } else {
+            required_indices.push(i);
         }
     }
 
