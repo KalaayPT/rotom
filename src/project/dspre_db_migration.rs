@@ -33,51 +33,23 @@ fn index_scrcmd_by_id(map: &Map<String, Value>) -> BTreeMap<u16, (&str, &Value)>
     out
 }
 
-fn without_description(v: &Value) -> Value {
-    match v {
-        Value::Object(m) => {
-            let mut c = Map::with_capacity(m.len());
-            for (k, vv) in m {
-                if k != "description" {
-                    c.insert(k.clone(), vv.clone());
-                }
-            }
-            Value::Object(c)
-        }
-        other => other.clone(),
-    }
-}
-
-fn without_description_and_parameter_values(v: &Value) -> Value {
-    match v {
-        Value::Object(m) => {
-            let mut c = Map::with_capacity(m.len());
-            for (k, vv) in m {
-                if k != "description" && k != "parameter_values" {
-                    c.insert(k.clone(), vv.clone());
-                }
-            }
-            Value::Object(c)
-        }
-        other => other.clone(),
-    }
-}
-
+/// Detects a description-only change: the merge shape (`name`, `decomp_name`, `parameters`,
+/// `parameter_types`) must match the baseline, and only the `description` differs.
+///
+/// Uses [`dspre_merge_shape_differs`] so that v2-only fields like `notes` (present in the
+/// vanilla baseline but absent from DSPRE-edited v1 DBs) and display-only `parameter_values`
+/// don't prevent description merges.
 fn description_merge_candidate(vanilla_cmd: Option<&Value>, user_cmd: &Value) -> Option<String> {
-    let vanilla_clean = vanilla_cmd.map(without_description);
-    let user_clean = without_description(user_cmd);
-    match vanilla_clean {
-        None => None,
-        Some(ref v_clean) if v_clean != &user_clean => None,
-        Some(_) => {
-            let user_d = user_cmd.get("description").and_then(Value::as_str)?;
-            let van_d = vanilla_cmd?
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            (user_d != van_d).then(|| user_d.to_owned())
-        }
+    let vanilla_cmd = vanilla_cmd?;
+    if dspre_merge_shape_differs(Some(vanilla_cmd), user_cmd) {
+        return None;
     }
+    let user_d = user_cmd.get("description").and_then(Value::as_str)?;
+    let van_d = vanilla_cmd
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    (user_d != van_d).then(|| user_d.to_owned())
 }
 
 /// Path to DSPRE **`scrcmd_database.json`** under Roaming **`…/edited_databases/{project_folder_name}`** for a Wine drive layout (`wine_prefix` + **`drive_c/users/{wine_windows_username}/…`**).
@@ -242,7 +214,12 @@ struct Row {
     user_only_entry: bool,
 }
 
-fn classify(vanilla_map: Option<&Map<String, Value>>, user_map: &Map<String, Value>) -> Vec<Row> {
+fn classify_rows(
+    vanilla_map: Option<&Map<String, Value>>,
+    user_map: &Map<String, Value>,
+    shape_differs: fn(Option<&Value>, &Value) -> bool,
+    desc_candidate: fn(Option<&Value>, &Value) -> Option<String>,
+) -> Vec<Row> {
     let v_index = vanilla_map.map(index_scrcmd_by_id).unwrap_or_default();
     let u_index = index_scrcmd_by_id(user_map);
     let mut ids: Vec<u16> = v_index.keys().chain(u_index.keys()).copied().collect();
@@ -258,12 +235,8 @@ fn classify(vanilla_map: Option<&Map<String, Value>>, user_map: &Map<String, Val
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let user_only_entry = vanilla_v_opt.is_none();
-            let merged = description_merge_candidate(vanilla_v_opt, user_v);
-            let structural_change = without_description_and_parameter_values(user_v)
-                != vanilla_v_opt.map_or_else(
-                    || Value::Object(Map::new()),
-                    without_description_and_parameter_values,
-                );
+            let merged = desc_candidate(vanilla_v_opt, user_v);
+            let structural_change = shape_differs(vanilla_v_opt, user_v);
             Some(Row {
                 id,
                 label,
@@ -275,7 +248,33 @@ fn classify(vanilla_map: Option<&Map<String, Value>>, user_map: &Map<String, Val
         .collect()
 }
 
-fn print_summary(rows: &[Row]) {
+/// Shape comparison for movements: only `name` and `decomp_name` matter (no parameters).
+fn movement_shape_differs(vanilla: Option<&Value>, user: &Value) -> bool {
+    let user_name = user.get("name").and_then(Value::as_str);
+    let user_decomp = user.get("decomp_name").and_then(Value::as_str);
+    let van_name = vanilla.and_then(|v| v.get("name").and_then(Value::as_str));
+    let van_decomp = vanilla.and_then(|v| v.get("decomp_name").and_then(Value::as_str));
+    (user_name, user_decomp) != (van_name, van_decomp)
+}
+
+/// Description merge candidate for movements: shape must match, only description differs.
+fn movement_description_merge_candidate(
+    vanilla: Option<&Value>,
+    user: &Value,
+) -> Option<String> {
+    let vanilla = vanilla?;
+    if movement_shape_differs(Some(vanilla), user) {
+        return None;
+    }
+    let user_d = user.get("description").and_then(Value::as_str)?;
+    let van_d = vanilla
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    (user_d != van_d).then(|| user_d.to_owned())
+}
+
+fn print_summary(rows: &[Row], section: &str) {
     let mut d = 0usize;
     let mut s = 0usize;
     let mut u = 0usize;
@@ -288,7 +287,7 @@ fn print_summary(rows: &[Row]) {
             d += 1;
         }
     }
-    eprintln!("scrcmd v1 diff: {d} description-only, {s} structural, {u} user-only vs baseline");
+    eprintln!("{section} v1 diff: {d} description-only, {s} structural, {u} user-only vs baseline");
 
     let mut n = 0usize;
     for r in rows {
@@ -415,6 +414,19 @@ pub fn dspre_edited_db_suggests_followplat(user_scrcmd: &Map<String, Value>) -> 
         >= 860
 }
 
+/// Count of opcode ids present in the user DB but absent from the vanilla baseline.
+/// Used for baseline selection: the baseline that covers more of the user's commands
+/// (fewer user-only entries) is preferred, since user modifications to extended commands
+/// inflate intersection diff scores against the baseline that actually contains them.
+pub fn dspre_user_only_count(
+    user_scrcmd: &Map<String, Value>,
+    vanilla_scrcmd_obj: &Map<String, Value>,
+) -> usize {
+    let u_index = index_scrcmd_by_id(user_scrcmd);
+    let v_index = index_scrcmd_by_id(vanilla_scrcmd_obj);
+    u_index.keys().filter(|id| !v_index.contains_key(id)).count()
+}
+
 fn json_delta_one_line(v: Option<&Value>) -> String {
     match v {
         None => "<missing>".to_string(),
@@ -465,27 +477,22 @@ fn dspre_v1_parameter_type_to_v2(t: &str) -> &'static str {
     }
 }
 
-fn dspre_v1_numeric_placeholder_cell(slot: Option<&Value>) -> bool {
-    matches!(slot, Some(Value::Number(_)))
+/// Extracts the semantic label from a v1 `parameter_values` cell like `"Var: NPC ID"` -> `"NPC ID"`.
+/// Returns `None` when the cell has no `": "` prefix (bare type labels like `"Integer"` are not
+/// useful as parameter names) or when the label is empty.
+fn dspre_v1_parameter_value_label(s: &str) -> Option<String> {
+    let s = s.trim();
+    let label = s.split_once(": ").map_or(s, |(_, l)| l);
+    let label = label.trim();
+    (!label.is_empty() && label != s).then(|| label.to_string())
 }
 
-/// Trimmed `parameter_types` entries from a v1 command object (for baseline-vs-edited comparisons).
-fn dspre_v1_parameter_type_labels(cmd: Option<&Value>) -> Vec<String> {
-    cmd.and_then(|c| c.get("parameter_types").and_then(Value::as_array))
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(|s| s.trim().to_string())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Builds v2 **`params`** from DSPRE **`parameters`** / **`parameter_types`**, zipped with **`dspre_zip_arity`**.
+/// Builds v2 `params` from DSPRE v1 `parameters` / `parameter_types` / `parameter_values`,
+/// zipped with [`dspre_zip_arity`].
 ///
-/// Numeric placeholders reuse **`existing_v2[i].name`** unless **`vanilla_v1`** shows that slot’s
-/// **`parameter_types`** label changed vs the edited DB — then the edited label becomes the name
-/// (DSPRE uses semantic labels like `OwMovementType` beside numeric cells).
+/// Name priority: (1) user-renamed `parameter_values` label (differs from baseline), (2) non-empty
+/// string cell value, (3) existing v2 name, (4) `parameter_values` label, (5) `arg_N` fallback.
+/// Type priority: mapped v1 `parameter_types` label, falling back to existing v2 type when unmapped.
 fn build_v2_params_from_dspre_v1(
     cmd: &Value,
     existing_v2: &[Value],
@@ -501,58 +508,47 @@ fn build_v2_params_from_dspre_v1(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let values = cmd
+        .get("parameter_values")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let vanilla_values =
+        vanilla_v1.and_then(|v| v.get("parameter_values").and_then(Value::as_array));
     let n = dspre_zip_arity(&cells, &types);
-    let vanilla_type_labels = dspre_v1_parameter_type_labels(vanilla_v1);
+
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let ty_mapped = types
             .get(i)
             .and_then(Value::as_str)
             .map_or("unknown", dspre_v1_parameter_type_to_v2);
-
         let ex = existing_v2.get(i).and_then(Value::as_object);
         let cell_opt = cells.get(i);
-        let placeholder_or_missing_cell =
-            dspre_v1_numeric_placeholder_cell(cell_opt) || cell_opt.is_none();
 
-        let user_ty_label = types.get(i).and_then(Value::as_str).map_or("", str::trim);
-        let rename_from_edited_type_label = vanilla_v1.is_some()
-            && vanilla_type_labels.len() > i
-            && placeholder_or_missing_cell
-            && !user_ty_label.is_empty()
-            && user_ty_label != vanilla_type_labels.get(i).map_or("", String::as_str);
+        let user_pv = values
+            .get(i)
+            .and_then(Value::as_str)
+            .and_then(dspre_v1_parameter_value_label);
+        let vanilla_pv = vanilla_values
+            .and_then(|vv| vv.get(i))
+            .and_then(Value::as_str)
+            .and_then(dspre_v1_parameter_value_label);
+        let user_renamed = user_pv.is_some() && user_pv != vanilla_pv;
 
-        let name = if rename_from_edited_type_label {
-            user_ty_label.to_string()
+        let name = if user_renamed {
+            user_pv.clone().unwrap_or_default()
         } else {
-            ex.and_then(|o| {
-                if placeholder_or_missing_cell {
-                    o.get("name")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string)
-                } else {
-                    cell_opt
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string)
-                        .or_else(|| {
-                            o.get("name")
-                                .and_then(Value::as_str)
-                                .map(ToString::to_string)
-                        })
-                }
-            })
-            .or_else(|| {
-                cell_opt.and_then(|v| match v {
-                    Value::String(s) => {
-                        let t = s.trim();
-                        (!t.is_empty()).then(|| t.to_string())
-                    }
-                    _ => None,
+            cell_opt
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    ex.and_then(|o| o.get("name").and_then(Value::as_str)).map(ToString::to_string)
                 })
-            })
-            .unwrap_or_else(|| format!("arg_{}", i + 1))
+                .or(user_pv)
+                .unwrap_or_else(|| format!("arg_{}", i + 1))
         };
 
         let ty_json = if ty_mapped == "unknown" {
@@ -677,6 +673,9 @@ fn patch_script_cmd_from_v1_user_shape(
     true
 }
 
+/// Patches descriptions on `script_cmd` / `levelscript_cmd` entries only. Movements are excluded
+/// because their ID space overlaps with script commands (both use 0–254), so a scrcmd description
+/// patch would otherwise corrupt movement descriptions.
 fn patch_v2_descriptions(doc: &mut Value, patches: &HashMap<u16, String>) -> usize {
     let Some(commands) = doc.get_mut("commands").and_then(Value::as_object_mut) else {
         return 0;
@@ -686,6 +685,12 @@ fn patch_v2_descriptions(doc: &mut Value, patches: &HashMap<u16, String>) -> usi
         let Some(obj) = cmd.as_object_mut() else {
             continue;
         };
+        let Some(ty) = obj.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if ty != "script_cmd" && ty != "levelscript_cmd" {
+            continue;
+        }
         let Some(id64) = obj.get("id").and_then(Value::as_u64) else {
             continue;
         };
@@ -699,6 +704,126 @@ fn patch_v2_descriptions(doc: &mut Value, patches: &HashMap<u16, String>) -> usi
         }
     }
     applied
+}
+
+/// Finds the v2 `commands` key for a `movement` entry with the given numeric `id`.
+fn find_movement_key_by_id(doc: &Value, id: u16) -> Option<String> {
+    let commands = doc.get("commands").and_then(Value::as_object)?;
+    commands
+        .iter()
+        .find(|(_, cmd)| {
+            cmd.get("type").and_then(Value::as_str) == Some("movement")
+                && cmd.get("id").and_then(Value::as_u64) == Some(u64::from(id))
+        })
+        .map(|(k, _)| k.clone())
+}
+
+/// Inserts or updates a v2 `movement` entry from a v1 movement object. For existing entries,
+/// updates `legacy_name` and `description` and renames the key when the v1 name differs. For new
+/// entries, creates a standard movement shape with the default `length` param.
+fn patch_v2_movement_from_v1(doc: &mut Value, user_v1: &Value, id: u16) -> bool {
+    let name = user_v1
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let description = user_v1
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    let existing_key = find_movement_key_by_id(doc, id);
+    let Some(commands) = doc.get_mut("commands").and_then(Value::as_object_mut) else {
+        return false;
+    };
+
+    if let Some(key) = existing_key
+        && let Some(entry) = commands
+            .get_mut(&key)
+            .and_then(Value::as_object_mut)
+    {
+        entry.insert("legacy_name".into(), Value::String(name.to_string()));
+        if !description.is_empty() {
+            entry.insert("description".into(), Value::String(description.to_string()));
+        }
+        if key != name
+            && let Some(val) = commands.remove(&key)
+        {
+            commands.insert(name.to_string(), val);
+        }
+        return true;
+    }
+
+    let mut m = Map::with_capacity(5);
+    m.insert("type".into(), Value::String("movement".into()));
+    m.insert(
+        "id".into(),
+        Value::Number(serde_json::Number::from(u64::from(id))),
+    );
+    m.insert("legacy_name".into(), Value::String(name.to_string()));
+    m.insert(
+        "params".into(),
+        Value::Array(vec![serde_json::json!(
+            {"default": "1", "name": "length", "type": "u16"}
+        )]),
+    );
+    if !description.is_empty() {
+        m.insert("description".into(), Value::String(description.to_string()));
+    }
+    commands.insert(name.to_string(), Value::Object(m));
+    true
+}
+
+/// Patches descriptions on `movement` entries only (separate from `patch_v2_descriptions` because
+/// movement and `script_cmd` ID spaces overlap).
+fn patch_v2_movement_descriptions(
+    doc: &mut Value,
+    patches: &HashMap<u16, String>,
+) -> usize {
+    let Some(commands) = doc.get_mut("commands").and_then(Value::as_object_mut) else {
+        return 0;
+    };
+    let mut applied = 0usize;
+    for cmd in commands.values_mut() {
+        let Some(obj) = cmd.as_object_mut() else {
+            continue;
+        };
+        if obj.get("type").and_then(Value::as_str) != Some("movement") {
+            continue;
+        }
+        let Some(id64) = obj.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
+        if id64 > u64::from(u16::MAX) {
+            continue;
+        }
+        if let Some(desc) = patches.get(&(id64 as u16)) {
+            obj.insert("description".into(), Value::String(desc.clone()));
+            applied += 1;
+        }
+    }
+    applied
+}
+
+/// Sorts the v2 `commands` object by numeric `id`, then by key name as a tie-breaker.
+/// Entries without an `id` (e.g. macros) sort after all id-bearing entries. Requires
+/// `serde_json` `preserve_order` feature so insertion order is retained on write.
+fn sort_v2_commands_by_id(doc: &mut Value) {
+    let Some(commands) = doc.get_mut("commands").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let mut entries: Vec<(String, Value)> = commands
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    entries.sort_by(|(key_a, val_a), (key_b, val_b)| {
+        let a_id = val_a.get("id").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        let b_id = val_b.get("id").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        a_id.cmp(&b_id).then_with(|| key_a.cmp(key_b))
+    });
+    commands.clear();
+    for (k, v) in entries {
+        commands.insert(k, v);
+    }
 }
 
 /// Compares the DSPRE-edited **v1** **`scrcmd`** to **`vanilla_opt`** and after **`[Y/n]`** may patch **`legacy_name`**,
@@ -756,10 +881,30 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         )));
     };
 
-    let rows = classify(Some(&vanilla_scrcmd_obj), &user_scrcmd);
-    if !rows
-        .iter()
-        .any(|r| r.structural_change || r.user_only_entry || r.merged_description.is_some())
+    let rows = classify_rows(
+        Some(&vanilla_scrcmd_obj),
+        &user_scrcmd,
+        dspre_merge_shape_differs,
+        description_merge_candidate,
+    );
+    let user_movements = user_raw.get("movements").and_then(Value::as_object);
+    let vanilla_movements = vanilla_root.get("movements").and_then(Value::as_object);
+    let move_rows = user_movements
+        .map(|um| {
+            classify_rows(
+                vanilla_movements,
+                um,
+                movement_shape_differs,
+                movement_description_merge_candidate,
+            )
+        })
+        .unwrap_or_default();
+
+    if !rows.iter().any(|r| {
+        r.structural_change || r.user_only_entry || r.merged_description.is_some()
+    }) && !move_rows.iter().any(|r| {
+        r.structural_change || r.user_only_entry || r.merged_description.is_some()
+    })
     {
         return Ok(false);
     }
@@ -770,50 +915,30 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         vanilla.repo_path,
         &vanilla.commit_sha[..7.min(vanilla.commit_sha.len())],
     );
-    print_summary(&rows);
+    print_summary(&rows, "scrcmd");
+    if !move_rows.is_empty() {
+        print_summary(&move_rows, "movements");
+    }
 
     let v_by_id = scrcmd_map_by_command_id(&vanilla_scrcmd_obj);
     let u_by_id = scrcmd_map_by_command_id(&user_scrcmd);
 
     let structural_merge_ids: HashSet<u16> = rows
         .iter()
-        .filter_map(|r| {
-            if r.user_only_entry || !r.structural_change {
-                return None;
-            }
-            let u_cmd = u_by_id.get(&r.id)?;
-            dspre_merge_shape_differs(v_by_id.get(&r.id).copied(), u_cmd).then_some(r.id)
-        })
+        .filter(|r| r.structural_change)
+        .map(|r| r.id)
         .collect();
-
-    let structural_visual = rows
-        .iter()
-        .filter(|r| r.structural_change && !r.user_only_entry)
-        .count();
-    if structural_visual > structural_merge_ids.len() {
-        let n = structural_visual - structural_merge_ids.len();
-        eprintln!(
-            "Note: {} structural row(s) only differ in display-only DSPRE noise (typically `parameter_values` or dangling `parameter_types`); skipping v2 patch for those.",
-            n,
-        );
-    }
 
     let mut printed_struct_detail = false;
     let mut structural_detailed = 0usize;
     for r in &rows {
-        if !r.structural_change
-            || r.user_only_entry
-            || structural_detailed >= STRUCTURAL_DELTA_PRINT_MAX
-        {
+        if !r.structural_change || structural_detailed >= STRUCTURAL_DELTA_PRINT_MAX {
             continue;
         }
         let label = r.label.as_deref().unwrap_or("?");
         let Some(shape) = u_by_id.get(&r.id) else {
             continue;
         };
-        if !dspre_merge_shape_differs(v_by_id.get(&r.id).copied(), shape) {
-            continue;
-        }
         if !printed_struct_detail {
             printed_struct_detail = true;
             eprintln!(
@@ -834,40 +959,44 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         .count();
     let n_struct_patch = structural_merge_ids.len();
 
+    let move_struct_ids: HashSet<u16> = move_rows
+        .iter()
+        .filter(|r| r.structural_change)
+        .map(|r| r.id)
+        .collect();
+    let n_move_patch = move_struct_ids.len();
+    let n_move_desc_patch = move_rows
+        .iter()
+        .filter(|r| r.merged_description.is_some() && !move_struct_ids.contains(&r.id))
+        .count();
+
+    let total_patches =
+        n_desc_patch + n_struct_patch + n_move_patch + n_move_desc_patch;
+
     if options.dry_run {
-        if n_desc_patch + n_struct_patch > 0 {
+        if total_patches > 0 {
             eprintln!(
-                "dry-run: skipping {} description merge(s) and {} structural v2 patch(es) → {}",
-                n_desc_patch,
-                n_struct_patch,
+                "dry-run: skipping {n_desc_patch} description merge(s), {n_struct_patch} structural patch(es), {n_move_patch} movement patch(es), {n_move_desc_patch} movement description merge(s) → {}",
                 v2_path.display()
             );
         }
         return Ok(false);
     }
 
-    if n_desc_patch == 0 && n_struct_patch == 0 {
-        if rows.iter().any(|r| r.user_only_entry) {
-            eprintln!(
-                "Skipping v2 database merge: edited DB has {} id(s) that are absent from baseline (user-only additions).",
-                rows.iter().filter(|r| r.user_only_entry).count(),
-            );
-        }
+    if total_patches == 0 {
         return Ok(false);
     }
 
     if options.non_interactive || !std::io::stdin().is_terminal() {
         eprintln!(
-            "non-interactive: skipping {} description merge(s) and {} structural v2 patch(es) → {}",
-            n_desc_patch,
-            n_struct_patch,
+            "non-interactive: skipping {n_desc_patch} description merge(s), {n_struct_patch} structural patch(es), {n_move_patch} movement patch(es), {n_move_desc_patch} movement description merge(s) → {}",
             v2_path.display()
         );
         return Ok(false);
     }
 
     print!(
-        "Apply {n_desc_patch} description merge(s) and {n_struct_patch} structural patch(es) onto {}?\nStructural patches overwrite **legacy_name**, **description**, and **params** from edited scrcmd v1; Rotom preserves v2 extras such as **notes**. [Y/n] ",
+        "Apply {n_desc_patch} description merge(s), {n_struct_patch} structural patch(es), {n_move_patch} movement patch(es), and {n_move_desc_patch} movement description merge(s) onto {}?\nStructural patches overwrite **legacy_name**, **description**, and **params** from edited scrcmd v1; Rotom preserves v2 extras such as **notes**. [Y/n] ",
         v2_path.display()
     );
     std::io::stdout()
@@ -925,9 +1054,41 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         );
     }
 
-    if n_desc_done == 0 && n_struct_done == 0 {
+    let mut n_move_done = 0usize;
+    if let Some(user_movements) = user_movements {
+        let u_move_by_id = scrcmd_map_by_command_id(user_movements);
+        for id in &move_struct_ids {
+            let Some(user_mv) = u_move_by_id.get(id).copied() else {
+                continue;
+            };
+            if patch_v2_movement_from_v1(&mut doc, user_mv, *id) {
+                n_move_done += 1;
+            }
+        }
+    }
+
+    let n_move_desc_done = if n_move_desc_patch > 0 {
+        let move_desc_patches: HashMap<u16, String> = move_rows
+            .iter()
+            .filter(|r| r.merged_description.is_some() && !move_struct_ids.contains(&r.id))
+            .filter_map(|r| r.merged_description.clone().map(|d| (r.id, d)))
+            .collect();
+        patch_v2_movement_descriptions(&mut doc, &move_desc_patches)
+    } else {
+        0
+    };
+
+    if n_desc_done == 0 && n_struct_done == 0 && n_move_done == 0 && n_move_desc_done == 0 {
         return Ok(false);
     }
+
+    eprintln!(
+        "wrote {n_desc_done} description merge(s), {n_struct_done} structural patch(es), {n_move_done} movement patch(es), {n_move_desc_done} movement description merge(s) → {}",
+        v2_path.display()
+    );
+
+    sort_v2_commands_by_id(&mut doc);
+
     let out =
         serde_json::to_vec_pretty(&doc).map_err(|source| ProjectError::SerializeJson { source })?;
 
@@ -958,12 +1119,6 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         source,
     })?;
 
-    eprintln!(
-        "wrote {} description merge(s), {} structural patch(es) → {}",
-        n_desc_done,
-        n_struct_done,
-        v2_path.display()
-    );
     Ok(true)
 }
 
@@ -1132,29 +1287,74 @@ mod tests {
     }
 
     #[test]
-    fn build_params_uses_edited_parameter_types_label_when_baseline_label_changed() {
+    fn build_params_keeps_existing_name_when_only_type_label_changed() {
+        // When parameter_types changed but parameter_values didn't, the existing v2 name
+        // should be kept (type labels are types, not names).
         let existing = vec![
             serde_json::json!({"name": "event_id", "type": "u16"}),
             serde_json::json!({"name": "movement", "type": "u16"}),
         ];
         let vanilla_v1 = serde_json::json!({
             "parameters": [2, 2],
-            "parameter_types": ["Overworld", "Action"],
-            "parameter_values": [],
+            "parameter_types": ["Overworld", "OwMovementType"],
+            "parameter_values": ["Flex: Event ID", "u16: Movement"],
         });
         let user_v1 = serde_json::json!({
             "parameters": [2, 2],
-            "parameter_types": ["Overworld", "OwMovementType"],
-            "parameter_values": [],
+            "parameter_types": ["Overworld", "Action"],
+            "parameter_values": ["Flex: Event ID", "u16: Movement"],
         });
         let merged = build_v2_params_from_dspre_v1(&user_v1, &existing, Some(&vanilla_v1));
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0]["name"], serde_json::json!("event_id"));
-        assert_eq!(merged[1]["name"], serde_json::json!("OwMovementType"));
+        assert_eq!(merged[1]["name"], serde_json::json!("movement"));
     }
 
     #[test]
-    fn patch_set_movement_type_renames_second_param_from_dspre_type_label() {
+    fn build_params_uses_parameter_values_label_for_user_only_entry() {
+        // CreateOW scenario: no vanilla baseline, no existing v2 params.
+        // parameter_values labels should become param names.
+        let user_v1 = serde_json::json!({
+            "parameters": [2, 2, 2, 2, 2, 2],
+            "parameter_types": ["Integer", "Integer", "Integer", "Integer", "Integer", "Integer"],
+            "parameter_values": [
+                "Var: NPC ID",
+                "Var: x coord",
+                "Var: z coord",
+                "Var: direction of the NPC",
+                "Var: owtable entry number",
+                "Var: movement code"
+            ],
+        });
+        let merged = build_v2_params_from_dspre_v1(&user_v1, &[], None);
+        assert_eq!(merged.len(), 6);
+        assert_eq!(merged[0]["name"], serde_json::json!("NPC ID"));
+        assert_eq!(merged[1]["name"], serde_json::json!("x coord"));
+        assert_eq!(merged[2]["name"], serde_json::json!("z coord"));
+        assert_eq!(merged[3]["name"], serde_json::json!("direction of the NPC"));
+        assert_eq!(merged[0]["type"], serde_json::json!("u16"));
+    }
+
+    #[test]
+    fn build_params_detects_user_renamed_parameter_values() {
+        // When the user changed the parameter_values label vs vanilla, the new label wins.
+        let existing = vec![serde_json::json!({"name": "old_name", "type": "u16"})];
+        let vanilla_v1 = serde_json::json!({
+            "parameters": [2],
+            "parameter_types": ["Integer"],
+            "parameter_values": ["Var: Old Label"],
+        });
+        let user_v1 = serde_json::json!({
+            "parameters": [2],
+            "parameter_types": ["Integer"],
+            "parameter_values": ["Var: New Label"],
+        });
+        let merged = build_v2_params_from_dspre_v1(&user_v1, &existing, Some(&vanilla_v1));
+        assert_eq!(merged[0]["name"], serde_json::json!("New Label"));
+    }
+
+    #[test]
+    fn patch_set_movement_type_keeps_existing_name_when_only_type_label_changed() {
         let mut doc = serde_json::json!({
             "commands": {
                 "SetMovementType": {
@@ -1173,15 +1373,15 @@ mod tests {
         let vanilla_v1 = serde_json::json!({
             "name": "SetOWMovement",
             "parameters": [2, 2],
-            "parameter_types": ["Overworld", "Action"],
-            "parameter_values": [],
+            "parameter_types": ["Overworld", "OwMovementType"],
+            "parameter_values": ["Flex: Event ID", "u16: Movement"],
             "description": "",
         });
         let user_v1 = serde_json::json!({
             "name": "SetOWMovement",
             "parameters": [2, 2],
-            "parameter_types": ["Overworld", "OwMovementType"],
-            "parameter_values": [],
+            "parameter_types": ["Overworld", "Action"],
+            "parameter_values": ["Flex: Event ID", "u16: Movement"],
             "description": "",
         });
         assert!(patch_script_cmd_from_v1_user_shape(
@@ -1194,11 +1394,33 @@ mod tests {
             .as_array()
             .unwrap();
         assert_eq!(p[0]["name"], "event_id");
-        assert_eq!(p[1]["name"], "OwMovementType");
+        assert_eq!(p[1]["name"], "movement");
         assert_eq!(
             doc["commands"]["SetMovementType"]["notes"],
             serde_json::json!("keep")
         );
+    }
+
+    #[test]
+    fn parameter_value_label_strips_type_prefix() {
+        assert_eq!(
+            dspre_v1_parameter_value_label("Var: NPC ID").as_deref(),
+            Some("NPC ID")
+        );
+        assert_eq!(
+            dspre_v1_parameter_value_label("u16: Brightness").as_deref(),
+            Some("Brightness")
+        );
+        assert_eq!(
+            dspre_v1_parameter_value_label("Flex: Trainer ID").as_deref(),
+            Some("Trainer ID")
+        );
+        // No prefix -> None (bare type labels are not useful names)
+        assert_eq!(dspre_v1_parameter_value_label("Integer"), None);
+        assert_eq!(dspre_v1_parameter_value_label("???"), None);
+        // Empty label after prefix -> None
+        assert_eq!(dspre_v1_parameter_value_label("u16: "), None);
+        assert_eq!(dspre_v1_parameter_value_label(""), None);
     }
 
     #[test]
@@ -1231,9 +1453,129 @@ mod tests {
         });
         let mut user = van.clone();
         user["parameter_values"] = serde_json::json!(["b"]);
+        assert!(!dspre_merge_shape_differs(Some(&van), &user));
+    }
+
+    #[test]
+    fn description_merge_succeeds_when_vanilla_has_notes_but_user_does_not() {
+        let vanilla = serde_json::json!({
+            "name": "WaitAB",
+            "decomp_name": "WaitABPress",
+            "parameters": [],
+            "parameter_types": [],
+            "parameter_values": [],
+            "description": "old desc",
+            "notes": "v2-only note that DSPRE v1 lacks",
+        });
+        let user = serde_json::json!({
+            "name": "WaitAB",
+            "decomp_name": "WaitABPress",
+            "parameters": [],
+            "parameter_types": [],
+            "parameter_values": [],
+            "description": "new desc",
+        });
         assert_eq!(
-            without_description_and_parameter_values(&van),
-            without_description_and_parameter_values(&user)
+            description_merge_candidate(Some(&vanilla), &user).as_deref(),
+            Some("new desc")
+        );
+    }
+
+    #[test]
+    fn user_only_entry_is_structural_change() {
+        let user = serde_json::json!({
+            "name": "CreateOW",
+            "decomp_name": "CreateOW",
+            "parameters": [2, 2, 2, 2, 2, 2],
+            "parameter_types": ["Integer", "Integer", "Integer", "Integer", "Integer", "Integer"],
+            "parameter_values": [],
+            "description": "spawn an NPC",
+        });
+        assert!(dspre_merge_shape_differs(None, &user));
+    }
+
+    #[test]
+    fn user_only_entry_patches_v2_placeholder() {
+        let mut doc = serde_json::json!({
+            "commands": {
+                "CMD_842": {
+                    "type": "script_cmd",
+                    "id": 842,
+                    "legacy_name": "CMD_842",
+                    "description": "",
+                    "params": []
+                }
+            }
+        });
+        let user_v1 = serde_json::json!({
+            "name": "CreateOW",
+            "decomp_name": "CreateOW",
+            "parameters": [2, 2, 2, 2, 2, 2],
+            "parameter_types": ["Integer", "Integer", "Integer", "Integer", "Integer", "Integer"],
+            "parameter_values": [],
+            "description": "Bypass the event file to spawn an NPC at the given coordinates",
+        });
+        assert!(patch_script_cmd_from_v1_user_shape(
+            &mut doc, &user_v1, 842, None
+        ));
+        let cmd = doc["commands"]["CMD_842"].as_object().unwrap();
+        assert_eq!(cmd["legacy_name"], "CreateOW");
+        assert_eq!(
+            cmd["description"],
+            "Bypass the event file to spawn an NPC at the given coordinates"
+        );
+        let params = cmd["params"].as_array().unwrap();
+        assert_eq!(params.len(), 6);
+        assert_eq!(params[0]["type"], "u16");
+    }
+
+    #[test]
+    fn dspre_user_only_count_counts_missing_ids() {
+        let user = serde_json::json!({
+            "0x0002": { "name": "A", "parameters": [], "parameter_types": [], "parameter_values": [] },
+            "0x035C": { "name": "Extra", "parameters": [], "parameter_types": [], "parameter_values": [] },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let stock = serde_json::json!({
+            "0x0002": { "name": "A", "parameters": [], "parameter_types": [], "parameter_values": [] },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let follow = serde_json::json!({
+            "0x0002": { "name": "A", "parameters": [], "parameter_types": [], "parameter_values": [] },
+            "0x035C": { "name": "Extra", "parameters": [], "parameter_types": [], "parameter_values": [] },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(dspre_user_only_count(&user, &stock), 1);
+        assert_eq!(dspre_user_only_count(&user, &follow), 0);
+    }
+
+    #[test]
+    fn sort_v2_commands_by_id_orders_numerically() {
+        let mut doc = serde_json::json!({
+            "commands": {
+                "ZebraCmd": { "type": "script_cmd", "id": 300, "params": [] },
+                "AlphaCmd": { "type": "script_cmd", "id": 100, "params": [] },
+                "MidCmd": { "type": "script_cmd", "id": 200, "params": [] },
+                "AMacro": { "type": "macro", "params": [] },
+                "BMacro": { "type": "macro", "params": [] },
+            }
+        });
+        sort_v2_commands_by_id(&mut doc);
+        let keys: Vec<&str> = doc["commands"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["AlphaCmd", "MidCmd", "ZebraCmd", "AMacro", "BMacro"]
         );
     }
 
@@ -1294,6 +1636,107 @@ mod tests {
             ),
             "unexpected path: {}",
             p.display()
+        );
+    }
+
+    #[test]
+    fn patch_v2_movement_inserts_user_only_movement() {
+        let mut doc = serde_json::json!({"commands": {}});
+        let user_v1 = serde_json::json!({
+            "name": "Heart",
+            "decomp_name": "",
+            "description": "Shows a heart above the event's head."
+        });
+        assert!(patch_v2_movement_from_v1(&mut doc, &user_v1, 0x009E));
+        let movement = &doc["commands"]["Heart"];
+        assert_eq!(movement["type"], "movement");
+        assert_eq!(movement["id"], 0x009E);
+        assert_eq!(movement["legacy_name"], "Heart");
+        assert_eq!(
+            movement["description"],
+            "Shows a heart above the event's head."
+        );
+        assert_eq!(movement["params"][0]["name"], "length");
+    }
+
+    #[test]
+    fn patch_v2_movement_updates_existing_and_renames_key() {
+        let mut doc = serde_json::json!({
+            "commands": {
+                "OldName": {
+                    "type": "movement",
+                    "id": 60,
+                    "legacy_name": "OldName",
+                    "params": [{"default": "1", "name": "length", "type": "u16"}]
+                }
+            }
+        });
+        let user_v1 = serde_json::json!({
+            "name": "NewName",
+            "decomp_name": "NewDecomp",
+            "description": "updated desc"
+        });
+        assert!(patch_v2_movement_from_v1(&mut doc, &user_v1, 60));
+        assert!(doc["commands"].get("OldName").is_none());
+        let movement = &doc["commands"]["NewName"];
+        assert_eq!(movement["legacy_name"], "NewName");
+        assert_eq!(movement["description"], "updated desc");
+    }
+
+    #[test]
+    fn patch_v2_descriptions_skips_movements() {
+        let mut doc = serde_json::json!({
+            "commands": {
+                "Noop": {"type": "script_cmd", "id": 0, "description": "old"},
+                "FaceNorth": {"type": "movement", "id": 0, "description": "old move"}
+            }
+        });
+        let mut patches = HashMap::new();
+        patches.insert(0, "new script desc".into());
+        let applied = patch_v2_descriptions(&mut doc, &patches);
+        assert_eq!(applied, 1);
+        assert_eq!(doc["commands"]["Noop"]["description"], "new script desc");
+        assert_eq!(doc["commands"]["FaceNorth"]["description"], "old move");
+    }
+
+    #[test]
+    fn patch_v2_movement_descriptions_only_touches_movements() {
+        let mut doc = serde_json::json!({
+            "commands": {
+                "Noop": {"type": "script_cmd", "id": 0, "description": "keep"},
+                "FaceNorth": {"type": "movement", "id": 0, "description": "old"}
+            }
+        });
+        let mut patches = HashMap::new();
+        patches.insert(0, "new move desc".into());
+        let applied = patch_v2_movement_descriptions(&mut doc, &patches);
+        assert_eq!(applied, 1);
+        assert_eq!(doc["commands"]["Noop"]["description"], "keep");
+        assert_eq!(doc["commands"]["FaceNorth"]["description"], "new move desc");
+    }
+
+    #[test]
+    fn movement_shape_differs_detects_name_change() {
+        let vanilla = serde_json::json!({"name": "A", "decomp_name": "A_d", "description": "x"});
+        let user_same = serde_json::json!({"name": "A", "decomp_name": "A_d", "description": "y"});
+        let user_diff = serde_json::json!({"name": "B", "decomp_name": "A_d", "description": "x"});
+        assert!(!movement_shape_differs(Some(&vanilla), &user_same));
+        assert!(movement_shape_differs(Some(&vanilla), &user_diff));
+        assert!(movement_shape_differs(None, &user_same));
+    }
+
+    #[test]
+    fn movement_description_merge_detects_desc_only_change() {
+        let vanilla = serde_json::json!({"name": "A", "decomp_name": "A_d", "description": "old"});
+        let user_desc = serde_json::json!({"name": "A", "decomp_name": "A_d", "description": "new"});
+        let user_name = serde_json::json!({"name": "B", "decomp_name": "A_d", "description": "new"});
+        assert_eq!(
+            movement_description_merge_candidate(Some(&vanilla), &user_desc).as_deref(),
+            Some("new")
+        );
+        assert_eq!(
+            movement_description_merge_candidate(Some(&vanilla), &user_name),
+            None
         );
     }
 }

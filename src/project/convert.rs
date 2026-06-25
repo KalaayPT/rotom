@@ -14,8 +14,8 @@ use xxhash_rust::xxh3::xxh3_64;
 use super::compile::{dspre_binary_path_for_script, seed_convert_quirks, update_decompile_state};
 use super::config::{ProjectTypeConfig, RotomConfig};
 use super::dspre_db_migration::{
-    dspre_edited_db_suggests_followplat, dspre_merge_shape_diff_score, find_local_scrcmd_v1_path,
-    maybe_reconcile_scrcmd_v1_into_v2,
+    dspre_edited_db_suggests_followplat, dspre_merge_shape_diff_score, dspre_user_only_count,
+    find_local_scrcmd_v1_path, maybe_reconcile_scrcmd_v1_into_v2,
 };
 use super::dspre_script_header::dspre_export_baseline_from_script_paths;
 use super::error::{ProjectError, Result};
@@ -261,11 +261,16 @@ pub fn convert_project(
                                             let w_std = dspre_merge_shape_diff_score(user_map, sm);
                                             let w_follow =
                                                 dspre_merge_shape_diff_score(user_map, fm);
+                                            let uo_std = dspre_user_only_count(user_map, sm);
+                                            let uo_follow = dspre_user_only_count(user_map, fm);
                                             let suggests =
                                                 dspre_edited_db_suggests_followplat(user_map);
-                                            if w_follow < w_std || (w_follow == w_std && suggests) {
+                                            if uo_follow < uo_std
+                                                || (uo_follow == uo_std
+                                                    && (w_follow < w_std || suggests))
+                                            {
                                                 eprintln!(
-                                                    "Following Platinum scrcmd baseline chosen (merge-shape diff vs edited DB: follow={w_follow}, stock={w_std}; tie-break followplat_hint={suggests})."
+                                                    "Following Platinum scrcmd baseline chosen (user-only: follow={uo_follow}, stock={uo_std}; merge-shape diff: follow={w_follow}, stock={w_std}; followplat_hint={suggests})."
                                                 );
                                                 Some(follow)
                                             } else {
