@@ -126,7 +126,7 @@ fn parse_manifest_by_stem(manifest: &str) -> HashMap<String, String> {
 ///
 /// `binary_ext`:
 /// - `None`        → only visit extensionless files (Platinum decomp, DSPRE)
-/// - `Some("bin")` → only visit `.bin` files (HeartGold decomp)
+/// - `Some("bin")` → only visit `.bin` files (`HeartGold` decomp)
 fn verify_compiled_binaries(
     binary_root: &Path,
     expected_by_stem: &HashMap<String, String>,
@@ -227,7 +227,7 @@ fn print_compile_report(json_stdout: &str, game: &str) -> (usize, usize) {
         }
     };
 
-    let successes = v["successes"].as_array().map_or(0, |a| a.len());
+    let successes = v["successes"].as_array().map_or(0, std::vec::Vec::len);
     let failures = v["failures"].as_array().map_or(&[][..], |a| a.as_slice());
     let total = successes + failures.len();
 
@@ -427,7 +427,7 @@ fn test_lifecycle_platinum_dspre() {
     verify_compiled_binaries(&binary_root, &expected, None);
 }
 
-/// DSPRE HeartGold: snapshot binary hashes → init → convert (.script → .rotom/.json)
+/// DSPRE `HeartGold`: snapshot binary hashes → init → convert (.script → .rotom/.json)
 /// → compile → verify compiled output matches pre-compile snapshot.
 ///
 /// Tests that the round-trip (binary → source → binary) is lossless.

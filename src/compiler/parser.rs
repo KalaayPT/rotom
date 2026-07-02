@@ -320,12 +320,16 @@ impl<'a> Parser<'a> {
                 let mut ids = Vec::new();
                 loop {
                     let lo_token = self.expect_advance(&TokenType::Num(0))?;
-                    let TokenType::Num(lo) = lo_token.kind else { unreachable!() };
+                    let TokenType::Num(lo) = lo_token.kind else {
+                        unreachable!()
+                    };
                     let lo = lo as u32;
                     if self.current_token_is(&TokenType::Minus) {
                         self.advance(); // consume '-'
                         let hi_token = self.expect_advance(&TokenType::Num(0))?;
-                        let TokenType::Num(hi) = hi_token.kind else { unreachable!() };
+                        let TokenType::Num(hi) = hi_token.kind else {
+                            unreachable!()
+                        };
                         let hi = hi as u32;
                         if hi < lo {
                             return Err(parse_error(
@@ -347,7 +351,9 @@ impl<'a> Parser<'a> {
                 ids
             } else {
                 let id_token = self.expect_advance(&TokenType::Num(0))?;
-                let TokenType::Num(num) = id_token.kind else { unreachable!() };
+                let TokenType::Num(num) = id_token.kind else {
+                    unreachable!()
+                };
                 vec![num as u32]
             };
 
@@ -526,18 +532,23 @@ impl<'a> Parser<'a> {
         let condition = self.parse_expression(Precedence::Lowest)?;
         self.expect_advance(&TokenType::Then)?;
         let then_branch = self.parse_block(&[TokenType::Else, TokenType::EndIf])?;
-        let else_branch = if self.current_token_is(&TokenType::Else) {
+        let (else_branch, chain_continued) = if self.current_token_is(&TokenType::Else) {
             self.advance();
             if self.current_token_is(&TokenType::If) {
+                // `else if` continues the chain: the recursive call consumes
+                // the single shared `endif` that terminates the whole chain, so
+                // this frame must not expect another one.
                 let elseif = self.parse_if()?;
-                Some(vec![elseif])
+                (Some(vec![elseif]), true)
             } else {
-                Some(self.parse_block(&[TokenType::EndIf])?)
+                (Some(self.parse_block(&[TokenType::EndIf])?), false)
             }
         } else {
-            None
+            (None, false)
         };
-        self.expect_advance(&TokenType::EndIf)?;
+        if !chain_continued {
+            self.expect_advance(&TokenType::EndIf)?;
+        }
         let end = self.current_token.span.start;
 
         Ok(Spanned {
@@ -1171,6 +1182,55 @@ script TestFunc #1:
                 }
             }
             _ => panic!("Expected script"),
+        }
+    }
+
+    #[test]
+    fn test_parse_if_elseif_chain() {
+        // `else if` chains share a single terminating `endif`, regardless of
+        // how many branches the chain has.
+        let source = r"
+script TestFunc #1:
+    if 0x80C == 0 then
+        GoTo TestInBed
+    else if 0x40F == 0 then
+        GoTo HalloweenEventInit
+    else if 0x40F == 1 then
+        GoTo TestInBed
+    else
+        GoTo TestInBed
+    endif
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+        let functions: Vec<_> = script_file
+            .items
+            .iter()
+            .filter(|s| matches!(s.node, StatementKind::Function { .. }))
+            .collect();
+        assert_eq!(functions.len(), 1);
+
+        match &functions[0].node {
+            StatementKind::Function { body, .. } => {
+                // IfStatement, End
+                assert_eq!(body.len(), 2);
+                // Walk the else-if chain: each `else if` nests an IfStatement
+                // in the else block. Three `if`s -> three nested IfStatements,
+                // terminated by a single shared `endif`.
+                let mut depth = 0usize;
+                let mut node = &body[0];
+                while let StatementKind::IfStatement { elseblock, .. } = &node.node {
+                    depth += 1;
+                    match elseblock {
+                        Some(branch) if branch.len() == 1 => node = &branch[0],
+                        _ => break,
+                    }
+                }
+                assert_eq!(depth, 3);
+            }
+            _ => panic!("Expected function"),
         }
     }
 

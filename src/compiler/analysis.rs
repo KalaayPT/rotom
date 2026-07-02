@@ -619,14 +619,13 @@ impl<'a> Analyzer<'a> {
 
         let mut failed_condition: Option<String> = None;
         let shape = cmd.resolve_source_call_shape(first_arg_u8, |condition, params| {
-            match self.evaluate_variant_condition_with_arg_count(condition, args, params) {
-                Ok(b) => b,
-                Err(_) => {
-                    if failed_condition.is_none() {
-                        failed_condition = Some(condition.to_string());
-                    }
-                    false
+            if let Ok(b) = self.evaluate_variant_condition_with_arg_count(condition, args, params) {
+                b
+            } else {
+                if failed_condition.is_none() {
+                    failed_condition = Some(condition.to_string());
                 }
+                false
             }
         });
         (shape, failed_condition)
@@ -759,11 +758,12 @@ impl<'a> Analyzer<'a> {
         let params = shape.params.to_vec();
         let is_macro = cmd.is_macro();
         if let Some(condition) = failed_condition {
-            self.warnings.push(CompileWarning::VariantConditionUnresolvable {
-                command: command.to_string(),
-                condition,
-                span: span.clone(),
-            });
+            self.warnings
+                .push(CompileWarning::VariantConditionUnresolvable {
+                    command: command.to_string(),
+                    condition,
+                    span: span.clone(),
+                });
         }
         let actual_count = args.len();
         let required_count = params
@@ -816,9 +816,7 @@ impl<'a> Analyzer<'a> {
             params,
             |expr| self.resolve_expression_to_int(expr).ok(),
             |name| match self.resolve_symbol(name) {
-                Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => {
-                    Some(i64::from(val))
-                }
+                Some(SymbolType::Constant(val) | SymbolType::Variable(val)) => Some(i64::from(val)),
                 _ => None,
             },
         )

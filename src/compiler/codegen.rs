@@ -60,7 +60,10 @@ impl<'a> Emitter<'a> {
                     Some(
                         f.jump_table_slots()
                             .map(|(id, name)| {
-                                debug_assert!(id >= 1, "slot ID 0 must be rejected by analysis before codegen");
+                                debug_assert!(
+                                    id >= 1,
+                                    "slot ID 0 must be rejected by analysis before codegen"
+                                );
                                 (id - 1, name)
                             })
                             .collect::<Vec<_>>(),
@@ -76,7 +79,10 @@ impl<'a> Emitter<'a> {
 
         // Build the jump-target list, filling gaps with the next available entry.
         // The analysis pass already warned the user about missing slots.
-        let table_size = self.jump_table_slots.last().map_or(0, |(id, _)| *id as usize + 1);
+        let table_size = self
+            .jump_table_slots
+            .last()
+            .map_or(0, |(id, _)| *id as usize + 1);
         let mut table: Vec<Option<String>> = vec![None; table_size];
         for (slot_id, name) in &self.jump_table_slots {
             table[*slot_id as usize] = Some(name.clone());
@@ -85,9 +91,9 @@ impl<'a> Emitter<'a> {
         let mut next: Option<String> = None;
         for entry in table.iter_mut().rev() {
             if entry.is_some() {
-                next = entry.clone();
+                next.clone_from(entry);
             } else {
-                *entry = next.clone();
+                entry.clone_from(&next);
             }
         }
         let jump_targets: Vec<String> = table.into_iter().flatten().collect();
