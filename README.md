@@ -1,5 +1,7 @@
 <img src="docs/rotom.gif" align="right" width="120" alt="Animated sprite of Rotom from Pokemon Black and White"/>
 
+[![codecov](https://codecov.io/gh/KalaayPT/rotom/branch/main/graph/badge.svg)](https://codecov.io/gh/KalaayPT/rotom)
+
 # `rotom`
 
 **rotom** is a high-level scripting language and toolchain for Pokémon Generation 4 (Diamond/Pearl/Platinum/HGSS) romhacking/modding projects.
