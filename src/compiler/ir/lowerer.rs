@@ -923,6 +923,19 @@ impl<'a> Lowerer<'a> {
                 ],
             });
             Ok(())
+        } else if let Some(flag_id) = self.flag_id_of(expr) {
+            // Bare flag constant: `CheckFlag` updates the shared condition table
+            // (1 = set, 0 = unset), then `JumpIf` branches on it.
+            self.output.push(IrOpcode::Command {
+                name: "CheckFlag".to_string(),
+                args: vec![Arg::Value(flag_id)],
+            });
+            let cond = i32::from(!invert);
+            self.output.push(IrOpcode::Command {
+                name: "JumpIf".to_string(),
+                args: vec![Arg::Value(cond), Arg::Pointer(target_label.to_string())],
+            });
+            Ok(())
         } else if let Ok((OperandType::Variable, var_id)) = self.analyze_operand(expr) {
             self.output.push(IrOpcode::Command {
                 name: "CompareVarValue".to_string(),
@@ -943,7 +956,7 @@ impl<'a> Lowerer<'a> {
             Ok(())
         } else {
             Err(lowering_error(format!(
-                "Condition must be a comparison expression (e.g., 'x == 1'), an autovar command call, or a variable, found {:?}.",
+                "Condition must be a comparison expression (e.g., 'x == 1'), an autovar command call, a variable, or a flag, found {:?}.",
                 expr.node
             )))
         }
@@ -1276,6 +1289,27 @@ impl<'a> Lowerer<'a> {
                 "Invalid expression in argument resolution".to_string(),
             )),
         }
+    }
+
+    /// Resolve a bare flag constant in a condition to its flag ID.
+    ///
+    /// Returns `None` unless `expr` is a flag (by uxie's constant family).
+    fn flag_id_of(&self, expr: &Expression) -> Option<i32> {
+        let ExpressionKind::Identifier(name) = &expr.node else {
+            return None;
+        };
+        if self.active_aliases.contains_key(name) {
+            return None;
+        }
+        if let Some(kind) = self.global_symbols.resolve(name)
+            && !matches!(kind, SymbolType::Constant(_))
+        {
+            return None;
+        }
+        let db = self.constants?;
+        let is_flag =
+            uxie::ConstantFamily::from_symbol_name(name) == Some(uxie::ConstantFamily::Flag);
+        if is_flag { db.get(name) } else { None }
     }
 
     fn analyze_operand(&self, expr: &Expression) -> ParseResult<(OperandType, i32)> {
@@ -2066,6 +2100,63 @@ script TestFunc #1:
                 assert!(
                     has_compare,
                     "Should emit CompareVarValue with VAR_RESULT and 1"
+                );
+            }
+            TopLevelItem::Action(_) => panic!("Expected script"),
+        }
+    }
+
+    #[test]
+    fn test_lower_flag_truthiness() {
+        let source = r"
+script TestFunc #1:
+    if FLAG_EXAMPLE then
+        Message 1
+    endif
+    End
+";
+
+        let db = create_test_db();
+        let mut symbols = uxie::SymbolTable::new();
+        symbols.load_header_str("#define FLAG_EXAMPLE 123").unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(db);
+        constants.load_decomp_symbols(std::path::Path::new(""), symbols);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, db);
+        analyzer.analyze(&script_file).unwrap();
+
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, &constants);
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        match &items[0] {
+            TopLevelItem::Function(ir_func) => {
+                let check = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args }
+                        if name == "CheckFlag"
+                        && args.len() == 1
+                        && matches!(&args[0], Arg::Value(123)))
+                });
+                assert!(
+                    check,
+                    "Should emit CheckFlag 123, got: {:?}",
+                    ir_func.instructions
+                );
+
+                let jump = ir_func.instructions.iter().any(|op| {
+                    matches!(op, IrOpcode::Command { name, args, .. }
+                        if name == "JumpIf"
+                        && !args.is_empty()
+                        && matches!(&args[0], Arg::Value(0)))
+                });
+                assert!(
+                    jump,
+                    "Should emit JumpIf 0 (unset) to skip body when flag is clear, got: {:?}",
+                    ir_func.instructions
                 );
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
