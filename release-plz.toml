@@ -1,0 +1,18 @@
+[workspace]
+# rotom is a binary toolchain, not published to crates.io. Determine the
+# current version from git tags and skip `cargo publish`.
+git_only = true
+
+# Emit one shared `v{version}` tag and release for the whole toolchain, so the
+# existing tag-triggered release.yml picks it up and attaches the binaries.
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+
+# Lock both crates to the same version so each release produces a single tag.
+[[package]]
+name = "rotom"
+version_group = "rotom"
+
+[[package]]
+name = "rotom-lsp"
+version_group = "rotom"
