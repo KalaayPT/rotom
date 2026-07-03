@@ -124,8 +124,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view canary >/dev/null 2>&1; then
-            gh release delete canary --cleanup-tag --yes
+          if gh release view canary --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete canary --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
           fi
 
       - uses: softprops/action-gh-release@v2
