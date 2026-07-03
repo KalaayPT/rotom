@@ -28,12 +28,8 @@ pub enum ScriptType {
 
 #[derive(Debug, Clone, PartialEq)]
 enum LabelKind {
-    Script {
-        slot_ids: Vec<u32>,
-    },
-    Action {
-        id: u32,
-    },
+    Script { slot_ids: Vec<u32> },
+    Action { id: u32 },
     Internal,
 }
 

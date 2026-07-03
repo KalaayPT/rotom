@@ -140,12 +140,7 @@ fn normal_script_to_source(
                 let has_private = func.headers.iter().any(|h| !h.is_public);
 
                 if !public_ids.is_empty() {
-                    let name = &func
-                        .headers
-                        .iter()
-                        .find(|h| h.is_public)
-                        .unwrap()
-                        .name;
+                    let name = &func.headers.iter().find(|h| h.is_public).unwrap().name;
                     let slot_list = format_slot_list(&public_ids);
                     let _ = writeln!(output, "script {} {}:", name, slot_list);
                 }

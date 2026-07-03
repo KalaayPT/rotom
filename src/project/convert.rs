@@ -1,13 +1,14 @@
+use crate::compile_state::BinaryQuirk;
 use crate::{
     ConstantDb, DatabaseV2, DecompileFileResult, ScriptOutput, decompile_to_ir,
     is_levelscript_path, transpiler,
 };
-use crate::compile_state::BinaryQuirk;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde_json::Value;
+use snafu::ResultExt;
 use uxie::{GameFamily, Workspace};
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -18,7 +19,7 @@ use super::dspre_db_migration::{
     find_local_scrcmd_v1_path, maybe_reconcile_scrcmd_v1_into_v2,
 };
 use super::dspre_script_header::dspre_export_baseline_from_script_paths;
-use super::error::{ProjectError, Result};
+use super::error::{DspreDecompileSnafu, IoSnafu, ProjectError, Result, SerializeJsonSnafu};
 use super::scrcmd_baseline::{
     VanillaScrcmdV1, fetch_following_platinum_scrcmd_v1_at_commit,
     fetch_vanilla_scrcmd_v1_at_baseline,
@@ -79,10 +80,9 @@ fn convert_one_dspre_script_placeholder(
         });
     }
 
-    let bytes = fs::read(&binary_path).map_err(|source| ProjectError::Io {
+    let bytes = fs::read(&binary_path).context(IoSnafu {
         action: "Failed to read paired script binary",
         path: binary_path.clone(),
-        source,
     })?;
     if bytes.is_empty() {
         // DSPRE sometimes emits 0-byte binaries for unreferenced script slots. There is
@@ -98,28 +98,24 @@ fn convert_one_dspre_script_placeholder(
             return Ok((plan, None));
         }
         if let Some(parent) = backup.parent() {
-            fs::create_dir_all(parent).map_err(|source| ProjectError::Io {
+            fs::create_dir_all(parent).context(IoSnafu {
                 action: "Failed to create directory",
                 path: parent.to_path_buf(),
-                source,
             })?;
         }
-        fs::copy(script_placeholder, backup).map_err(|source| ProjectError::Io {
+        fs::copy(script_placeholder, backup).context(IoSnafu {
             action: "Failed to back up",
             path: backup.to_path_buf(),
-            source,
         })?;
         let stub = "// This script file had an empty (0-byte) binary in the original ROM.\n\
                     // It is not referenced by any map header and can be repurposed.\n";
-        fs::write(&output_path, stub).map_err(|source| ProjectError::Io {
+        fs::write(&output_path, stub).context(IoSnafu {
             action: "Failed to write stub",
             path: output_path.clone(),
-            source,
         })?;
-        fs::remove_file(script_placeholder).map_err(|source| ProjectError::Io {
+        fs::remove_file(script_placeholder).context(IoSnafu {
             action: "Failed to remove",
             path: script_placeholder.to_path_buf(),
-            source,
         })?;
         return Ok((
             plan,
@@ -131,10 +127,9 @@ fn convert_one_dspre_script_placeholder(
             }),
         ));
     }
-    let script_output = decompile_to_ir(bytes, db).map_err(|e| ProjectError::DspreDecompile {
+    let script_output = decompile_to_ir(bytes, db).context(DspreDecompileSnafu {
         script: script_placeholder.to_path_buf(),
         binary: binary_path.clone(),
-        source: e,
     })?;
     let output_path = match &script_output {
         ScriptOutput::Levelscript(_) => script_placeholder.with_extension("json"),
@@ -152,16 +147,14 @@ fn convert_one_dspre_script_placeholder(
     }
 
     if let Some(parent) = backup.parent() {
-        fs::create_dir_all(parent).map_err(|source| ProjectError::Io {
+        fs::create_dir_all(parent).context(IoSnafu {
             action: "Failed to create directory",
             path: parent.to_path_buf(),
-            source,
         })?;
     }
-    fs::copy(script_placeholder, backup).map_err(|source| ProjectError::Io {
+    fs::copy(script_placeholder, backup).context(IoSnafu {
         action: "Failed to back up",
         path: backup.to_path_buf(),
-        source,
     })?;
 
     let out_dir = script_placeholder
@@ -182,10 +175,9 @@ fn convert_one_dspre_script_placeholder(
         source: failure.error,
     })?;
 
-    fs::remove_file(script_placeholder).map_err(|source| ProjectError::Io {
+    fs::remove_file(script_placeholder).context(IoSnafu {
         action: "Failed to remove",
         path: script_placeholder.to_path_buf(),
-        source,
     })?;
 
     Ok((plan, Some(decompiled)))
@@ -376,10 +368,9 @@ pub fn convert_project(
         let path = db_path_opt.expect("[database].default_file required for DSPRE convert");
         let db_hash = fs::read(&path)
             .map(|bytes| xxh3_64(&bytes))
-            .map_err(|source| ProjectError::Io {
+            .context(IoSnafu {
                 action: "Failed to hash database file",
                 path: path.clone(),
-                source,
             })?;
         let loaded_db = DatabaseV2::load(&path).map_err(ProjectError::from)?;
         (Some(loaded_db), Some(db_hash))
@@ -457,10 +448,9 @@ pub fn convert_project(
             continue;
         }
 
-        let source = fs::read_to_string(&input).map_err(|source| ProjectError::Io {
+        let source = fs::read_to_string(&input).context(IoSnafu {
             action: "Failed to read",
             path: input.clone(),
-            source,
         })?;
 
         // Detect levelscripts and route to the appropriate transpiler/output format.
@@ -478,24 +468,28 @@ pub fn convert_project(
                     }
                 })?;
             if result.extra_padding > 0 {
-                quirks_to_seed.push((output.clone(), BinaryQuirk {
-                    jump_table_end_marker_count: None,
-                    levelscript_padding: Some(result.extra_padding as u8),
-                }));
+                quirks_to_seed.push((
+                    output.clone(),
+                    BinaryQuirk {
+                        jump_table_end_marker_count: None,
+                        levelscript_padding: Some(result.extra_padding as u8),
+                    },
+                ));
             }
-            let json = serde_json::to_string_pretty(&result.levelscript)
-                .map_err(|source| ProjectError::SerializeJson { source })?;
+            let json =
+                serde_json::to_string_pretty(&result.levelscript).context(SerializeJsonSnafu)?;
             (output, json)
         } else {
             let output = input.with_extension("rotom");
             let transpile_result = match config.workspace.project_type {
                 ProjectTypeConfig::Decomp => {
-                    transpiler::transpile_decomp(&source, db.as_ref(), Some(root))
-                        .map_err(|error| ProjectError::ConvertDecomp {
+                    transpiler::transpile_decomp(&source, db.as_ref(), Some(root)).map_err(
+                        |error| ProjectError::ConvertDecomp {
                             path: input.clone(),
                             line: error.line,
                             message: error.to_string(),
-                        })?
+                        },
+                    )?
                 }
                 _ => continue,
             };
@@ -521,36 +515,31 @@ pub fn convert_project(
         }
 
         if let Some(parent) = backup.parent() {
-            fs::create_dir_all(parent).map_err(|source| ProjectError::Io {
+            fs::create_dir_all(parent).context(IoSnafu {
                 action: "Failed to create directory",
                 path: parent.to_path_buf(),
-                source,
             })?;
         }
-        fs::copy(&input, &backup).map_err(|source| ProjectError::Io {
+        fs::copy(&input, &backup).context(IoSnafu {
             action: "Failed to back up",
             path: backup.clone(),
-            source,
         })?;
 
         if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).map_err(|source| ProjectError::Io {
+            fs::create_dir_all(parent).context(IoSnafu {
                 action: "Failed to create directory",
                 path: parent.to_path_buf(),
-                source,
             })?;
         }
-        fs::write(&output, converted).map_err(|source| ProjectError::Io {
+        fs::write(&output, converted).context(IoSnafu {
             action: "Failed to write",
             path: output.clone(),
-            source,
         })?;
 
         if output != input {
-            fs::remove_file(&input).map_err(|source| ProjectError::Io {
+            fs::remove_file(&input).context(IoSnafu {
                 action: "Failed to remove",
                 path: input.clone(),
-                source,
             })?;
         }
     }
@@ -581,16 +570,14 @@ fn collect_convertible_files(
         return Ok(());
     }
 
-    for entry in fs::read_dir(dir).map_err(|source| ProjectError::Io {
+    for entry in fs::read_dir(dir).context(IoSnafu {
         action: "Failed to read source root",
         path: dir.to_path_buf(),
-        source,
     })? {
         let path = entry
-            .map_err(|source| ProjectError::Io {
+            .context(IoSnafu {
                 action: "Failed to read source root entry",
                 path: dir.to_path_buf(),
-                source,
             })?
             .path();
         if path.is_dir() {

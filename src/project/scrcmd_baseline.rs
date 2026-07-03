@@ -84,17 +84,18 @@ pub fn resolve_commit_sha_at_or_before(path: &str, baseline_utc: DateTime<Utc>) 
     let user_agent = format!("rotom/{}", env!("CARGO_PKG_VERSION"));
     let url = github_commits_url_for_baseline(path, baseline_utc);
     let body = http_get_github_api(&url, &user_agent)?;
-    let commits: Vec<GhListCommit> = serde_json::from_str(&body).map_err(|e| {
-        ProjectError::ScrcmdBaseline(format!(
-            "failed to parse GitHub commits JSON for '{path}': {e}"
-        ))
-    })?;
+    let commits: Vec<GhListCommit> =
+        serde_json::from_str(&body).map_err(|e| ProjectError::ScrcmdBaseline {
+            message: format!("failed to parse GitHub commits JSON for '{path}': {e}"),
+        })?;
 
     let Some(commit) = commits.first() else {
-        return Err(ProjectError::ScrcmdBaseline(format!(
-            "GitHub returned no commits for path '{path}' in {SCRCMD_REPO} at or before {}",
-            baseline_utc.format("%Y-%m-%d %H:%M:%S UTC")
-        )));
+        return Err(ProjectError::ScrcmdBaseline {
+            message: format!(
+                "GitHub returned no commits for path '{path}' in {SCRCMD_REPO} at or before {}",
+                baseline_utc.format("%Y-%m-%d %H:%M:%S UTC")
+            ),
+        });
     };
 
     let commit_time = parse_github_commit_time(commit)?;
@@ -102,10 +103,12 @@ pub fn resolve_commit_sha_at_or_before(path: &str, baseline_utc: DateTime<Utc>) 
         return Ok(commit.sha.clone());
     }
 
-    Err(ProjectError::ScrcmdBaseline(format!(
-        "no commit on the default branch for '{path}' at or before {}",
-        baseline_utc.format("%Y-%m-%d %H:%M:%S UTC")
-    )))
+    Err(ProjectError::ScrcmdBaseline {
+        message: format!(
+            "no commit on the default branch for '{path}' at or before {}",
+            baseline_utc.format("%Y-%m-%d %H:%M:%S UTC")
+        ),
+    })
 }
 
 /// Builds the commits URL used to ask for only the newest commit at or before the baseline.
@@ -123,15 +126,13 @@ fn parse_github_commit_time(c: &GhListCommit) -> Result<DateTime<Utc>> {
         .as_ref()
         .and_then(|p| p.date.as_deref())
         .or_else(|| c.commit.author.as_ref().and_then(|p| p.date.as_deref()))
-        .ok_or_else(|| {
-            ProjectError::ScrcmdBaseline("GitHub commit missing author/committer date".to_string())
+        .ok_or_else(|| ProjectError::ScrcmdBaseline {
+            message: "GitHub commit missing author/committer date".to_string(),
         })?;
     DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            ProjectError::ScrcmdBaseline(format!(
-                "invalid commit date from GitHub API '{raw}': {e}"
-            ))
+        .map_err(|e| ProjectError::ScrcmdBaseline {
+            message: format!("invalid commit date from GitHub API '{raw}': {e}"),
         })
 }
 
@@ -149,7 +150,9 @@ pub fn try_fetch_repo_file_at_commit(path: &str, sha: &str) -> Result<Option<Str
         .with_header("User-Agent", user_agent)
         .with_timeout(60)
         .send()
-        .map_err(|e| ProjectError::ScrcmdBaseline(format!("HTTP GET failed for {url}: {e}")))?;
+        .map_err(|e| ProjectError::ScrcmdBaseline {
+            message: format!("HTTP GET failed for {url}: {e}"),
+        })?;
 
     let status = response.status_code;
     if status == 404 {
@@ -162,9 +165,9 @@ pub fn try_fetch_repo_file_at_commit(path: &str, sha: &str) -> Result<Option<Str
             .chars()
             .take(500)
             .collect::<String>();
-        return Err(ProjectError::ScrcmdBaseline(format!(
-            "HTTP {status} for {url}: {body}"
-        )));
+        return Err(ProjectError::ScrcmdBaseline {
+            message: format!("HTTP {status} for {url}: {body}"),
+        });
     }
     Ok(Some(response.as_str().unwrap_or("").to_string()))
 }
@@ -183,9 +186,9 @@ fn http_get_github_api(url: &str, user_agent: &str) -> Result<String> {
     {
         request = request.with_header("Authorization", format!("Bearer {token}"));
     }
-    let response = request
-        .send()
-        .map_err(|e| ProjectError::ScrcmdBaseline(format!("HTTP GET failed for {url}: {e}")))?;
+    let response = request.send().map_err(|e| ProjectError::ScrcmdBaseline {
+        message: format!("HTTP GET failed for {url}: {e}"),
+    })?;
 
     check_status(&response, url)?;
 
@@ -197,7 +200,9 @@ fn http_get_raw(url: &str, user_agent: &str) -> Result<String> {
         .with_header("User-Agent", user_agent)
         .with_timeout(60)
         .send()
-        .map_err(|e| ProjectError::ScrcmdBaseline(format!("HTTP GET failed for {url}: {e}")))?;
+        .map_err(|e| ProjectError::ScrcmdBaseline {
+            message: format!("HTTP GET failed for {url}: {e}"),
+        })?;
 
     check_status(&response, url)?;
 
@@ -213,21 +218,22 @@ fn check_status(response: &minreq::Response, url: &str) -> Result<()> {
             .chars()
             .take(500)
             .collect::<String>();
-        return Err(ProjectError::ScrcmdBaseline(format!(
-            "HTTP {status} for {url}: {body}"
-        )));
+        return Err(ProjectError::ScrcmdBaseline {
+            message: format!("HTTP {status} for {url}: {body}"),
+        });
     }
     Ok(())
 }
 
 pub fn verify_json_object(raw: &str) -> Result<()> {
-    let v: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
-        ProjectError::ScrcmdBaseline(format!("fetched file text is not valid JSON: {e}"))
-    })?;
+    let v: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| ProjectError::ScrcmdBaseline {
+            message: format!("fetched file text is not valid JSON: {e}"),
+        })?;
     if !v.is_object() {
-        return Err(ProjectError::ScrcmdBaseline(
-            "fetched scrcmd JSON root is not an object".to_string(),
-        ));
+        return Err(ProjectError::ScrcmdBaseline {
+            message: "fetched scrcmd JSON root is not an object".to_string(),
+        });
     }
     Ok(())
 }

@@ -1,8 +1,9 @@
 use crate::database::GameFamily;
 use serde::{Deserialize, Serialize};
+use snafu::ResultExt;
 use std::path::{Path, PathBuf};
 
-use super::error::{ProjectError, Result};
+use super::error::{IoSnafu, ParseConfigSnafu, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RotomConfig {
@@ -109,15 +110,11 @@ impl RotomConfig {
 
 pub fn load_config(root: &Path) -> Result<RotomConfig> {
     let config_path = root.join("rotom.toml");
-    let content = std::fs::read_to_string(&config_path).map_err(|source| ProjectError::Io {
+    let content = std::fs::read_to_string(&config_path).context(IoSnafu {
         action: "Failed to read",
         path: config_path.clone(),
-        source,
     })?;
-    toml::from_str(&content).map_err(|source| ProjectError::ParseConfig {
-        path: config_path,
-        source,
-    })
+    toml::from_str(&content).context(ParseConfigSnafu { path: config_path })
 }
 
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {

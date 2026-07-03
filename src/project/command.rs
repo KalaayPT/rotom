@@ -2,11 +2,12 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::{BatchCompileResult, BatchDecompileResult};
+use snafu::ResultExt;
 
 use super::compile::{compile_project, decompile_project};
 use super::config::{find_project_root, load_config};
 use super::convert::{ConvertOptions, ConvertReport, convert_project};
-use super::error::{ProjectError, Result};
+use super::error::{CurrentDirectorySnafu, IoSnafu, ProjectError, Result};
 use super::init::{InitOptions, InitReport, run_init};
 
 pub fn compile_mode(force: bool) -> Result<BatchCompileResult> {
@@ -39,14 +40,11 @@ pub fn convert_mode(root: Option<&Path>, options: ConvertOptions) -> Result<Conv
 
 fn resolve_project_root(root: Option<&Path>) -> Result<PathBuf> {
     let start = match root {
-        Some(path) => path.canonicalize().map_err(|source| ProjectError::Io {
+        Some(path) => path.canonicalize().context(IoSnafu {
             action: "Failed to resolve",
             path: path.to_path_buf(),
-            source,
         })?,
-        None => {
-            std::env::current_dir().map_err(|source| ProjectError::CurrentDirectory { source })?
-        }
+        None => std::env::current_dir().context(CurrentDirectorySnafu)?,
     };
 
     find_project_root(&start)

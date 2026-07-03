@@ -7,12 +7,13 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
+use snafu::ResultExt;
 
 use uxie::GameFamily;
 
 use super::config::RotomConfig;
 use super::convert::ConvertOptions;
-use super::error::{ProjectError, Result};
+use super::error::{IoSnafu, ProjectError, Result, SerializeJsonSnafu, StdIoSnafu};
 use super::scrcmd_baseline::{VanillaScrcmdV1, scrcmd_v1_repo_filename};
 
 const DIFF_SUMMARY_MAX_LINES: usize = 40;
@@ -258,10 +259,7 @@ fn movement_shape_differs(vanilla: Option<&Value>, user: &Value) -> bool {
 }
 
 /// Description merge candidate for movements: shape must match, only description differs.
-fn movement_description_merge_candidate(
-    vanilla: Option<&Value>,
-    user: &Value,
-) -> Option<String> {
+fn movement_description_merge_candidate(vanilla: Option<&Value>, user: &Value) -> Option<String> {
     let vanilla = vanilla?;
     if movement_shape_differs(Some(vanilla), user) {
         return None;
@@ -424,7 +422,10 @@ pub fn dspre_user_only_count(
 ) -> usize {
     let u_index = index_scrcmd_by_id(user_scrcmd);
     let v_index = index_scrcmd_by_id(vanilla_scrcmd_obj);
-    u_index.keys().filter(|id| !v_index.contains_key(id)).count()
+    u_index
+        .keys()
+        .filter(|id| !v_index.contains_key(id))
+        .count()
 }
 
 fn json_delta_one_line(v: Option<&Value>) -> String {
@@ -545,7 +546,8 @@ fn build_v2_params_from_dspre_v1(
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .or_else(|| {
-                    ex.and_then(|o| o.get("name").and_then(Value::as_str)).map(ToString::to_string)
+                    ex.and_then(|o| o.get("name").and_then(Value::as_str))
+                        .map(ToString::to_string)
                 })
                 .or(user_pv)
                 .unwrap_or_else(|| format!("arg_{}", i + 1))
@@ -722,10 +724,7 @@ fn find_movement_key_by_id(doc: &Value, id: u16) -> Option<String> {
 /// updates `legacy_name` and `description` and renames the key when the v1 name differs. For new
 /// entries, creates a standard movement shape with the default `length` param.
 fn patch_v2_movement_from_v1(doc: &mut Value, user_v1: &Value, id: u16) -> bool {
-    let name = user_v1
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("?");
+    let name = user_v1.get("name").and_then(Value::as_str).unwrap_or("?");
     let description = user_v1
         .get("description")
         .and_then(Value::as_str)
@@ -737,9 +736,7 @@ fn patch_v2_movement_from_v1(doc: &mut Value, user_v1: &Value, id: u16) -> bool 
     };
 
     if let Some(key) = existing_key
-        && let Some(entry) = commands
-            .get_mut(&key)
-            .and_then(Value::as_object_mut)
+        && let Some(entry) = commands.get_mut(&key).and_then(Value::as_object_mut)
     {
         entry.insert("legacy_name".into(), Value::String(name.to_string()));
         if !description.is_empty() {
@@ -775,10 +772,7 @@ fn patch_v2_movement_from_v1(doc: &mut Value, user_v1: &Value, id: u16) -> bool 
 
 /// Patches descriptions on `movement` entries only (separate from `patch_v2_descriptions` because
 /// movement and `script_cmd` ID spaces overlap).
-fn patch_v2_movement_descriptions(
-    doc: &mut Value,
-    patches: &HashMap<u16, String>,
-) -> usize {
+fn patch_v2_movement_descriptions(doc: &mut Value, patches: &HashMap<u16, String>) -> usize {
     let Some(commands) = doc.get_mut("commands").and_then(Value::as_object_mut) else {
         return 0;
     };
@@ -850,35 +844,32 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         return Ok(false);
     };
 
-    let vanilla_root: Value = serde_json::from_str(&vanilla.json)
-        .map_err(|e| ProjectError::ScrcmdBaseline(format!("vanilla JSON parse: {e}")))?;
+    let vanilla_root: Value =
+        serde_json::from_str(&vanilla.json).map_err(|e| ProjectError::ScrcmdBaseline {
+            message: format!("vanilla JSON parse: {e}"),
+        })?;
     let Some(vanilla_scrcmd_obj) = vanilla_root
         .get("scrcmd")
         .and_then(Value::as_object)
         .cloned()
     else {
-        return Err(ProjectError::ScrcmdBaseline(
-            "vanilla JSON missing `scrcmd`".into(),
-        ));
+        return Err(ProjectError::ScrcmdBaseline {
+            message: "vanilla JSON missing `scrcmd`".into(),
+        });
     };
 
-    let user_s = match fs::read_to_string(&user_path) {
-        Ok(text) => text,
-        Err(source) => {
-            return Err(ProjectError::Io {
-                action: "read local scrcmd v1 JSON",
-                path: user_path,
-                source,
-            });
-        }
-    };
-    let user_raw: Value =
-        serde_json::from_str(&user_s).map_err(|source| ProjectError::SerializeJson { source })?;
+    let user_s = fs::read_to_string(&user_path).context(IoSnafu {
+        action: "read local scrcmd v1 JSON",
+        path: user_path.clone(),
+    })?;
+    let user_raw: Value = serde_json::from_str(&user_s).context(SerializeJsonSnafu)?;
     let Some(user_scrcmd) = user_raw.get("scrcmd").and_then(Value::as_object).cloned() else {
-        return Err(ProjectError::ScrcmdBaseline(format!(
-            "local scrcmd v1 at '{}' is missing top-level `scrcmd` key",
-            user_path.display()
-        )));
+        return Err(ProjectError::ScrcmdBaseline {
+            message: format!(
+                "local scrcmd v1 at '{}' is missing top-level `scrcmd` key",
+                user_path.display()
+            ),
+        });
     };
 
     let rows = classify_rows(
@@ -900,11 +891,12 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         })
         .unwrap_or_default();
 
-    if !rows.iter().any(|r| {
-        r.structural_change || r.user_only_entry || r.merged_description.is_some()
-    }) && !move_rows.iter().any(|r| {
-        r.structural_change || r.user_only_entry || r.merged_description.is_some()
-    })
+    if !rows
+        .iter()
+        .any(|r| r.structural_change || r.user_only_entry || r.merged_description.is_some())
+        && !move_rows
+            .iter()
+            .any(|r| r.structural_change || r.user_only_entry || r.merged_description.is_some())
     {
         return Ok(false);
     }
@@ -970,8 +962,7 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         .filter(|r| r.merged_description.is_some() && !move_struct_ids.contains(&r.id))
         .count();
 
-    let total_patches =
-        n_desc_patch + n_struct_patch + n_move_patch + n_move_desc_patch;
+    let total_patches = n_desc_patch + n_struct_patch + n_move_patch + n_move_desc_patch;
 
     if options.dry_run {
         if total_patches > 0 {
@@ -999,20 +990,14 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         "Apply {n_desc_patch} description merge(s), {n_struct_patch} structural patch(es), {n_move_patch} movement patch(es), and {n_move_desc_patch} movement description merge(s) onto {}?\nStructural patches overwrite **legacy_name**, **description**, and **params** from edited scrcmd v1; Rotom preserves v2 extras such as **notes**. [Y/n] ",
         v2_path.display()
     );
-    std::io::stdout()
-        .flush()
-        .map_err(|source| ProjectError::StdIo {
-            action: "flush stdout",
-            source,
-        })?;
+    std::io::stdout().flush().context(StdIoSnafu {
+        action: "flush stdout",
+    })?;
 
     let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|source| ProjectError::StdIo {
-            action: "read stdin",
-            source,
-        })?;
+    std::io::stdin().read_line(&mut line).context(StdIoSnafu {
+        action: "read stdin",
+    })?;
     let answer = line.trim().to_ascii_lowercase();
     if !(answer.is_empty() || answer == "y" || answer == "yes") {
         eprintln!("skipping v2 database merge");
@@ -1025,13 +1010,11 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         .filter_map(|r| r.merged_description.clone().map(|d| (r.id, d)))
         .collect();
 
-    let raw = std::fs::read_to_string(v2_path).map_err(|source| ProjectError::Io {
+    let raw = std::fs::read_to_string(v2_path).context(IoSnafu {
         action: "read v2 database",
         path: v2_path.to_path_buf(),
-        source,
     })?;
-    let mut doc: Value =
-        serde_json::from_str(&raw).map_err(|source| ProjectError::SerializeJson { source })?;
+    let mut doc: Value = serde_json::from_str(&raw).context(SerializeJsonSnafu)?;
     let n_desc_done = patch_v2_descriptions(&mut doc, &patches);
 
     let mut n_struct_done = 0usize;
@@ -1089,17 +1072,15 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
 
     sort_v2_commands_by_id(&mut doc);
 
-    let out =
-        serde_json::to_vec_pretty(&doc).map_err(|source| ProjectError::SerializeJson { source })?;
+    let out = serde_json::to_vec_pretty(&doc).context(SerializeJsonSnafu)?;
 
     let dir = v2_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(dir).map_err(|source| ProjectError::Io {
+    std::fs::create_dir_all(dir).context(IoSnafu {
         action: "create database directory",
         path: dir.to_path_buf(),
-        source,
     })?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1108,15 +1089,13 @@ pub fn maybe_reconcile_scrcmd_v1_into_v2(
         "{}.{stamp}.tmp",
         v2_path.file_name().and_then(|s| s.to_str()).unwrap_or("db"),
     ));
-    std::fs::write(&tmp, &out).map_err(|source| ProjectError::Io {
+    std::fs::write(&tmp, &out).context(IoSnafu {
         action: "write v2 database temp file",
         path: tmp.clone(),
-        source,
     })?;
-    std::fs::rename(&tmp, v2_path).map_err(|source| ProjectError::Io {
+    std::fs::rename(&tmp, v2_path).context(IoSnafu {
         action: "commit v2 database",
         path: v2_path.to_path_buf(),
-        source,
     })?;
 
     Ok(true)
@@ -1728,8 +1707,10 @@ mod tests {
     #[test]
     fn movement_description_merge_detects_desc_only_change() {
         let vanilla = serde_json::json!({"name": "A", "decomp_name": "A_d", "description": "old"});
-        let user_desc = serde_json::json!({"name": "A", "decomp_name": "A_d", "description": "new"});
-        let user_name = serde_json::json!({"name": "B", "decomp_name": "A_d", "description": "new"});
+        let user_desc =
+            serde_json::json!({"name": "A", "decomp_name": "A_d", "description": "new"});
+        let user_name =
+            serde_json::json!({"name": "B", "decomp_name": "A_d", "description": "new"});
         assert_eq!(
             movement_description_merge_candidate(Some(&vanilla), &user_desc).as_deref(),
             Some("new")

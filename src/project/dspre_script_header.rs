@@ -6,10 +6,11 @@
 //! as the export baseline (see `docs/dspre-onboarding-migration-plan.md`).
 
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
+use snafu::ResultExt;
 use std::fs;
 use std::path::PathBuf;
 
-use super::error::{ProjectError, Result};
+use super::error::{IoSnafu, Result};
 
 /// Oldest DSPRE export timestamp discovered in a set of `.script` files.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,10 +41,9 @@ pub fn dspre_export_baseline_from_script_paths(
 ) -> Result<Option<DspreExportBaseline>> {
     let mut best: Option<(DateTime<Local>, PathBuf)> = None;
     for path in paths {
-        let source = fs::read_to_string(path).map_err(|source| ProjectError::Io {
+        let source = fs::read_to_string(path).context(IoSnafu {
             action: "Failed to read",
             path: path.clone(),
-            source,
         })?;
         let Some(dt) = parse_dspre_generated_timestamp(&source) else {
             continue;

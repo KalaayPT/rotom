@@ -3,6 +3,7 @@ use crate::{
     ConstantDb, DatabaseV2, DecompileFailure, GameFamily, decompile_file_internal,
 };
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
+use snafu::ResultExt;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ use uxie::Workspace;
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::config::{ProjectTypeConfig, RotomConfig};
-use super::error::{ProjectError, Result};
+use super::error::{IoSnafu, ProjectError, Result};
 use crate::compile_state::{BinaryQuirk, COMPILER_VERSION, CompileState, FileState, FileStatus};
 
 enum WorkerResult {
@@ -45,15 +46,13 @@ fn relative_project_path(root: &Path, path: &Path) -> Result<PathBuf> {
         return Ok(relative.to_owned());
     }
 
-    let canonical_root = root.canonicalize().map_err(|source| ProjectError::Io {
+    let canonical_root = root.canonicalize().context(IoSnafu {
         action: "Failed to canonicalize project root",
         path: root.to_path_buf(),
-        source,
     })?;
-    let canonical_path = path.canonicalize().map_err(|source| ProjectError::Io {
+    let canonical_path = path.canonicalize().context(IoSnafu {
         action: "Failed to canonicalize tracked path",
         path: path.to_path_buf(),
-        source,
     })?;
     let relative = canonical_path.strip_prefix(&canonical_root).map_err(|_| {
         ProjectError::PathOutsideProject {
@@ -121,7 +120,7 @@ pub fn compile_project(
                 action: "Failed to open workspace",
                 path: root.to_path_buf(),
                 source,
-            })
+            });
         }
     });
     session
@@ -346,13 +345,10 @@ pub fn compile_project(
         }
     }
 
-    workspace
-        .flush_pending_messages()
-        .map_err(|source| ProjectError::Io {
-            action: "Failed to flush text archives after compilation",
-            path: root.to_path_buf(),
-            source,
-        })?;
+    workspace.flush_pending_messages().context(IoSnafu {
+        action: "Failed to flush text archives after compilation",
+        path: root.to_path_buf(),
+    })?;
     finish_compile_session(&mut session, current_paths)?;
 
     Ok(BatchCompileResult {
@@ -481,12 +477,10 @@ fn load_compile_session(root: &Path, config: &RotomConfig, force: bool) -> Resul
     let status_path = config.status_dir(root).join("compile-state.json");
     let (db, constants, db_hash, constant_cache_rebuilt) =
         load_project_database_and_constants(root, config)?;
-    let mut state =
-        CompileState::load_or_default(&status_path).map_err(|source| ProjectError::Io {
-            action: "Failed to read compile state",
-            path: status_path.clone(),
-            source,
-        })?;
+    let mut state = CompileState::load_or_default(&status_path).context(IoSnafu {
+        action: "Failed to read compile state",
+        path: status_path.clone(),
+    })?;
     let force_compile =
         force || state.needs_rebuild(db_hash, COMPILER_VERSION, constant_cache_rebuilt);
     if force_compile {
@@ -513,14 +507,10 @@ fn finish_compile_session(session: &mut CompileSession, current_paths: Vec<PathB
     session
         .state
         .mark_metadata(session.db_hash, COMPILER_VERSION);
-    session
-        .state
-        .save(&session.status_path)
-        .map_err(|source| ProjectError::Io {
-            action: "Failed to write compile state",
-            path: session.status_path.clone(),
-            source,
-        })
+    session.state.save(&session.status_path).context(IoSnafu {
+        action: "Failed to write compile state",
+        path: session.status_path.clone(),
+    })
 }
 
 /// Merge successful decompile outputs into compile state so regenerated sources are not stale on
@@ -536,28 +526,24 @@ pub(crate) fn update_decompile_state(
     }
 
     let status_path = config.status_dir(root).join("compile-state.json");
-    let mut state =
-        CompileState::load_or_default(&status_path).map_err(|source| ProjectError::Io {
-            action: "Failed to read compile state",
-            path: status_path.clone(),
-            source,
-        })?;
+    let mut state = CompileState::load_or_default(&status_path).context(IoSnafu {
+        action: "Failed to read compile state",
+        path: status_path.clone(),
+    })?;
 
     for success in successes {
         let relative_path = relative_project_path(root, &success.output)?;
         let source_hash = fs::read(&success.output)
             .map(|bytes| xxh3_64(&bytes))
-            .map_err(|source| ProjectError::Io {
+            .context(IoSnafu {
                 action: "Failed to hash decompiled source",
                 path: success.output.clone(),
-                source,
             })?;
         let output_hash = fs::read(&success.input)
             .map(|bytes| xxh3_64(&bytes))
-            .map_err(|source| ProjectError::Io {
+            .context(IoSnafu {
                 action: "Failed to hash decompiled input",
                 path: success.input.clone(),
-                source,
             })?;
         let mut file_state = FileState::decompiled(source_hash, output_hash);
         file_state.quirks.clone_from(&success.quirks);
@@ -565,10 +551,9 @@ pub(crate) fn update_decompile_state(
     }
 
     state.mark_metadata(db_hash, COMPILER_VERSION);
-    state.save(&status_path).map_err(|source| ProjectError::Io {
+    state.save(&status_path).context(IoSnafu {
         action: "Failed to write compile state",
         path: status_path,
-        source,
     })
 }
 
@@ -589,26 +574,21 @@ pub(crate) fn seed_convert_quirks(
     }
 
     let status_path = config.status_dir(root).join("compile-state.json");
-    let mut state =
-        CompileState::load_or_default(&status_path).map_err(|source| ProjectError::Io {
-            action: "Failed to read compile state",
-            path: status_path.clone(),
-            source,
-        })?;
+    let mut state = CompileState::load_or_default(&status_path).context(IoSnafu {
+        action: "Failed to read compile state",
+        path: status_path.clone(),
+    })?;
 
     for (output_path, quirks) in entries {
         let relative = relative_project_path(root, output_path)?;
-        let source_hash = fs::read(output_path)
-            .map(|b| xxh3_64(&b))
-            .unwrap_or(0);
+        let source_hash = fs::read(output_path).map(|b| xxh3_64(&b)).unwrap_or(0);
         let file_state = FileState::dirty(source_hash, 0, HashMap::new()).with_quirks(*quirks);
         state.entries.insert(relative, file_state);
     }
 
-    state.save(&status_path).map_err(|source| ProjectError::Io {
+    state.save(&status_path).context(IoSnafu {
         action: "Failed to write compile state",
         path: status_path,
-        source,
     })
 }
 
@@ -624,10 +604,9 @@ fn load_project_database_and_constants(
         .ok_or(ProjectError::MissingDefaultDatabase)?;
     let db_hash = fs::read(&db_path)
         .map(|bytes| xxh3_64(&bytes))
-        .map_err(|source| ProjectError::Io {
+        .context(IoSnafu {
             action: "Failed to hash database file",
             path: db_path.clone(),
-            source,
         })?;
     let db = DatabaseV2::load(&db_path).map_err(ProjectError::from)?;
 
@@ -653,10 +632,9 @@ fn load_project_database_and_constants(
                 &config.include_roots(root),
                 game_family,
             )
-            .map_err(|source| ProjectError::Io {
+            .context(IoSnafu {
                 action: "Failed to load constant cache",
                 path: config.cache_dir(root),
-                source,
             })?;
             constants.load_decomp_symbols(root, (*symbols).clone());
             constant_cache_rebuilt = rebuilt;
@@ -672,17 +650,14 @@ fn load_project_database_and_constants(
             constants.load_dspre_text_archives(root, language).ok();
         }
         ProjectTypeConfig::HgEngine => {
-            let mut ws = Workspace::open(root).map_err(|source| ProjectError::Io {
+            let mut ws = Workspace::open(root).context(IoSnafu {
                 action: "Failed to open HgEngine workspace",
                 path: root.to_path_buf(),
-                source,
             })?;
-            ws.load_hg_engine_constants()
-                .map_err(|source| ProjectError::Io {
-                    action: "Failed to load HgEngine constants",
-                    path: root.to_path_buf(),
-                    source,
-                })?;
+            ws.load_hg_engine_constants().context(IoSnafu {
+                action: "Failed to load HgEngine constants",
+                path: root.to_path_buf(),
+            })?;
             constants.load_decomp_symbols(root, (*ws.symbols).clone());
         }
         ProjectTypeConfig::Generic => {}
@@ -703,12 +678,9 @@ fn collect_project_compile_work(
 
     for (source_root, binary_root) in root_pairs {
         let mut files = Vec::new();
-        collect_compile_source_files(&source_root, &mut files).map_err(|source| {
-            ProjectError::Io {
-                action: "Failed to read source root",
-                path: source_root.clone(),
-                source,
-            }
+        collect_compile_source_files(&source_root, &mut files).context(IoSnafu {
+            action: "Failed to read source root",
+            path: source_root.clone(),
         })?;
 
         for input in files {
@@ -747,10 +719,9 @@ fn collect_project_decompile_work(
 
     for (source_root, binary_root) in root_pairs {
         let mut files = Vec::new();
-        collect_binary_files(&binary_root, &mut files).map_err(|source| ProjectError::Io {
+        collect_binary_files(&binary_root, &mut files).context(IoSnafu {
             action: "Failed to read binary root",
             path: binary_root.clone(),
-            source,
         })?;
 
         for input in files {

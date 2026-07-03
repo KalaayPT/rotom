@@ -72,7 +72,9 @@ impl CompileWarning {
                 "Message line {line_index} exceeds the maximum dialog width — \
                  add explicit line breaks or wrap with format()"
             ),
-            Self::VariantConditionUnresolvable { command, condition, .. } => format!(
+            Self::VariantConditionUnresolvable {
+                command, condition, ..
+            } => format!(
                 "Could not evaluate variant condition '{condition}' for command '{command}' \
                  at compile time; the default variant will be used and the output may be incorrect"
             ),

@@ -169,7 +169,9 @@ fn handle_compile_command(
                 if result.is_success() {
                     Ok(())
                 } else {
-                    Err(ProjectError::CompileFailures(result.failures.len()))
+                    Err(ProjectError::CompileFailures {
+                        count: result.failures.len(),
+                    })
                 }
             })
         }
@@ -209,7 +211,9 @@ fn handle_decompile_command(
                 if result.is_success() {
                     Ok(())
                 } else {
-                    Err(ProjectError::DecompileFailures(result.failures.len()))
+                    Err(ProjectError::DecompileFailures {
+                        count: result.failures.len(),
+                    })
                 }
             })
         }

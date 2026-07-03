@@ -184,8 +184,7 @@ pub fn transpile(
     } else {
         input
     };
-    let macro_optional = decomp_root
-        .map_or_else(HashMap::new, parse_macro_optional_param_indices);
+    let macro_optional = decomp_root.map_or_else(HashMap::new, parse_macro_optional_param_indices);
     let prepass = collect_prepass_data(input, db);
     render_transpile_body(input, &prepass, db, &macro_optional)
 }

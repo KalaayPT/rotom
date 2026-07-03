@@ -286,7 +286,8 @@ fn emit_lenses(
                 let mut seen = HashSet::new();
                 for header in headers {
                     if seen.insert(header.name.as_str()) {
-                        let locations = refs.get(&header.name).map_or(&[] as &[_], |v| v.as_slice());
+                        let locations =
+                            refs.get(&header.name).map_or(&[] as &[_], |v| v.as_slice());
                         lenses.push(make_ref_lens(&item.span, map, uri, locations));
                     }
                 }
