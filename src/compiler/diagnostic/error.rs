@@ -139,3 +139,52 @@ pub fn print_error(filename: &str, source: &str, error: &CompileError) {
         eprintln!("{}: {}: {}", filename, error_type, message);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_includes_variant_context() {
+        assert_eq!(
+            parse_error(1..3, "bad token").to_string(),
+            "Parse error: bad token"
+        );
+        assert_eq!(
+            analysis_error(2..4, "undefined symbol").to_string(),
+            "Analysis error: undefined symbol"
+        );
+        assert_eq!(
+            lowering_error("cannot lower").to_string(),
+            "Lowering error: cannot lower"
+        );
+        assert_eq!(
+            codegen_error("cannot emit").to_string(),
+            "Codegen error: cannot emit"
+        );
+        assert_eq!(
+            database_error("missing command").to_string(),
+            "Database error: missing command"
+        );
+        assert_eq!(
+            CompileError::Transpile {
+                message: "bad legacy source".to_string(),
+            }
+            .to_string(),
+            "Transpile error: bad legacy source"
+        );
+    }
+
+    #[test]
+    fn conversions_preserve_source_message() {
+        let io_error = CompileError::from(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing file",
+        ));
+        assert_eq!(io_error.to_string(), "IO error: missing file");
+
+        let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let compile_error = CompileError::from(json_error);
+        assert!(compile_error.to_string().starts_with("Database error:"));
+    }
+}

@@ -5,7 +5,7 @@ use crate::compiler::ast::FunctionHeader;
 use crate::compiler::ir::{Arg, IrAction, IrFunction, IrOpcode, TopLevelItem};
 use crate::database::{Command, DatabaseV2, normalize_command_name};
 
-use super::decomp_error::{DecompileResult, invalid_format};
+use super::decomp_error::{DecompileError, DecompileResult};
 use super::levelscript::LevelScript;
 
 #[derive(Debug, Clone)]
@@ -101,7 +101,9 @@ impl<'a> Disassembler<'a> {
 
     pub fn disassemble(&mut self) -> DecompileResult<ScriptOutput> {
         if self.bytes.len() < 4 {
-            return Err(invalid_format("File too small to contain a valid script"));
+            return Err(DecompileError::InvalidFormat {
+                message: "File too small to contain a valid script".to_string(),
+            });
         }
 
         self.script_type = self.detect_script_type();
@@ -121,7 +123,8 @@ impl<'a> Disassembler<'a> {
     }
 
     fn disassemble_levelscript(&self) -> DecompileResult<LevelScript> {
-        LevelScript::from_bytes(&self.bytes).map_err(invalid_format)
+        LevelScript::from_bytes(&self.bytes)
+            .map_err(|message| DecompileError::InvalidFormat { message })
     }
 
     fn disassemble_normal_script(&mut self) -> DecompileResult<(Vec<TopLevelItem>, u8)> {
@@ -254,10 +257,12 @@ impl<'a> Disassembler<'a> {
 
         let mut unresolved: Vec<String> = unresolved_labels.into_iter().collect();
         unresolved.sort();
-        Err(invalid_format(format!(
-            "Disassembly emitted unresolved label reference(s): {}",
-            unresolved.join(", ")
-        )))
+        Err(DecompileError::InvalidFormat {
+            message: format!(
+                "Disassembly emitted unresolved label reference(s): {}",
+                unresolved.join(", ")
+            ),
+        })
     }
 
     fn find_jump_table_boundary(&self) -> usize {
@@ -314,10 +319,9 @@ impl<'a> Disassembler<'a> {
         }
 
         if table_end % 4 != 0 {
-            return Err(invalid_format(format!(
-                "Jump table size {} is not a multiple of 4",
-                table_end
-            )));
+            return Err(DecompileError::InvalidFormat {
+                message: format!("Jump table size {} is not a multiple of 4", table_end),
+            });
         }
 
         let entry_count = table_end / 4;
@@ -974,27 +978,29 @@ impl<'a> Disassembler<'a> {
                             };
                             let cmd_id =
                                 cmd.id.map(|id| format!(" cmd_id={id}")).unwrap_or_default();
-                            return Err(invalid_format(format!(
-                                "Unresolved relative_jump while decoding '{}'{} @ opcode offset {:#x} \
+                            return Err(DecompileError::InvalidFormat {
+                                message: format!(
+                                    "Unresolved relative_jump while decoding '{}'{} @ opcode offset {:#x} \
 (opcode u16 {:#06x}; operand @ {:#x}; {} bytes): rel {}; target {:#x}; in_bounds={}; sym={}; act={}; cmd_bd={}; \
 If target >> file size, variant/param layout likely does not match this binary + DatabaseV2.\n\
 snippet [{}..{}]: {}",
-                                cmd_name,
-                                cmd_id,
-                                opcode_pc,
-                                opcode_word,
-                                offset,
-                                bin_len,
-                                rel,
-                                target,
-                                target < bin_len,
-                                self.symbols.contains_key(&target),
-                                target_is_action,
-                                target_is_script_boundary,
-                                ctx_lo,
-                                ctx_hi,
-                                snippet,
-                            )));
+                                    cmd_name,
+                                    cmd_id,
+                                    opcode_pc,
+                                    opcode_word,
+                                    offset,
+                                    bin_len,
+                                    rel,
+                                    target,
+                                    target < bin_len,
+                                    self.symbols.contains_key(&target),
+                                    target_is_action,
+                                    target_is_script_boundary,
+                                    ctx_lo,
+                                    ctx_hi,
+                                    snippet,
+                                ),
+                            });
                         }
                         offset += size;
                         continue;
@@ -1289,5 +1295,78 @@ mod opcode_collision_tests {
             panic!("expected normal script output");
         };
         assert_no_goto_and_has_action(&items);
+    }
+
+    #[test]
+    fn rejects_files_too_small_for_any_script() {
+        let db = DatabaseV2::test_platinum();
+        let err = disassemble_bytes(db, vec![0, 0, 0]).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Invalid binary format: File too small to contain a valid script"
+        );
+    }
+
+    #[test]
+    fn detects_empty_levelscript_binary() {
+        let db = DatabaseV2::test_platinum();
+        let output = disassemble_bytes(db, vec![0, 0, 0, 0]).expect("disassemble");
+
+        let ScriptOutput::Levelscript(levelscript) = output else {
+            panic!("expected levelscript output");
+        };
+        assert!(levelscript.is_empty());
+    }
+
+    #[test]
+    fn preserves_multiple_jump_table_end_markers() {
+        let mut bin = Vec::new();
+        bin.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]); // rel=4, abs=8
+        bin.extend_from_slice(&super::JUMP_TABLE_END_MARKER);
+        bin.extend_from_slice(&super::JUMP_TABLE_END_MARKER);
+        bin.extend_from_slice(&[0x02, 0x00]); // End
+
+        let db = DatabaseV2::test_platinum();
+        let ScriptOutput::Normal {
+            items,
+            jump_table_end_marker_count,
+        } = disassemble_bytes(db, bin).expect("disassemble")
+        else {
+            panic!("expected normal script output");
+        };
+
+        assert_eq!(jump_table_end_marker_count, 2);
+        assert!(matches!(items.as_slice(), [TopLevelItem::Function(_)]));
+    }
+
+    #[test]
+    fn resolves_relative_jump_targets_to_internal_labels() {
+        let mut bin = Vec::new();
+        bin.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]); // rel=2, abs=6
+        bin.extend_from_slice(&super::JUMP_TABLE_END_MARKER);
+        bin.extend_from_slice(&[0x16, 0x00]); // GoTo
+        bin.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // target = operand + 4 = 12
+        bin.extend_from_slice(&[0x02, 0x00]); // End at 12
+
+        let db = DatabaseV2::test_platinum();
+        let ScriptOutput::Normal { items, .. } = disassemble_bytes(db, bin).expect("disassemble")
+        else {
+            panic!("expected normal script output");
+        };
+
+        let TopLevelItem::Function(function) = &items[0] else {
+            panic!("expected function");
+        };
+        assert!(function.instructions.iter().any(|op| matches!(
+            op,
+            IrOpcode::Command { name, args }
+                if name == "GoTo" && matches!(args.as_slice(), [crate::compiler::ir::Arg::Pointer(label)] if label == "label_000C")
+        )));
+        assert!(items.iter().any(|item| matches!(
+            item,
+            TopLevelItem::Function(function)
+                if function.headers[0].name == "label_000C" && !function.headers[0].is_public
+        )));
     }
 }

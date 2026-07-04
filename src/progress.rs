@@ -71,3 +71,23 @@ impl CompileProgress {
         self.skipped.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counters_are_shared_across_clones() {
+        let progress = CompileProgress::new(4);
+        let cloned = progress.clone();
+
+        progress.inc_completed();
+        cloned.inc_failed();
+        cloned.inc_skipped();
+
+        assert_eq!(progress.total(), 4);
+        assert_eq!(progress.completed.load(Ordering::Relaxed), 1);
+        assert_eq!(progress.failed.load(Ordering::Relaxed), 1);
+        assert_eq!(progress.skipped.load(Ordering::Relaxed), 1);
+    }
+}

@@ -92,3 +92,47 @@ pub fn print_warning(filename: &str, source: &str, warning: &CompileWarning) {
         warning.message(),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warning_messages_and_spans_are_variant_specific() {
+        let warnings = [
+            CompileWarning::UnusedAlias {
+                name: "FOO".to_string(),
+                span: 1..4,
+            },
+            CompileWarning::ShadowedAlias {
+                name: "BAR".to_string(),
+                span: 5..8,
+                previous_span: 0..3,
+            },
+            CompileWarning::MissingSlot {
+                slot: 7,
+                span: 9..10,
+            },
+            CompileWarning::MessageLineTooLong {
+                span: 11..20,
+                line_index: 2,
+            },
+            CompileWarning::VariantConditionUnresolvable {
+                command: "ScrCmd_Test".to_string(),
+                condition: "UNKNOWN".to_string(),
+                span: 21..30,
+            },
+        ];
+
+        assert_eq!(warnings[0].span(), 1..4);
+        assert_eq!(warnings[1].span(), 5..8);
+        assert_eq!(warnings[2].span(), 9..10);
+        assert_eq!(warnings[3].span(), 11..20);
+        assert_eq!(warnings[4].span(), 21..30);
+        assert!(warnings[0].message().contains("FOO"));
+        assert!(warnings[1].message().contains("shadows"));
+        assert!(warnings[2].message().contains("#7"));
+        assert!(warnings[3].message().contains("Message line 2"));
+        assert!(warnings[4].message().contains("ScrCmd_Test"));
+    }
+}

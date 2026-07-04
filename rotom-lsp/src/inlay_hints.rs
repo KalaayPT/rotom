@@ -142,3 +142,72 @@ fn walk_expression(
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> &'static DatabaseV2 {
+        DatabaseV2::test_platinum()
+    }
+
+    fn label_text(hint: &InlayHint) -> &str {
+        match &hint.label {
+            InlayHintLabel::String(label) => label,
+            InlayHintLabel::LabelParts(_) => panic!("expected string label"),
+        }
+    }
+
+    #[test]
+    fn no_database_or_parse_error_produces_no_hints() {
+        assert!(compute_inlay_hints("script Test #1:\n    Message 0\n", None).is_empty());
+        assert!(
+            compute_inlay_hints("script Test #1:\n    Message (\n", Some(test_db())).is_empty()
+        );
+    }
+
+    #[test]
+    fn command_arguments_get_parameter_name_hints() {
+        let source = "script Test #1:\n    Message 0\n";
+
+        let hints = compute_inlay_hints(source, Some(test_db()));
+
+        assert_eq!(hints.len(), 1);
+        assert!(label_text(&hints[0]).ends_with(": "));
+        assert_eq!(hints[0].kind, Some(InlayHintKind::PARAMETER));
+        assert_eq!(
+            hints[0].position,
+            LspPosition {
+                line: 1,
+                character: 12,
+            }
+        );
+    }
+
+    #[test]
+    fn nested_block_commands_are_walked() {
+        let source = "script Test #1:\n\
+if true then\n\
+    Message 0\n\
+else if false then\n\
+    Message 1\n\
+else\n\
+    Message 2\n\
+endif\n\
+while true do\n\
+    Message 3\n\
+    if true then\n\
+        Message 4\n\
+    endif\n\
+endwhile\n";
+
+        let hints = compute_inlay_hints(source, Some(test_db()));
+
+        assert_eq!(hints.len(), 5);
+        assert_eq!(hints[0].position.line, 2);
+        assert_eq!(hints[1].position.line, 4);
+        assert_eq!(hints[2].position.line, 6);
+        assert_eq!(hints[3].position.line, 9);
+        assert_eq!(hints[4].position.line, 11);
+    }
+}

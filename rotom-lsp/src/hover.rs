@@ -452,6 +452,27 @@ pub fn extract_word(source: &str, byte_offset: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rotom::database::ConstantDb;
+
+    fn test_db() -> &'static DatabaseV2 {
+        DatabaseV2::test_platinum()
+    }
+
+    fn position_at(source: &str, needle: &str) -> LspPosition {
+        let offset = source.find(needle).expect("needle not found");
+        let pos = SourceMap::new(source).byte_to_position(offset);
+        LspPosition {
+            line: pos.line,
+            character: pos.character,
+        }
+    }
+
+    fn hover_markdown(hover: Hover) -> String {
+        match hover.contents {
+            HoverContents::Markup(markup) => markup.value,
+            other => panic!("expected markup hover, got {other:?}"),
+        }
+    }
 
     // ── extract_word ──
 
@@ -550,5 +571,92 @@ mod tests {
         };
         // "Message" starts at byte 20; cursor is on command name, not an arg
         assert!(find_command_at_offset(&ast.items, 20).is_none());
+    }
+
+    #[test]
+    fn compute_hover_shows_command_docs() {
+        let source = "script Test #1:\n    Message 0\n";
+
+        let hover = compute_hover(
+            source,
+            position_at(source, "Message"),
+            Some(test_db()),
+            None,
+            None,
+            None,
+        )
+        .expect("expected hover");
+
+        let markdown = hover_markdown(hover);
+        assert!(markdown.starts_with("# Message"));
+        assert!(markdown.contains("## Parameters:"));
+    }
+
+    #[test]
+    fn compute_hover_shows_builtin_format_docs() {
+        let source = "script Test #1:\n    Message format(\"hello\")\n";
+
+        let hover = compute_hover(
+            source,
+            position_at(source, "format"),
+            Some(test_db()),
+            None,
+            None,
+            None,
+        )
+        .expect("expected hover");
+
+        assert!(hover_markdown(hover).contains("Word-wraps a message string"));
+    }
+
+    #[test]
+    fn compute_hover_shows_constant_value() {
+        let source = "script Test #1:\n    Message MSG_TEST\n";
+        let mut symbols = uxie::SymbolTable::new();
+        symbols.insert_define("MSG_TEST".to_string(), 42);
+        let mut constants = ConstantDb::new();
+        constants.load_decomp_symbols(".", symbols);
+
+        let hover = compute_hover(
+            source,
+            position_at(source, "MSG_TEST"),
+            Some(test_db()),
+            Some(&constants),
+            None,
+            None,
+        )
+        .expect("expected hover");
+
+        let markdown = hover_markdown(hover);
+        assert!(markdown.contains("**MSG_TEST**"));
+        assert!(markdown.contains("Constant value: `42`"));
+    }
+
+    #[test]
+    fn compute_hover_shows_alias_and_numeric_values() {
+        let source =
+            "alias 0x2A as MSG_ALIAS\nscript Test #1:\n    Message MSG_ALIAS\n    Message 43\n";
+
+        let alias_hover = compute_hover(
+            source,
+            position_at(source, "MSG_ALIAS"),
+            Some(test_db()),
+            None,
+            None,
+            None,
+        )
+        .expect("expected alias hover");
+        assert!(hover_markdown(alias_hover).contains("Alias value: `42`"));
+
+        let number_hover = compute_hover(
+            source,
+            position_at(source, "43"),
+            Some(test_db()),
+            None,
+            None,
+            None,
+        )
+        .expect("expected number hover");
+        assert!(hover_markdown(number_hover).contains("Hex: `0x2b`"));
     }
 }

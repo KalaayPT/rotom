@@ -516,4 +516,52 @@ mod tests {
         assert!(parsed.var_conditions.is_empty());
         assert_eq!(parsed.to_bytes(), bytes);
     }
+
+    #[test]
+    fn empty_slice_parses_as_empty_levelscript() {
+        let parsed = LevelScript::from_bytes(&[]).unwrap();
+
+        assert!(parsed.is_empty());
+        assert_eq!(parsed.to_bytes(), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rejects_truncated_header_entries() {
+        assert_eq!(
+            LevelScript::from_bytes(&[cmd_ids::ON_TRANSITION, 1]).unwrap_err(),
+            "Levelscript: ON_TRANSITION truncated"
+        );
+        assert_eq!(
+            LevelScript::from_bytes(&[cmd_ids::ON_FRAME_TABLE, 1, 0]).unwrap_err(),
+            "Levelscript: ON_FRAME_TABLE truncated"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_command_byte() {
+        let err = LevelScript::from_bytes(&[0x99, 0, 0, 0]).unwrap_err();
+
+        assert_eq!(err, "Levelscript: Unknown command byte 0x99 at offset 0");
+    }
+
+    #[test]
+    fn rejects_truncated_var_condition_entry() {
+        let bytes = vec![
+            cmd_ids::ON_FRAME_TABLE,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            cmd_ids::ENTRY_END,
+            0x34,
+            0x12,
+            0x01,
+            0x00,
+        ];
+
+        assert_eq!(
+            LevelScript::from_bytes(&bytes).unwrap_err(),
+            "Levelscript: Var-condition entry truncated"
+        );
+    }
 }

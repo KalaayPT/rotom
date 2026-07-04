@@ -271,6 +271,20 @@ fn command_detail(name: &str, cmd: &rotom::database::Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    fn test_db() -> &'static DatabaseV2 {
+        DatabaseV2::test_platinum()
+    }
+
+    fn pos_at(source: &str, needle: &str) -> LspPosition {
+        let offset = source.find(needle).expect("needle not found") + needle.len();
+        let pos = SourceMap::new(source).byte_to_position(offset);
+        LspPosition {
+            line: pos.line,
+            character: pos.character,
+        }
+    }
 
     #[test]
     fn test_extract_prefix_basic() {
@@ -362,5 +376,90 @@ mod tests {
             character: 18,
         });
         assert!(!is_in_comment(source, byte));
+    }
+
+    #[test]
+    fn compute_completions_suggests_command_names() {
+        let source = "    Mes";
+
+        let items = compute_completions(source, pos_at(source, "Mes"), Some(test_db()), None, None);
+
+        assert!(items.iter().any(|item| item.label == "Message"));
+        assert!(
+            items
+                .iter()
+                .all(|item| item.kind == Some(CompletionItemKind::FUNCTION))
+        );
+    }
+
+    #[test]
+    fn compute_completions_suggests_constants_for_parameters() {
+        let source = "script Test #1:\n    Message MSG";
+        let constants = Arc::new(vec![
+            "MSG_HELLO".to_string(),
+            "1INVALID".to_string(),
+            "OTHER".to_string(),
+        ]);
+        let position = LspPosition {
+            line: 1,
+            character: 15,
+        };
+
+        let items = compute_completions(source, position, Some(test_db()), Some(constants), None);
+
+        assert!(items.iter().any(|item| item.label == "MSG_HELLO"));
+        assert!(!items.iter().any(|item| item.label == "1INVALID"));
+        assert!(!items.iter().any(|item| item.label == "OTHER"));
+    }
+
+    #[test]
+    fn compute_completions_suppresses_strings_and_comments() {
+        let constants = Arc::new(vec!["MSG_HELLO".to_string()]);
+
+        assert!(
+            compute_completions(
+                "script Test #1:\n    Message \"MSG",
+                LspPosition {
+                    line: 1,
+                    character: 16,
+                },
+                Some(test_db()),
+                Some(constants.clone()),
+                None,
+            )
+            .is_empty()
+        );
+        assert!(
+            compute_completions(
+                "script Test #1:\n    // Mes",
+                LspPosition {
+                    line: 1,
+                    character: 10,
+                },
+                Some(test_db()),
+                Some(constants),
+                None,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn compute_completions_suggests_local_symbols_for_label_params() {
+        let source = "script Test #1:\n.start:\n    Jump .st";
+        let symbols = crate::document::compute_document_symbols(source);
+
+        let items = compute_completions(
+            source,
+            LspPosition {
+                line: 2,
+                character: 12,
+            },
+            Some(test_db()),
+            None,
+            Some(&symbols),
+        );
+
+        assert!(items.iter().any(|item| item.label == ".start"));
     }
 }

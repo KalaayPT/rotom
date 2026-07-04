@@ -142,3 +142,103 @@ fn build_signature_help(name: &str, cmd: &Command, active_param: u32) -> Signatu
         active_parameter: Some(active_param),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> &'static DatabaseV2 {
+        DatabaseV2::test_platinum()
+    }
+
+    #[test]
+    fn extract_command_context_supports_space_and_call_style() {
+        assert_eq!(
+            extract_command_context("    Message 0", "    Message 0".len()),
+            Some(("Message".to_string(), 0))
+        );
+        assert_eq!(
+            extract_command_context("    MsgBoxExtern 1, 2", "    MsgBoxExtern 1, 2".len()),
+            Some(("MsgBoxExtern".to_string(), 1))
+        );
+        assert_eq!(
+            extract_command_context("    format(\"hello\", ", "    format(\"hello\", ".len()),
+            Some(("format".to_string(), 1))
+        );
+    }
+
+    #[test]
+    fn extract_command_context_rejects_non_command_contexts() {
+        assert_eq!(extract_command_context("    ", 4), None);
+        assert_eq!(
+            extract_command_context("Message(0)", "Message(0)".len()),
+            None
+        );
+    }
+
+    #[test]
+    fn builtin_format_signature_is_returned() {
+        let source = "script Test #1:\n    Message format(\"hello\"\n";
+        let help = compute_signature_help(
+            source,
+            LspPosition {
+                line: 1,
+                character: 26,
+            },
+            Some(test_db()),
+        )
+        .expect("expected signature help");
+
+        assert_eq!(help.active_parameter, Some(0));
+        assert_eq!(help.signatures[0].label, "format(string)");
+    }
+
+    #[test]
+    fn database_command_signature_uses_active_parameter() {
+        let source = "script Test #1:\n    Message \n";
+        let help = compute_signature_help(
+            source,
+            LspPosition {
+                line: 1,
+                character: 12,
+            },
+            Some(test_db()),
+        )
+        .expect("expected signature help");
+
+        assert_eq!(help.active_parameter, Some(0));
+        assert!(help.signatures[0].label.starts_with("Message("));
+        assert!(
+            help.signatures[0]
+                .parameters
+                .as_ref()
+                .is_some_and(|p| !p.is_empty())
+        );
+    }
+
+    #[test]
+    fn missing_database_or_unknown_command_returns_none() {
+        assert!(
+            compute_signature_help(
+                "script Test #1:\n    Message ",
+                LspPosition {
+                    line: 1,
+                    character: 12,
+                },
+                None,
+            )
+            .is_none()
+        );
+        assert!(
+            compute_signature_help(
+                "script Test #1:\n    NotACommand ",
+                LspPosition {
+                    line: 1,
+                    character: 16,
+                },
+                Some(test_db()),
+            )
+            .is_none()
+        );
+    }
+}

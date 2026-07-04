@@ -73,3 +73,50 @@ pub fn compile_batch(
         failures,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ConstantDb, DatabaseV2};
+
+    #[test]
+    fn compile_batch_splits_successes_and_failures() {
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let input = temp.path().join("ok.rotom");
+        let output = temp.path().join("ok.bin");
+        std::fs::write(&input, "script Main #1:\nEnd\n").expect("failed to write script");
+
+        let work = vec![
+            CompileWorkItem {
+                input: input.clone(),
+                output: output.clone(),
+                quirks: BinaryQuirk::default(),
+            },
+            CompileWorkItem {
+                input: temp.path().join("missing.rotom"),
+                output: temp.path().join("missing.bin"),
+                quirks: BinaryQuirk::default(),
+            },
+        ];
+        let progress = CompileProgress::new(work.len());
+        let workspace = Arc::new(uxie::Workspace::new(
+            std::path::PathBuf::new(),
+            uxie::game::Game::Platinum,
+        ));
+
+        let result = compile_batch(
+            &work,
+            DatabaseV2::test_platinum(),
+            &ConstantDb::new(),
+            false,
+            Some(&progress),
+            &workspace,
+        );
+
+        assert_eq!(result.successes.len(), 1);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.successes[0].input, input);
+        assert_eq!(result.successes[0].output, output);
+        assert!(output.exists());
+    }
+}

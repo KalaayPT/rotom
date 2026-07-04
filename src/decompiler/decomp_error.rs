@@ -73,30 +73,53 @@ impl From<std::io::Error> for DecompileError {
 /// Result type for decompilation operations
 pub type DecompileResult<T> = Result<T, DecompileError>;
 
-// Helper constructors
-pub fn invalid_format(message: impl Into<String>) -> DecompileError {
-    DecompileError::InvalidFormat {
-        message: message.into(),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub fn unknown_opcode(opcode: u16, offset: usize) -> DecompileError {
-    DecompileError::UnknownOpcode { opcode, offset }
-}
-
-pub fn invalid_jump_table(message: impl Into<String>, offset: usize) -> DecompileError {
-    DecompileError::InvalidJumpTable {
-        message: message.into(),
-        offset,
-    }
-}
-
-pub fn out_of_bounds(offset: usize, length: usize) -> DecompileError {
-    DecompileError::OutOfBounds { offset, length }
-}
-
-pub fn database_error(message: impl Into<String>) -> DecompileError {
-    DecompileError::Database {
-        message: message.into(),
+    #[test]
+    fn display_formats_all_variants() {
+        assert_eq!(
+            DecompileError::InvalidFormat {
+                message: "too short".to_string(),
+            }
+            .to_string(),
+            "Invalid binary format: too short"
+        );
+        assert_eq!(
+            DecompileError::UnknownOpcode {
+                opcode: 0x1234,
+                offset: 0x20,
+            }
+            .to_string(),
+            "Unknown opcode 0x1234 at offset 0x0020"
+        );
+        assert_eq!(
+            DecompileError::InvalidJumpTable {
+                message: "bad pointer".to_string(),
+                offset: 0x10,
+            }
+            .to_string(),
+            "Invalid jump table at 0x0010: bad pointer"
+        );
+        assert_eq!(
+            DecompileError::OutOfBounds {
+                offset: 0x30,
+                length: 16,
+            }
+            .to_string(),
+            "Offset 0x0030 out of bounds (file length: 16)"
+        );
+        assert_eq!(
+            DecompileError::Database {
+                message: "missing opcode".to_string(),
+            }
+            .to_string(),
+            "Database error: missing opcode"
+        );
+        assert_eq!(
+            DecompileError::from(std::io::Error::other("disk")).to_string(),
+            "IO error: disk"
+        );
     }
 }

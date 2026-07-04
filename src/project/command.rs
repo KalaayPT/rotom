@@ -52,3 +52,30 @@ fn resolve_project_root(root: Option<&Path>) -> Result<PathBuf> {
         .filter(|path| path.join("rotom.toml").exists())
         .ok_or(ProjectError::ProjectRootNotFound)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_project_root_finds_root_from_walking_upwards() {
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        std::fs::write(temp.path().join("rotom.toml"), "[workspace]\n")
+            .expect("failed to write config");
+        let child = temp.path().join("src/scripts");
+        std::fs::create_dir_all(&child).expect("failed to create child dir");
+
+        let resolved = resolve_project_root(Some(&child)).expect("project root should resolve");
+
+        assert_eq!(resolved, temp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn resolve_project_root_rejects_directory_without_config() {
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+
+        let err = resolve_project_root(Some(temp.path())).unwrap_err();
+
+        assert!(matches!(err, ProjectError::ProjectRootNotFound));
+    }
+}

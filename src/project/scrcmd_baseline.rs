@@ -287,6 +287,86 @@ mod tests {
     }
 
     #[test]
+    fn scrcmd_v1_repo_filename_matches_family() {
+        assert_eq!(
+            scrcmd_v1_repo_filename(GameFamily::Platinum),
+            "platinum_scrcmd_database.json"
+        );
+        assert_eq!(
+            scrcmd_v1_repo_filename(GameFamily::HGSS),
+            "hgss_scrcmd_database.json"
+        );
+        assert_eq!(
+            scrcmd_v1_repo_filename(GameFamily::DP),
+            "diamond_pearl_scrcmd_database.json"
+        );
+    }
+
+    #[test]
+    fn parse_github_commit_time_prefers_committer_then_author() {
+        let commit = GhListCommit {
+            sha: "abc".to_string(),
+            commit: GhCommitBody {
+                committer: Some(GhPerson {
+                    date: Some("2026-01-02T03:04:05Z".to_string()),
+                }),
+                author: Some(GhPerson {
+                    date: Some("2020-01-01T00:00:00Z".to_string()),
+                }),
+            },
+        };
+        let parsed = parse_github_commit_time(&commit).unwrap();
+
+        assert_eq!(parsed, Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap());
+    }
+
+    #[test]
+    fn parse_github_commit_time_falls_back_to_author() {
+        let commit = GhListCommit {
+            sha: "abc".to_string(),
+            commit: GhCommitBody {
+                committer: None,
+                author: Some(GhPerson {
+                    date: Some("2025-05-06T07:08:09Z".to_string()),
+                }),
+            },
+        };
+        let parsed = parse_github_commit_time(&commit).unwrap();
+
+        assert_eq!(parsed, Utc.with_ymd_and_hms(2025, 5, 6, 7, 8, 9).unwrap());
+    }
+
+    #[test]
+    fn parse_github_commit_time_reports_missing_or_invalid_dates() {
+        let missing = GhListCommit {
+            sha: "abc".to_string(),
+            commit: GhCommitBody {
+                committer: None,
+                author: None,
+            },
+        };
+        assert!(parse_github_commit_time(&missing).is_err());
+
+        let invalid = GhListCommit {
+            sha: "abc".to_string(),
+            commit: GhCommitBody {
+                committer: Some(GhPerson {
+                    date: Some("not a date".to_string()),
+                }),
+                author: None,
+            },
+        };
+        assert!(parse_github_commit_time(&invalid).is_err());
+    }
+
+    #[test]
+    fn verify_json_object_accepts_only_object_roots() {
+        assert!(verify_json_object(r#"{"commands":{}}"#).is_ok());
+        assert!(verify_json_object(r#"["not", "object"]"#).is_err());
+        assert!(verify_json_object("not json").is_err());
+    }
+
+    #[test]
     fn pick_sha_takes_first_commit_not_after_baseline_newest_first() {
         let commits = vec![
             (

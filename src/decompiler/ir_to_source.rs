@@ -209,6 +209,7 @@ mod tests {
     use crate::compiler::ast::FunctionHeader;
     use crate::compiler::ir::IrFunction;
     use crate::database::ConstantDb;
+    use crate::decompiler::LevelScriptHeaderEntry;
 
     fn create_test_db() -> &'static DatabaseV2 {
         DatabaseV2::test_platinum()
@@ -395,5 +396,75 @@ mod tests {
             format_arg(&Arg::Value(0xFF), Some("event_id"), Some(&constants)),
             "LOCALID_PLAYER"
         );
+    }
+
+    #[test]
+    fn formats_private_labels_actions_and_slot_ranges() {
+        let db = create_test_db();
+        let func = IrFunction {
+            headers: vec![
+                FunctionHeader {
+                    name: "script_1".to_string(),
+                    id: Some(0),
+                    is_public: true,
+                },
+                FunctionHeader {
+                    name: "script_1".to_string(),
+                    id: Some(1),
+                    is_public: true,
+                },
+                FunctionHeader {
+                    name: "script_1".to_string(),
+                    id: Some(3),
+                    is_public: true,
+                },
+                FunctionHeader {
+                    name: "local_entry".to_string(),
+                    id: None,
+                    is_public: false,
+                },
+            ],
+            instructions: vec![
+                IrOpcode::Label("after_jump".to_string()),
+                IrOpcode::Command {
+                    name: "SetVarFromValue".to_string(),
+                    args: vec![Arg::Value(0x4000), Arg::Value(7)],
+                },
+            ],
+        };
+        let action = crate::compiler::ir::IrAction {
+            name: "action_0".to_string(),
+            instructions: vec![IrOpcode::Command {
+                name: "WalkNormalNorth".to_string(),
+                args: vec![Arg::Value(3)],
+            }],
+        };
+        let output = ScriptOutput::Normal {
+            items: vec![TopLevelItem::Function(func), TopLevelItem::Action(action)],
+            jump_table_end_marker_count: 1,
+        };
+
+        let source = ir_to_source(&output, db, None);
+
+        assert!(source.contains("script script_1 #[1-2, 4]:"));
+        assert!(source.contains("local_entry:"));
+        assert!(source.contains("after_jump:"));
+        assert!(source.contains("SetVarFromValue 0x4000, 7"));
+        assert!(source.contains("action action_0:"));
+        assert!(source.contains("WalkNormalNorth 3"));
+    }
+
+    #[test]
+    fn levelscript_output_is_json() {
+        let mut levelscript = LevelScript::new();
+        levelscript
+            .header_entries
+            .push(LevelScriptHeaderEntry::OnResume { script_id: 42 });
+        let output = ScriptOutput::Levelscript(levelscript);
+
+        let source = ir_to_source(&output, create_test_db(), None);
+
+        assert!(source.contains(r#""type": "on_resume""#));
+        assert!(source.contains(r#""script_id": 42"#));
     }
 }

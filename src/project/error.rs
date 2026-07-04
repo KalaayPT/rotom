@@ -149,3 +149,55 @@ impl From<DecompileError> for ProjectError {
         Self::Decompile { source }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_formats_common_project_errors() {
+        assert_eq!(
+            ProjectError::OutputCollision {
+                details: "out.bin <= [a.rotom, a.script]".to_string(),
+            }
+            .to_string(),
+            "Project compile output collision detected: out.bin <= [a.rotom, a.script]"
+        );
+        assert_eq!(
+            ProjectError::ConvertDecomp {
+                path: PathBuf::from("map.s"),
+                line: 12,
+                message: "bad command".to_string(),
+            }
+            .to_string(),
+            "Failed to convert 'map.s': line 12: bad command"
+        );
+        assert_eq!(
+            ProjectError::CompileFailures { count: 2 }.to_string(),
+            "2 file(s) failed to compile"
+        );
+        assert_eq!(
+            ProjectError::DecompileFailures { count: 3 }.to_string(),
+            "3 file(s) failed to decompile"
+        );
+    }
+
+    #[test]
+    fn from_compiler_errors_wraps_source() {
+        let compile = ProjectError::from(CompileError::Io {
+            message: "missing input".to_string(),
+        });
+        assert_eq!(
+            compile.to_string(),
+            "Project compile failed: IO error: missing input"
+        );
+
+        let decompile = ProjectError::from(DecompileError::InvalidFormat {
+            message: "bad binary".to_string(),
+        });
+        assert_eq!(
+            decompile.to_string(),
+            "Project decompile failed: Invalid binary format: bad binary"
+        );
+    }
+}

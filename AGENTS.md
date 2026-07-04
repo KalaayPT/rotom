@@ -62,6 +62,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **Clippy on touched Rust:** After substantive edits, run Clippy on the relevant crate(s), e.g. `cargo clippy -p rotom --all-targets` or `cargo clippy --workspace --all-targets` when multiple members change. Address **new** warnings in **files or modules you changed** (including lints reported for that code). 
 
+**Coverage on new Rust tests:** When adding tests, verify the impact with `cargo llvm-cov`, e.g. `cargo llvm-cov --all-features --workspace --summary-only` for the workspace or `cargo llvm-cov -p rotom-lsp --all-features --summary-only` for one package.
+
 ## 5. Don't Reimplement Upstream Logic
 
 **When a dependency already solves the problem, don't rewrite it.**
