@@ -1,7 +1,8 @@
 [workspace]
 # rotom is a binary toolchain, not published to crates.io. Determine the
-# current version from git tags and skip `cargo publish`.
+# current version from git tags and explicitly skip `cargo publish`.
 git_only = true
+publish = false
 
 # Emit one shared `v{version}` tag and release for the whole toolchain, so the
 # existing tag-triggered release.yml picks it up and attaches the binaries.
