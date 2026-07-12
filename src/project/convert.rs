@@ -620,6 +620,7 @@ mod tests {
         DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
         WorkspaceConfig,
     };
+    use crate::project::error::ProjectError;
     use crate::{BinaryQuirk, ConstantDb, DatabaseV2};
     use std::fs;
     use std::path::Path;
@@ -773,6 +774,73 @@ mod tests {
     }
 
     #[test]
+    fn convert_project_reports_missing_dspre_binary() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join("scripts/missing.script"), "=== script 1\nEnd\n").unwrap();
+
+        let error = convert_project(
+            root,
+            &dspre_config(),
+            ConvertOptions {
+                dry_run: false,
+                non_interactive: true,
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ProjectError::DspreConvertMissingBinary { .. }
+        ));
+    }
+
+    #[test]
+    fn convert_project_handles_empty_dspre_binary_in_dry_run_and_real_modes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join("scripts/empty.script"), "=== script 1\nEnd\n").unwrap();
+        fs::create_dir_all(root.join("unpacked/scripts")).unwrap();
+        fs::write(root.join("unpacked/scripts/empty"), []).unwrap();
+
+        let dry_run = convert_project(
+            root,
+            &dspre_config(),
+            ConvertOptions {
+                dry_run: true,
+                non_interactive: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(dry_run.plans.len(), 1);
+        assert!(root.join("scripts/empty.script").exists());
+        assert!(!root.join("scripts/empty.rotom").exists());
+
+        let report = convert_project(
+            root,
+            &dspre_config(),
+            ConvertOptions {
+                dry_run: false,
+                non_interactive: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.converted, 1);
+        assert!(!root.join("scripts/empty.script").exists());
+        let stub = fs::read_to_string(root.join("scripts/empty.rotom")).unwrap();
+        assert!(stub.contains("empty (0-byte) binary"));
+        assert!(
+            report
+                .backup_dir
+                .unwrap()
+                .join("scripts/empty.script")
+                .exists()
+        );
+    }
+
+    #[test]
     fn find_convertible_files_only_returns_supported_legacy_sources() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -811,6 +879,42 @@ mod tests {
 
         assert_eq!(report.converted, 1);
         assert!(converted.starts_with("#include \"macros/scrcmd.inc\""));
+    }
+
+    #[test]
+    fn convert_project_writes_levelscript_json_and_tracks_padding() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let source_dir = root.join("res/field/scripts");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("town_init_main.s"),
+            "InitScriptEntry_OnTransition 1\n\
+InitScriptEntry_OnFrameTable FrameTable\n\
+InitScriptEntryEnd\n\
+FrameTable:\n\
+    InitScriptGoToIfEqual 0x4000, 5, 3\n\
+    InitScriptFrameTableEnd\n\
+InitScriptEnd\n\
+.long 0\n",
+        )
+        .unwrap();
+
+        let report = convert_project(
+            root,
+            &decomp_config(),
+            ConvertOptions {
+                dry_run: false,
+                non_interactive: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.converted, 1);
+        assert!(!source_dir.join("town_init_main.s").exists());
+        let output = fs::read_to_string(source_dir.join("town_init_main.json")).unwrap();
+        assert!(output.contains("on_var_condition"));
+        assert!(root.join(".rotom/status/compile-state.json").exists());
     }
 
     #[test]

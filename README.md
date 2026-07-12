@@ -320,6 +320,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 - [uxie](https://github.com/KalaayPT/uxie) - Data fetching library for Gen 4 romhacking. Used heavily by Rotom.
 - [chatot](https://github.com/YakoSWG/chatot) - Text processing library for Gen 4 romhacking
+- [scrcmd-database](https://github.com/DS-Pokemon-Rom-Editor/scrcmd-database) - Reference script command databases derived from DSPRE and decomps.
 - [poryscript](https://github.com/huderlem/poryscript) - High-level scripting for Gen 3 (inspiration)
 - [pokeplatinum](https://github.com/pret/pokeplatinum) - Pokemon Platinum decompilation
 - [pokeheartgold](https://github.com/pret/pokeheartgold) - Pokemon HeartGold decompilation

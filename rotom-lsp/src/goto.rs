@@ -231,7 +231,8 @@ fn file_start_location(path: &std::path::Path) -> Location {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_goto_definition;
+    use super::{compute_goto_definition, json_message_lines, json_message_location};
+    use rotom::compiler::sourcemap::SourceMap;
     use rotom::database::DatabaseV2;
     use std::sync::Arc;
     use tower_lsp::lsp_types::Position;
@@ -295,5 +296,40 @@ mod tests {
             panic!("expected scalar goto location");
         };
         assert!(location.uri.as_str().contains("0199.json"));
+    }
+
+    #[test]
+    fn goto_local_label_returns_definition_location() {
+        let source = "alias 42 as VALUE\nscript Main #1:\n    Jump .target\n.target:\n    End\n";
+        let offset = source.find(".target").expect("label reference") + 2;
+        let source_position = SourceMap::new(source).byte_to_position(offset);
+        let position = Position {
+            line: source_position.line,
+            character: source_position.character,
+        };
+        let uri = tower_lsp::lsp_types::Url::parse("file:///tmp/main.rotom").expect("uri");
+
+        let result = compute_goto_definition(source, position, &uri, None, None, None);
+        let Some(tower_lsp::lsp_types::GotoDefinitionResponse::Scalar(location)) = result else {
+            panic!("expected local label definition");
+        };
+        assert_eq!(location.range.start.line, 3);
+    }
+
+    #[test]
+    fn archive_location_helpers_handle_matches_and_missing_entries() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("archive.json");
+        std::fs::write(
+            &path,
+            "{\"id\":\"first\"}\n{\"text\":\"middle\"}\n{\"id\":\"second\"}\n",
+        )
+        .expect("archive");
+
+        let location = json_message_location(&path, 1).expect("second message");
+        assert_eq!(location.range.start.line, 2);
+        assert_eq!(json_message_lines(&path), vec![0, 2]);
+        assert!(json_message_location(&path, 2).is_none());
+        assert!(json_message_lines(&dir.path().join("missing.json")).is_empty());
     }
 }

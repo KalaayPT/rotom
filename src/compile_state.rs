@@ -217,7 +217,7 @@ impl CompileState {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPILER_VERSION, CompileState, FileState, FileStatus};
+    use super::{BinaryQuirk, COMPILER_VERSION, CompileState, FileState, FileStatus};
     use std::{collections::HashMap, path::PathBuf, sync::LazyLock};
     use tempfile::tempdir;
 
@@ -350,10 +350,23 @@ mod tests {
     }
 
     #[test]
-    fn decompiled_file_state_has_empty_dependencies() {
+    fn file_state_constructors_preserve_status_dependencies_and_quirks() {
         let state = FileState::decompiled(10, 20);
 
         assert_eq!(state.status, FileStatus::Decompiled);
         assert!(state.dependency_hashes.is_empty());
+
+        let dependencies = HashMap::from([(PathBuf::from("include/test.h"), 30)]);
+        let transpiled = FileState::transpiled(10, 20, dependencies.clone());
+        assert_eq!(transpiled.status, FileStatus::Transpiled);
+        assert_eq!(transpiled.dependency_hashes, dependencies);
+
+        let quirks = BinaryQuirk {
+            jump_table_end_marker_count: Some(2),
+            levelscript_padding: Some(4),
+        };
+        let dirty = FileState::dirty(10, 20, HashMap::new()).with_quirks(quirks);
+        assert_eq!(dirty.status, FileStatus::Dirty);
+        assert_eq!(dirty.quirks, quirks);
     }
 }

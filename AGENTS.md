@@ -2,6 +2,10 @@
 
 Behavioral guidelines for agents working on this project.
 
+## DSPRE Reference Data
+
+When working with DSPRE command databases, use the reference repository at [scrcmd-database](https://github.com/DS-Pokemon-Rom-Editor/scrcmd-database). Verify command names, IDs, parameter types, and parameter values against its legacy or v2 files before creating fixtures or making claims about the database.
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**

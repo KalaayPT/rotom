@@ -196,4 +196,34 @@ script
             diagnostics.len()
         );
     }
+
+    #[test]
+    fn semantic_analysis_reports_errors_and_warnings() {
+        let db = DatabaseV2::test_platinum();
+        let constants = ConstantDb::new();
+
+        let warning_diagnostics = compute_diagnostics(
+            "alias 1 as UNUSED\nscript Test #1:\n    Message 0\n    End\n",
+            Some(db),
+            Some(&constants),
+            None,
+        );
+        assert!(
+            warning_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::WARNING))
+        );
+
+        let error_diagnostics = compute_diagnostics(
+            "script Test #1:\n    SetFlag\n    End\n",
+            Some(db),
+            Some(&constants),
+            None,
+        );
+        assert!(
+            error_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR))
+        );
+    }
 }

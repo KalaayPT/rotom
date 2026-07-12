@@ -478,7 +478,7 @@ fn dspre_v1_parameter_type_to_v2(t: &str) -> &'static str {
     }
 }
 
-/// Extracts the semantic label from a v1 `parameter_values` cell like `"Var: NPC ID"` -> `"NPC ID"`.
+/// Extracts the semantic label from a v1 `parameter_values` cell like `"Flex: Trainer ID"` -> `"Trainer ID"`.
 /// Returns `None` when the cell has no `": "` prefix (bare type labels like `"Integer"` are not
 /// useful as parameter names) or when the label is empty.
 fn dspre_v1_parameter_value_label(s: &str) -> Option<String> {
@@ -1235,9 +1235,56 @@ mod tests {
     fn dspre_zip_length_mismatch_truncates_lists() {
         let placeholders: Vec<Value> = vec![serde_json::json!(2); 7];
         let t7 = vec![serde_json::json!("Integer"); 7];
+        assert_eq!(dspre_zip_arity(&[], &[]), 0);
+        assert_eq!(dspre_zip_arity(&[], &t7), 7);
+        assert_eq!(dspre_zip_arity(&placeholders, &[]), 7);
         assert_eq!(dspre_zip_arity(&placeholders, &t7), 7);
         let t8 = vec![serde_json::json!("Integer"); 8];
         assert_eq!(dspre_zip_arity(&placeholders, &t8), 7);
+    }
+
+    #[test]
+    fn dspre_reference_parameter_types_map_to_v2_types() {
+        for (input, expected) in [
+            ("Integer", "u16"),
+            ("Variable", "var"),
+            ("Trainer", "unknown"),
+            ("Flex", "unknown"),
+            ("OwMovementType", "unknown"),
+        ] {
+            assert_eq!(dspre_v1_parameter_type_to_v2(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn patch_prefers_script_command_when_ids_overlap() {
+        let mut doc = serde_json::json!({
+            "commands": {
+                "LevelScriptEntry": {
+                    "type": "levelscript_cmd",
+                    "id": 7,
+                    "description": "level"
+                },
+                "ScriptEntry": {
+                    "type": "script_cmd",
+                    "id": 7,
+                    "description": "script"
+                }
+            }
+        });
+        let user_v1 = serde_json::json!({
+            "name": "ScriptEntry",
+            "parameters": [],
+            "parameter_types": [],
+            "parameter_values": [],
+            "description": "updated"
+        });
+
+        assert!(patch_script_cmd_from_v1_user_shape(
+            &mut doc, &user_v1, 7, None
+        ));
+        assert_eq!(doc["commands"]["ScriptEntry"]["description"], "updated");
+        assert_eq!(doc["commands"]["LevelScriptEntry"]["description"], "level");
     }
 
     #[test]
@@ -1291,45 +1338,42 @@ mod tests {
 
     #[test]
     fn build_params_uses_parameter_values_label_for_user_only_entry() {
-        // CreateOW scenario: no vanilla baseline, no existing v2 params.
-        // parameter_values labels should become param names.
+        // CheckLearnableTutorMoves from the reference Platinum legacy database.
+        // With no existing v2 params, parameter_values labels become names.
         let user_v1 = serde_json::json!({
-            "parameters": [2, 2, 2, 2, 2, 2],
-            "parameter_types": ["Integer", "Integer", "Integer", "Integer", "Integer", "Integer"],
+            "parameters": [2, 2, 2],
+            "parameter_types": ["Flex", "Flex", "Variable"],
             "parameter_values": [
-                "Var: NPC ID",
-                "Var: x coord",
-                "Var: z coord",
-                "Var: direction of the NPC",
-                "Var: owtable entry number",
-                "Var: movement code"
+                "Flex: Party Position",
+                "Flex: Tutor ID",
+                "Variable: Answer"
             ],
         });
         let merged = build_v2_params_from_dspre_v1(&user_v1, &[], None);
-        assert_eq!(merged.len(), 6);
-        assert_eq!(merged[0]["name"], serde_json::json!("NPC ID"));
-        assert_eq!(merged[1]["name"], serde_json::json!("x coord"));
-        assert_eq!(merged[2]["name"], serde_json::json!("z coord"));
-        assert_eq!(merged[3]["name"], serde_json::json!("direction of the NPC"));
-        assert_eq!(merged[0]["type"], serde_json::json!("u16"));
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0]["name"], serde_json::json!("Party Position"));
+        assert_eq!(merged[1]["name"], serde_json::json!("Tutor ID"));
+        assert_eq!(merged[2]["name"], serde_json::json!("Answer"));
+        assert_eq!(merged[2]["type"], serde_json::json!("var"));
     }
 
     #[test]
     fn build_params_detects_user_renamed_parameter_values() {
-        // When the user changed the parameter_values label vs vanilla, the new label wins.
-        let existing = vec![serde_json::json!({"name": "old_name", "type": "u16"})];
+        // SetTrainerFlag from the reference database, with a changed label.
+        let existing = vec![serde_json::json!({"name": "trainer_id", "type": "flex"})];
         let vanilla_v1 = serde_json::json!({
             "parameters": [2],
-            "parameter_types": ["Integer"],
-            "parameter_values": ["Var: Old Label"],
+            "parameter_types": ["Trainer"],
+            "parameter_values": ["Flex: Trainer ID"],
         });
         let user_v1 = serde_json::json!({
             "parameters": [2],
-            "parameter_types": ["Integer"],
-            "parameter_values": ["Var: New Label"],
+            "parameter_types": ["Trainer"],
+            "parameter_values": ["Flex: Trainer"],
         });
         let merged = build_v2_params_from_dspre_v1(&user_v1, &existing, Some(&vanilla_v1));
-        assert_eq!(merged[0]["name"], serde_json::json!("New Label"));
+        assert_eq!(merged[0]["name"], serde_json::json!("Trainer"));
+        assert_eq!(merged[0]["type"], serde_json::json!("flex"));
     }
 
     #[test]
@@ -1383,16 +1427,16 @@ mod tests {
     #[test]
     fn parameter_value_label_strips_type_prefix() {
         assert_eq!(
-            dspre_v1_parameter_value_label("Var: NPC ID").as_deref(),
-            Some("NPC ID")
-        );
-        assert_eq!(
-            dspre_v1_parameter_value_label("u16: Brightness").as_deref(),
-            Some("Brightness")
-        );
-        assert_eq!(
             dspre_v1_parameter_value_label("Flex: Trainer ID").as_deref(),
             Some("Trainer ID")
+        );
+        assert_eq!(
+            dspre_v1_parameter_value_label("u16: Time").as_deref(),
+            Some("Time")
+        );
+        assert_eq!(
+            dspre_v1_parameter_value_label("Flex: Event ID").as_deref(),
+            Some("Event ID")
         );
         // No prefix -> None (bare type labels are not useful names)
         assert_eq!(dspre_v1_parameter_value_label("Integer"), None);
@@ -1426,12 +1470,12 @@ mod tests {
     #[test]
     fn classification_ignores_parameter_values_only_typo() {
         let van = serde_json::json!({
-            "parameters": [1],
-            "parameter_types": ["SHORT"],
-            "parameter_values": ["a"],
+            "parameters": [2, 2],
+            "parameter_types": ["Variable", "Integer"],
+            "parameter_values": ["Var: Variable", "u16: Time"],
         });
         let mut user = van.clone();
-        user["parameter_values"] = serde_json::json!(["b"]);
+        user["parameter_values"] = serde_json::json!(["Var: Variable", "u16: Value"]);
         assert!(!dspre_merge_shape_differs(Some(&van), &user));
     }
 
@@ -1462,13 +1506,14 @@ mod tests {
 
     #[test]
     fn user_only_entry_is_structural_change() {
+        // CMD_860 / ScrCmd_35C is a Following Platinum-only reference entry.
         let user = serde_json::json!({
-            "name": "CreateOW",
-            "decomp_name": "CreateOW",
-            "parameters": [2, 2, 2, 2, 2, 2],
-            "parameter_types": ["Integer", "Integer", "Integer", "Integer", "Integer", "Integer"],
+            "name": "CMD_860",
+            "decomp_name": "ScrCmd_35C",
+            "parameters": [2],
+            "parameter_types": ["Variable"],
             "parameter_values": [],
-            "description": "spawn an NPC",
+            "description": "",
         });
         assert!(dspre_merge_shape_differs(None, &user));
     }
@@ -1477,35 +1522,32 @@ mod tests {
     fn user_only_entry_patches_v2_placeholder() {
         let mut doc = serde_json::json!({
             "commands": {
-                "CMD_842": {
+                "CMD_860": {
                     "type": "script_cmd",
-                    "id": 842,
-                    "legacy_name": "CMD_842",
+                    "id": 860,
+                    "legacy_name": "CMD_860",
                     "description": "",
                     "params": []
                 }
             }
         });
         let user_v1 = serde_json::json!({
-            "name": "CreateOW",
-            "decomp_name": "CreateOW",
-            "parameters": [2, 2, 2, 2, 2, 2],
-            "parameter_types": ["Integer", "Integer", "Integer", "Integer", "Integer", "Integer"],
+            "name": "CMD_860",
+            "decomp_name": "ScrCmd_35C",
+            "parameters": [2],
+            "parameter_types": ["Variable"],
             "parameter_values": [],
-            "description": "Bypass the event file to spawn an NPC at the given coordinates",
+            "description": "",
         });
         assert!(patch_script_cmd_from_v1_user_shape(
-            &mut doc, &user_v1, 842, None
+            &mut doc, &user_v1, 860, None
         ));
-        let cmd = doc["commands"]["CMD_842"].as_object().unwrap();
-        assert_eq!(cmd["legacy_name"], "CreateOW");
-        assert_eq!(
-            cmd["description"],
-            "Bypass the event file to spawn an NPC at the given coordinates"
-        );
+        let cmd = doc["commands"]["CMD_860"].as_object().unwrap();
+        assert_eq!(cmd["legacy_name"], "CMD_860");
+        assert_eq!(cmd["description"], "");
         let params = cmd["params"].as_array().unwrap();
-        assert_eq!(params.len(), 6);
-        assert_eq!(params[0]["type"], "u16");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0]["type"], "var");
     }
 
     #[test]
@@ -1616,6 +1658,124 @@ mod tests {
             "unexpected path: {}",
             p.display()
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Keep the reference-row fixture and reconciliation assertions together.
+    fn non_interactive_reconcile_handles_reference_command_and_movement_rows() {
+        use crate::project::config::{
+            PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig, WorkspaceConfig,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let user_path = root.join("scrcmd_database.json");
+        let v2_path = root.join("platinum_v2.json");
+        let vanilla = VanillaScrcmdV1 {
+            json: serde_json::json!({
+                "scrcmd": {
+                    "0x0003": {
+                        "name": "WaitTime",
+                        "parameters": [2, 2],
+                        "parameter_types": ["Integer", "Variable"],
+                        "parameter_values": ["u16: Time", "Var: Countdown Variable"],
+                        "description": "old time"
+                    },
+                    "0x006D": {
+                        "name": "SetOWMovement",
+                        "parameters": [2, 2],
+                        "parameter_types": ["Overworld", "OwMovementType"],
+                        "parameter_values": ["Flex: Event ID", "u16: Movement"],
+                        "description": "old movement"
+                    }
+                },
+                "movements": {
+                    "0x0000": {
+                        "name": "FaceNorth",
+                        "decomp_name": "FaceNorth",
+                        "description": "old face"
+                    }
+                }
+            })
+            .to_string(),
+            commit_sha: "1234567890abcdef".to_string(),
+            repo_path: "platinum_scrcmd_database.json",
+        };
+        std::fs::write(
+            &user_path,
+            serde_json::to_string(&serde_json::json!({
+                "scrcmd": {
+                    "0x0003": {
+                        "name": "WaitTime",
+                        "parameters": [2, 2],
+                        "parameter_types": ["Integer", "Variable"],
+                        "parameter_values": ["u16: Time", "Var: Countdown Variable"],
+                        "description": "new time"
+                    },
+                    "0x006D": {
+                        "name": "SetOWMovement",
+                        "parameters": [2, 2],
+                        "parameter_types": ["Overworld", "Action"],
+                        "parameter_values": ["Flex: Event ID", "u16: Movement"],
+                        "description": "new movement"
+                    },
+                    "0x035C": {
+                        "name": "CMD_860",
+                        "decomp_name": "ScrCmd_35C",
+                        "parameters": [2],
+                        "parameter_types": ["Variable"],
+                        "parameter_values": [],
+                        "description": ""
+                    }
+                },
+                "movements": {
+                    "0x0000": {
+                        "name": "FaceNorth",
+                        "decomp_name": "FaceNorth",
+                        "description": "new face"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let config = RotomConfig {
+            format_version: 1,
+            project: ProjectMetadata {
+                name: "reference-fixture".to_string(),
+            },
+            workspace: WorkspaceConfig {
+                project_type: ProjectTypeConfig::Dspre,
+                game_family: Some(GameFamily::Platinum),
+            },
+            paths: PathsConfig {
+                database_dir: ".rotom/command_database".to_string(),
+                cache_dir: ".rotom/cache".to_string(),
+                status_dir: ".rotom/status".to_string(),
+                source_roots: Vec::new(),
+                include_roots: Vec::new(),
+                binary_roots: Vec::new(),
+            },
+            database: None,
+        };
+
+        let result = maybe_reconcile_scrcmd_v1_into_v2(
+            root,
+            &config,
+            Some(&vanilla),
+            GameFamily::Platinum,
+            &v2_path,
+            ConvertOptions {
+                dry_run: false,
+                non_interactive: true,
+            },
+            Some(&user_path),
+        )
+        .unwrap();
+
+        assert!(!result);
+        assert!(!v2_path.exists(), "non-interactive mode must not write");
     }
 
     #[test]

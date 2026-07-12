@@ -142,7 +142,8 @@ pub enum OperandType {
 
 #[cfg(test)]
 mod tests {
-    use super::Arg;
+    use super::{Arg, IrAction, IrFunction, IrOpcode, TopLevelItem};
+    use crate::compiler::ast::FunctionHeader;
 
     #[test]
     fn value_returns_inner_number() {
@@ -158,6 +159,64 @@ mod tests {
         assert!(
             error.to_string().contains("match subject"),
             "error should include caller context: {error}"
+        );
+    }
+
+    #[test]
+    fn ir_formats_operations_and_exposes_public_jump_slots() {
+        let command = IrOpcode::Command {
+            name: "Message".to_string(),
+            args: vec![Arg::Value(42), Arg::Pointer("target".to_string())],
+        };
+        assert_eq!(command.to_string(), "    Message 0x2A, Pointer(target)");
+        assert_eq!(IrOpcode::Label("target".to_string()).to_string(), "target:");
+        assert_eq!(
+            Arg::Pointer("target".to_string()).unwrap_pointer(),
+            "target"
+        );
+
+        let function = IrFunction {
+            headers: vec![
+                FunctionHeader {
+                    name: "Main".to_string(),
+                    id: Some(3),
+                    is_public: true,
+                },
+                FunctionHeader {
+                    name: "PrivateEntry".to_string(),
+                    id: Some(4),
+                    is_public: false,
+                },
+                FunctionHeader {
+                    name: "PublicWithoutSlot".to_string(),
+                    id: None,
+                    is_public: true,
+                },
+            ],
+            instructions: vec![command],
+        };
+        assert_eq!(function.name(), "Main");
+        assert!(function.is_public());
+        assert_eq!(
+            function.jump_table_slots().collect::<Vec<_>>(),
+            vec![(3, "Main".to_string())]
+        );
+        assert_eq!(
+            function.to_string(),
+            "=== IR: Main ===\n    Message 0x2A, Pointer(target)\n"
+        );
+
+        let action = IrAction {
+            name: "Walk".to_string(),
+            instructions: vec![IrOpcode::Label("step".to_string())],
+        };
+        assert_eq!(
+            TopLevelItem::Action(action).to_string(),
+            "=== IR Action: Walk ===\nstep:\n"
+        );
+        assert_eq!(
+            TopLevelItem::Function(function).to_string(),
+            "=== IR: Main ===\n    Message 0x2A, Pointer(target)\n"
         );
     }
 }
