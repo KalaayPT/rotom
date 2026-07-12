@@ -1,6 +1,6 @@
 [package]
 name = "rotom-lsp"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 authors = ["Kalaay"]
 description = "Language Server Protocol implementation for the Rotom scripting language"
@@ -12,7 +12,7 @@ tokio = { version = "1", features = ["full"] }
 tower-lsp = "0.20"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rotom = { path = "..", version = "0.1.4" }
+rotom = { path = "..", version = "0.2.0" }
 uxie = "0.8.6"
 dashmap = "6"
 
