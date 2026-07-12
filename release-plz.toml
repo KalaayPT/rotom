@@ -4,8 +4,7 @@
 git_only = true
 publish = false
 
-# Emit one shared `v{version}` tag and release for the whole toolchain, so the
-# existing tag-triggered release.yml picks it up and attaches the binaries.
+# Emit one shared `v{version}` tag and release for the whole toolchain.
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
@@ -17,3 +16,6 @@ version_group = "rotom"
 [[package]]
 name = "rotom-lsp"
 version_group = "rotom"
+# `rotom` owns the shared version tag and GitHub release.
+git_tag_enable = false
+git_release_enable = false
