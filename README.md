@@ -70,7 +70,7 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - Constant loading from database, text banks (DSPRE) and decomp projects' JSON and header files
 - Full test infrastructure with DSPRE and decomp fixtures
 - Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT` (yoinked from decomps)
-- implicit truthiness, e.g. `if x` is equivalent to `if x != 0`
+- implicit truthiness for variables and flags, e.g. `if x` is equivalent to `if x != 0`
 
 ### To Do
 - Vendor JSON DBs for CI purposes
@@ -78,7 +78,6 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - Format string argument support, e.g. `format("Hello, {}!", BufferPlayerName)` for easy string formatting
 - Graph colouring for variable liveness analysis, which will allow for:
   - Variable allocation for automatic assignment
-  - Complex expressions in conditions (`if x + 1 == 5`)
   - Fully-featured for loops, will need graph colouring for counting
 - Decompiler pattern matching for `match`/`while`/`if` reconstruction
 - Derive includes for utilized text banks from map headers and GlobalScript table (DSPRE)
