@@ -15,7 +15,7 @@ pub mod warning;
 
 pub use error::{
     CompileError, ParseResult, analysis_error, codegen_error, database_error, lowering_error,
-    parse_error, print_error,
+    lowering_error_at, parse_error, print_error,
 };
 pub use warning::{CompileWarning, print_warning};
 
@@ -33,6 +33,19 @@ where
         end: range.end,
     }
     .serialize(serializer)
+}
+
+pub fn serialize_optional_range<S>(
+    range: &Option<Range<usize>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match range {
+        Some(range) => serialize_range(range, serializer),
+        None => serializer.serialize_none(),
+    }
 }
 
 fn render_diagnostic(

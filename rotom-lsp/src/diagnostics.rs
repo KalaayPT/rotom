@@ -107,6 +107,10 @@ fn compile_error_to_diagnostic(error: &CompileError, map: &SourceMap) -> Option<
         CompileError::Parse { span, message } | CompileError::Analysis { span, message } => {
             (span.clone(), message.clone(), DiagnosticSeverity::ERROR)
         }
+        CompileError::Lowering {
+            span: Some(span),
+            message,
+        } => (span.clone(), message.clone(), DiagnosticSeverity::ERROR),
         // Other error kinds don't have source spans, so skip them for now.
         _ => return None,
     };

@@ -454,6 +454,13 @@ pub(crate) fn compile_file_internal(
                                             message,
                                         }
                                     }
+                                    CompileError::Lowering {
+                                        span: Some(span),
+                                        message,
+                                    } => CompileError::Lowering {
+                                        span: Some(shift(span.start)..shift(span.end)),
+                                        message,
+                                    },
                                     e => e,
                                 };
                                 return CompileFailure::with_source(input, &source, e);
@@ -1362,6 +1369,31 @@ alias 7 as SHARED
         );
 
         assert!(result.is_err(), "forward alias reference should fail");
+    }
+
+    #[test]
+    fn compile_reports_lowering_error_at_offending_source_expression() {
+        let source = "script Main #1:\n    Message 1 == 2\n    End\n";
+        let db = load_test_db();
+        let Err(error) = compile(source, db, &ConstantDb::new(), BinaryQuirk::default()) else {
+            panic!("comparison cannot be used as a message argument")
+        };
+
+        match &error {
+            crate::CompileError::Lowering {
+                span: Some(span),
+                message,
+            } => {
+                assert_eq!(&source[span.start..span.end], "1 == 2");
+                assert!(message.contains("Unsupported operator 'Equal'"));
+            }
+            other => panic!("expected a spanned lowering error, got {other:?}"),
+        }
+        let json = serde_json::to_value(&error).expect("lowering error should serialize");
+        assert_eq!(
+            json["details"]["span"],
+            serde_json::json!({"start": source.find("1 == 2").unwrap(), "end": source.find("1 == 2").unwrap() + 6})
+        );
     }
 
     #[test]

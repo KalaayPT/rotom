@@ -4,7 +4,7 @@ use std::ops::Range;
 use codespan_reporting::diagnostic::Severity;
 use serde::Serialize;
 
-use super::{render_diagnostic, serialize_range};
+use super::{render_diagnostic, serialize_optional_range, serialize_range};
 
 /// Unified error type for the compiler
 #[derive(Debug, Clone, Serialize)]
@@ -25,7 +25,12 @@ pub enum CompileError {
     },
 
     /// Error during IR lowering
-    Lowering { message: String },
+    Lowering {
+        #[serde(serialize_with = "serialize_optional_range")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Range<usize>>,
+        message: String,
+    },
 
     /// Error during code generation
     Codegen { message: String },
@@ -45,7 +50,7 @@ impl fmt::Display for CompileError {
         match self {
             CompileError::Parse { message, .. } => write!(f, "Parse error: {}", message),
             CompileError::Analysis { message, .. } => write!(f, "Analysis error: {}", message),
-            CompileError::Lowering { message } => write!(f, "Lowering error: {}", message),
+            CompileError::Lowering { message, .. } => write!(f, "Lowering error: {}", message),
             CompileError::Codegen { message } => write!(f, "Codegen error: {}", message),
             CompileError::Transpile { message } => write!(f, "Transpile error: {}", message),
             CompileError::Database { message } => write!(f, "Database error: {}", message),
@@ -55,6 +60,20 @@ impl fmt::Display for CompileError {
 }
 
 impl std::error::Error for CompileError {}
+
+impl CompileError {
+    /// Attach the source span of the originating macro call to a lowering error.
+    #[must_use]
+    pub fn with_lowering_span(self, span: Range<usize>) -> Self {
+        match self {
+            Self::Lowering { message, .. } => Self::Lowering {
+                span: Some(span),
+                message,
+            },
+            error => error,
+        }
+    }
+}
 
 impl From<std::io::Error> for CompileError {
     fn from(e: std::io::Error) -> Self {
@@ -90,9 +109,19 @@ pub fn analysis_error(span: Range<usize>, message: impl Into<String>) -> Compile
     }
 }
 
+// TODO: convert all of this to snafu and replace with snafu constructors
 /// Helper to create a lowering error
 pub fn lowering_error(message: impl Into<String>) -> CompileError {
     CompileError::Lowering {
+        span: None,
+        message: message.into(),
+    }
+}
+
+/// Create a lowering error associated with a source span.
+pub fn lowering_error_at(span: Range<usize>, message: impl Into<String>) -> CompileError {
+    CompileError::Lowering {
+        span: Some(span),
         message: message.into(),
     }
 }
@@ -119,7 +148,9 @@ pub fn print_error(filename: &str, source: &str, error: &CompileError) {
         CompileError::Analysis { span, message } => {
             (Some(span.clone()), message.as_str(), "Analysis error")
         }
-        CompileError::Lowering { message } => (None, message.as_str(), "Lowering error"),
+        CompileError::Lowering { span, message } => {
+            (span.clone(), message.as_str(), "Lowering error")
+        }
         CompileError::Codegen { message } => (None, message.as_str(), "Codegen error"),
         CompileError::Transpile { message } => (None, message.as_str(), "Transpile error"),
         CompileError::Database { message } => (None, message.as_str(), "Database error"),

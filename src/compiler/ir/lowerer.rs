@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::autovar::{VAR_RESULT, autovar_param_index};
 use crate::compiler::analysis::{SymbolTable, SymbolType};
 use crate::compiler::ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind};
-use crate::compiler::diagnostic::{ParseResult, lowering_error};
+use crate::compiler::diagnostic::{ParseResult, lowering_error, lowering_error_at};
 use crate::compiler::token::TokenType;
 use crate::compiler::{Lexer, Parser};
 use crate::database::{Command, ComparisonOperator, DatabaseV2, ParamDef, ResolvedCommandShape};
@@ -224,7 +224,7 @@ impl<'a> Lowerer<'a> {
                 });
             }
             StatementKind::ScriptCommand { command, args } => {
-                self.lower_command(command, args, macro_depth)?;
+                self.lower_command(command, args, macro_depth, &stmt.span)?;
             }
 
             StatementKind::Label(name) => self.output.push(IrOpcode::Label(name.clone())),
@@ -264,7 +264,7 @@ impl<'a> Lowerer<'a> {
         subject: &Expression,
     ) -> ParseResult<Expression> {
         if let Some((function, args)) = self.command_call_parts(subject) {
-            self.lower_autovar_call(function, args)?;
+            self.lower_autovar_call(function, args, &subject.span)?;
             return Ok(Expression {
                 node: ExpressionKind::Number(VAR_RESULT),
                 span: subject.span.clone(),
@@ -419,10 +419,11 @@ impl<'a> Lowerer<'a> {
         command: &str,
         args: &[Expression],
         macro_depth: usize,
+        source_span: &std::ops::Range<usize>,
     ) -> ParseResult<()> {
         if let Ok(cmd) = self.db.get_command(command) {
             if cmd.is_macro() {
-                return self.expand_macro(command, args, macro_depth);
+                return self.expand_macro(command, args, macro_depth, source_span);
             }
 
             let materialized_args = self.materialize_command_args(command, cmd, args)?;
@@ -608,6 +609,7 @@ impl<'a> Lowerer<'a> {
         macro_name: &str,
         args: &[Expression],
         depth: usize,
+        source_span: &std::ops::Range<usize>,
     ) -> ParseResult<()> {
         if depth > MAX_MACRO_DEPTH {
             return Err(lowering_error(format!(
@@ -646,8 +648,10 @@ impl<'a> Lowerer<'a> {
 
         for line in expansion {
             let substituted = Self::substitute_params(line, &param_map);
-            let parsed_stmt = Self::parse_expansion_line(&substituted)?;
-            self.lower_statement_with_depth(&parsed_stmt, depth + 1)?;
+            let parsed_stmt = Self::parse_expansion_line(&substituted)
+                .map_err(|error| error.with_lowering_span(source_span.clone()))?;
+            self.lower_statement_with_depth(&parsed_stmt, depth + 1)
+                .map_err(|error| error.with_lowering_span(source_span.clone()))?;
         }
 
         Ok(())
@@ -714,20 +718,26 @@ impl<'a> Lowerer<'a> {
                     return Ok(val);
                 }
 
-                Err(lowering_error(format!(
-                    "Could not resolve '{}' to an integer for macro condition",
-                    name
-                )))
+                Err(lowering_error_at(
+                    expr.span.clone(),
+                    format!(
+                        "Could not resolve '{}' to an integer for macro condition",
+                        name
+                    ),
+                ))
             }
             ExpressionKind::Prefix { operator, id } => {
                 let val = self.resolve_arg_to_int(id)?;
                 match operator {
                     TokenType::Minus => Ok(-val),
                     TokenType::Plus => Ok(val),
-                    _ => Err(lowering_error(format!(
-                        "Unsupported prefix operator {:?} in macro condition",
-                        operator
-                    ))),
+                    _ => Err(lowering_error_at(
+                        expr.span.clone(),
+                        format!(
+                            "Unsupported prefix operator {:?} in macro condition",
+                            operator
+                        ),
+                    )),
                 }
             }
             ExpressionKind::Infix {
@@ -739,33 +749,48 @@ impl<'a> Lowerer<'a> {
                 let right = self.resolve_arg_to_int(right)?;
                 match operator {
                     TokenType::Plus => left.checked_add(right).ok_or_else(|| {
-                        lowering_error(format!(
-                            "Integer overflow while evaluating macro expression: {} + {}",
-                            left, right
-                        ))
+                        lowering_error_at(
+                            expr.span.clone(),
+                            format!(
+                                "Integer overflow while evaluating macro expression: {} + {}",
+                                left, right
+                            ),
+                        )
                     }),
                     TokenType::Minus => left.checked_sub(right).ok_or_else(|| {
-                        lowering_error(format!(
-                            "Integer overflow while evaluating macro expression: {} - {}",
-                            left, right
-                        ))
+                        lowering_error_at(
+                            expr.span.clone(),
+                            format!(
+                                "Integer overflow while evaluating macro expression: {} - {}",
+                                left, right
+                            ),
+                        )
                     }),
                     TokenType::Mul => left.checked_mul(right).ok_or_else(|| {
-                        lowering_error(format!(
-                            "Integer overflow while evaluating macro expression: {} * {}",
-                            left, right
-                        ))
+                        lowering_error_at(
+                            expr.span.clone(),
+                            format!(
+                                "Integer overflow while evaluating macro expression: {} * {}",
+                                left, right
+                            ),
+                        )
                     }),
-                    _ => Err(lowering_error(format!(
-                        "Unsupported infix operator {:?} in macro condition",
-                        operator
-                    ))),
+                    _ => Err(lowering_error_at(
+                        expr.span.clone(),
+                        format!(
+                            "Unsupported infix operator {:?} in macro condition",
+                            operator
+                        ),
+                    )),
                 }
             }
-            _ => Err(lowering_error(format!(
-                "Unsupported argument type for macro condition: {:?}",
-                expr.node
-            ))),
+            _ => Err(lowering_error_at(
+                expr.span.clone(),
+                format!(
+                    "Unsupported argument type for macro condition: {:?}",
+                    expr.node
+                ),
+            )),
         }
     }
 
@@ -858,6 +883,7 @@ impl<'a> Lowerer<'a> {
         self.lower_condition_inner(expr, target_label, false)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_condition_inner(
         &mut self,
         expr: &Expression,
@@ -865,7 +891,7 @@ impl<'a> Lowerer<'a> {
         invert: bool,
     ) -> ParseResult<()> {
         if let Some((function, args)) = self.command_call_parts(expr) {
-            self.lower_autovar_call(function, args)?;
+            self.lower_autovar_call(function, args, &expr.span)?;
             self.output.push(IrOpcode::Command {
                 name: "CompareVarValue".to_string(),
                 args: vec![Arg::Value(VAR_RESULT), Arg::Value(1)],
@@ -882,6 +908,45 @@ impl<'a> Lowerer<'a> {
                     Arg::Pointer(target_label.to_string()),
                 ],
             });
+            return Ok(());
+        }
+
+        if let ExpressionKind::Infix {
+            left,
+            operator: TokenType::Or,
+            right,
+        } = &expr.node
+        {
+            if invert {
+                // `!(left || right)` is true only when both operands are false.
+                // A true left operand skips the right-hand check.
+                let right_label = self.new_label("or_right");
+                self.lower_condition_inner(left, &right_label, false)?;
+                self.lower_condition_inner(right, target_label, true)?;
+                self.output.push(IrOpcode::Label(right_label));
+            } else {
+                self.lower_condition_inner(left, target_label, false)?;
+                self.lower_condition_inner(right, target_label, false)?;
+            }
+            return Ok(());
+        }
+
+        if let ExpressionKind::Infix {
+            left,
+            operator: TokenType::And,
+            right,
+        } = &expr.node
+        {
+            if invert {
+                self.lower_condition_inner(left, target_label, true)?;
+                self.lower_condition_inner(right, target_label, true)?;
+            } else {
+                // `left && right` needs to skip the right-hand check when left is false.
+                let right_label = self.new_label("and_right");
+                self.lower_condition_inner(left, &right_label, true)?;
+                self.lower_condition_inner(right, target_label, false)?;
+                self.output.push(IrOpcode::Label(right_label));
+            }
             return Ok(());
         }
 
@@ -955,16 +1020,19 @@ impl<'a> Lowerer<'a> {
             });
             Ok(())
         } else {
-            Err(lowering_error(format!(
-                "Condition must be a comparison expression (e.g., 'x == 1'), an autovar command call, a variable, or a flag, found {:?}.",
-                expr.node
-            )))
+            Err(lowering_error_at(
+                expr.span.clone(),
+                format!(
+                    "Condition must be a comparison expression (e.g., 'x == 1'), an autovar command call, a variable, or a flag, found {:?}.",
+                    expr.node
+                ),
+            ))
         }
     }
 
     fn lower_operand_if_call(&mut self, expr: &Expression) -> ParseResult<Option<i32>> {
         if let Some((function, args)) = self.command_call_parts(expr) {
-            self.lower_autovar_call(function, args)?;
+            self.lower_autovar_call(function, args, &expr.span)?;
             Ok(Some(VAR_RESULT))
         } else {
             Ok(None)
@@ -987,9 +1055,11 @@ impl<'a> Lowerer<'a> {
         &mut self,
         function: &Expression,
         args: &[Expression],
+        source_span: &std::ops::Range<usize>,
     ) -> ParseResult<()> {
         let ExpressionKind::Identifier(name) = &function.node else {
-            return Err(lowering_error(
+            return Err(lowering_error_at(
+                function.span.clone(),
                 "Autovar call must use a command name".to_string(),
             ));
         };
@@ -1045,8 +1115,10 @@ impl<'a> Lowerer<'a> {
 
             for line in expansion {
                 let substituted = Self::substitute_params(line, &param_map);
-                let parsed_stmt = Self::parse_expansion_line(&substituted)?;
-                self.lower_statement_with_depth(&parsed_stmt, 1)?;
+                let parsed_stmt = Self::parse_expansion_line(&substituted)
+                    .map_err(|error| error.with_lowering_span(source_span.clone()))?;
+                self.lower_statement_with_depth(&parsed_stmt, 1)
+                    .map_err(|error| error.with_lowering_span(source_span.clone()))?;
             }
         } else {
             let resolved_args = self.resolve_args(&args_with_defaults)?;
@@ -1150,10 +1222,13 @@ impl<'a> Lowerer<'a> {
                     return Ok(Arg::Value(cond as i32));
                 }
 
-                Err(lowering_error(format!(
-                    "Symbol '{}' could not be resolved (analysis should have caught this)",
-                    name
-                )))
+                Err(lowering_error_at(
+                    expr.span.clone(),
+                    format!(
+                        "Symbol '{}' could not be resolved (analysis should have caught this)",
+                        name
+                    ),
+                ))
             }
             ExpressionKind::Number(val) => Ok(Arg::Value(*val)),
             ExpressionKind::Label(name) => Ok(Arg::Pointer(name.clone())),
@@ -1163,26 +1238,28 @@ impl<'a> Lowerer<'a> {
                     .map(|(s, _)| s.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                let archive_id = if let Some(id) = archive_override {
-                    id
-                } else {
-                    self.workspace
+                let archive_id =
+                    if let Some(id) = archive_override {
+                        id
+                    } else {
+                        self.workspace
                         .text_archive_for_script_file(&self.source_stem)
                         .ok_or_else(|| {
-                            lowering_error(format!(
+                            lowering_error_at(expr.span.clone(), format!(
                                 "cannot resolve text archive for '{}': string literals require \
                                      a project workspace with script-to-archive mapping",
                                 self.source_stem
                             ))
                         })?
-                };
+                    };
                 let index = self
                     .workspace
                     .find_or_add_message(archive_id, &flat)
                     .map_err(|e| {
-                        lowering_error(format!(
-                            "failed to write message to archive {archive_id}: {e}"
-                        ))
+                        lowering_error_at(
+                            expr.span.clone(),
+                            format!("failed to write message to archive {archive_id}: {e}"),
+                        )
                     })?;
                 Ok(Arg::Value(i32::from(index)))
             }
@@ -1198,10 +1275,13 @@ impl<'a> Lowerer<'a> {
                     TokenType::Minus => left_val - right_val,
                     TokenType::Mul => left_val * right_val,
                     _ => {
-                        return Err(lowering_error(format!(
-                            "Unsupported operator '{:?}' in compile-time arithmetic (only +, -, * are supported)",
-                            operator
-                        )));
+                        return Err(lowering_error_at(
+                            expr.span.clone(),
+                            format!(
+                                "Unsupported operator '{:?}' in compile-time arithmetic (only +, -, * are supported)",
+                                operator
+                            ),
+                        ));
                     }
                 };
                 Ok(Arg::Value(result))
@@ -1211,10 +1291,13 @@ impl<'a> Lowerer<'a> {
                 let result = match operator {
                     TokenType::Minus => -val,
                     _ => {
-                        return Err(lowering_error(format!(
-                            "Unsupported prefix operator '{:?}' (only unary minus is supported)",
-                            operator
-                        )));
+                        return Err(lowering_error_at(
+                            expr.span.clone(),
+                            format!(
+                                "Unsupported prefix operator '{:?}' (only unary minus is supported)",
+                                operator
+                            ),
+                        ));
                     }
                 };
                 Ok(Arg::Value(result))
@@ -1225,7 +1308,8 @@ impl<'a> Lowerer<'a> {
                     && matches!(&args[0].node, ExpressionKind::String(_)) =>
             {
                 let ExpressionKind::String(segs) = &args[0].node else {
-                    return Err(lowering_error(
+                    return Err(lowering_error_at(
+                        expr.span.clone(),
                         "format() requires a string literal argument",
                     ));
                 };
@@ -1236,56 +1320,66 @@ impl<'a> Lowerer<'a> {
                         .collect::<Vec<_>>()
                         .join(" "),
                 )
-                .map_err(|e| lowering_error(format!("failed to format message: {e}")))?;
+                .map_err(|e| {
+                    lowering_error_at(expr.span.clone(), format!("failed to format message: {e}"))
+                })?;
                 let archive_id = if let Some(id) = archive_override {
                     id
                 } else {
                     self.workspace
                         .text_archive_for_script_file(&self.source_stem)
                         .ok_or_else(|| {
-                            lowering_error(format!(
-                                "cannot resolve text archive for '{}': format() requires \
+                            lowering_error_at(
+                                expr.span.clone(),
+                                format!(
+                                    "cannot resolve text archive for '{}': format() requires \
                                      a project workspace with script-to-archive mapping",
-                                self.source_stem
-                            ))
+                                    self.source_stem
+                                ),
+                            )
                         })?
                 };
                 let index = self
                     .workspace
                     .find_or_add_message(archive_id, &wrapped)
                     .map_err(|e| {
-                        lowering_error(format!(
-                            "failed to write message to archive {archive_id}: {e}"
-                        ))
+                        lowering_error_at(
+                            expr.span.clone(),
+                            format!("failed to write message to archive {archive_id}: {e}"),
+                        )
                     })?;
                 Ok(Arg::Value(i32::from(index)))
             }
             ExpressionKind::Call { function, .. } => {
                 if self.command_call_parts(expr).is_some() {
                     let ExpressionKind::Identifier(name) = &function.node else {
-                        return Err(lowering_error(
+                        return Err(lowering_error_at(
+                            expr.span.clone(),
                             "command call expression must use an identifier name",
                         ));
                     };
-                    return Err(lowering_error(format!(
-                        "Command '{}' cannot be used as a plain value here",
-                        name
-                    )));
+                    return Err(lowering_error_at(
+                        expr.span.clone(),
+                        format!("Command '{}' cannot be used as a plain value here", name),
+                    ));
                 }
 
-                let expr_text = expr.to_constant_eval_source().map_err(lowering_error)?;
+                let expr_text = expr
+                    .to_constant_eval_source()
+                    .map_err(|message| lowering_error_at(expr.span.clone(), message))?;
                 if let Some(constants) = self.constants
                     && let Some(value) = constants.evaluate_expression(&expr_text)
                 {
                     return Ok(Arg::Value(value));
                 }
 
-                Err(lowering_error(format!(
-                    "Could not resolve '{}' as a constant expression",
-                    expr_text
-                )))
+                Err(lowering_error_at(
+                    expr.span.clone(),
+                    format!("Could not resolve '{}' as a constant expression", expr_text),
+                ))
             }
-            ExpressionKind::Error => Err(lowering_error(
+            ExpressionKind::Error => Err(lowering_error_at(
+                expr.span.clone(),
                 "Invalid expression in argument resolution".to_string(),
             )),
         }
@@ -1322,10 +1416,10 @@ impl<'a> Lowerer<'a> {
                     Ok((OperandType::Value, v))
                 }
             }
-            Arg::Pointer(name) => Err(lowering_error(format!(
-                "Cannot use pointer '{}' in condition expression",
-                name
-            ))),
+            Arg::Pointer(name) => Err(lowering_error_at(
+                expr.span.clone(),
+                format!("Cannot use pointer '{}' in condition expression", name),
+            )),
         }
     }
 
@@ -1860,6 +1954,97 @@ script TestFunc #1:
     }
 
     #[test]
+    fn test_lower_exact_logical_or_condition() {
+        let source = r"
+script TestFunc #1:
+  GetPartyCount 0x800C
+  if 0x800C == 0 || 0x800D == 0 then
+      GoTo a
+  else if 0x40F8 == 0 then
+      GoTo b
+  else
+      GoTo a
+  endif
+  End
+
+a:
+  End
+
+b:
+  End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+
+        let items = lowerer
+            .lower_script_file(&script_file)
+            .expect("the exact logical-or condition should lower successfully");
+        let function = match &items[0] {
+            TopLevelItem::Function(function) => function,
+            TopLevelItem::Action(_) => panic!("expected a script function"),
+        };
+        let compare_count = function
+            .instructions
+            .iter()
+            .filter(|op| matches!(op, IrOpcode::Command { name, .. } if name == "CompareVarValue"))
+            .count();
+        assert!(
+            compare_count >= 3,
+            "expected both OR operands to be compared"
+        );
+    }
+
+    #[test]
+    fn test_lower_logical_and_condition() {
+        let source = r"
+script TestFunc #1:
+  GetPartyCount 0x800C
+  if 0x800C == 0 && 0x800D == 0 then
+      GoTo restInBed
+  else
+      GoTo HalloweenEventInit
+  endif
+  End
+
+restInBed:
+  End
+
+HalloweenEventInit:
+  End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+
+        let items = lowerer
+            .lower_script_file(&script_file)
+            .expect("the logical-and condition should lower successfully");
+        let function = match &items[0] {
+            TopLevelItem::Function(function) => function,
+            TopLevelItem::Action(_) => panic!("expected a script function"),
+        };
+        let jump_conditions: Vec<_> = function
+            .instructions
+            .iter()
+            .filter_map(|op| match op {
+                IrOpcode::Command { name, args } if name == "JumpIf" => {
+                    Some(args[0].unwrap_value())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            &jump_conditions[..2],
+            &[
+                ComparisonOperator::Different as i32,
+                ComparisonOperator::Different as i32,
+            ],
+            "AND should branch on a false left operand before testing the right operand"
+        );
+    }
+
+    #[test]
     fn test_lower_condition_operand_swap() {
         let source = r"
 script TestFunc #1:
@@ -1929,6 +2114,58 @@ script TestFunc #1:
                 }
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
+        }
+    }
+
+    #[test]
+    fn test_lowering_error_points_to_invalid_compile_time_expression() {
+        let source = r"
+script TestFunc #1:
+    Message 1 == 2
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+
+        let error = lowerer.lower_script_file(&script_file).unwrap_err();
+        match error {
+            crate::compiler::diagnostic::CompileError::Lowering {
+                span: Some(span),
+                message,
+            } => {
+                assert_eq!(&source[span], "1 == 2");
+                assert!(message.contains("Unsupported operator 'Equal'"));
+            }
+            other => panic!("expected a spanned lowering error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_macro_lowering_error_points_to_original_call() {
+        let source = r"
+script TestFunc #1:
+    GoToIfEq 0x8000, 0 == 0, TestLabel
+    End
+
+TestLabel:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+
+        let error = lowerer.lower_script_file(&script_file).unwrap_err();
+        match error {
+            crate::compiler::diagnostic::CompileError::Lowering {
+                span: Some(span),
+                message,
+            } => {
+                assert_eq!(span.start, source.find("GoToIfEq").unwrap());
+                assert!(source[span].contains("0 == 0"));
+                assert!(message.contains("Unsupported operator 'Equal'"));
+            }
+            other => panic!("expected a spanned lowering error, got {other:?}"),
         }
     }
 
