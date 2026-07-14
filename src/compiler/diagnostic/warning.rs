@@ -45,6 +45,19 @@ pub enum CompileWarning {
         #[serde(serialize_with = "serialize_range")]
         span: Range<usize>,
     },
+    /// `.scrollable(false)` conflicts with another option that requires list mode.
+    MenuScrollableFalseOverridden {
+        #[serde(serialize_with = "serialize_range")]
+        span: Range<usize>,
+    },
+    /// A non-scrolling Diamond/Pearl or Platinum menu is taller than the screen allows.
+    NormalMenuTooTall {
+        rows: usize,
+        max_rows: usize,
+        has_prompt: bool,
+        #[serde(serialize_with = "serialize_range")]
+        span: Range<usize>,
+    },
 }
 
 impl CompileWarning {
@@ -54,7 +67,9 @@ impl CompileWarning {
             | Self::ShadowedAlias { span, .. }
             | Self::MissingSlot { span, .. }
             | Self::MessageLineTooLong { span, .. }
-            | Self::VariantConditionUnresolvable { span, .. } => span.clone(),
+            | Self::VariantConditionUnresolvable { span, .. }
+            | Self::MenuScrollableFalseOverridden { span }
+            | Self::NormalMenuTooTall { span, .. } => span.clone(),
         }
     }
 
@@ -77,6 +92,25 @@ impl CompileWarning {
             } => format!(
                 "Could not evaluate variant condition '{condition}' for command '{command}' \
                  at compile time; the default variant will be used and the output may be incorrect"
+            ),
+            Self::MenuScrollableFalseOverridden { .. } => {
+                "`.scrollable(false)` is overridden because hover entries or `.width()` require \
+                 list mode"
+                    .to_string()
+            }
+            Self::NormalMenuTooTall {
+                rows,
+                max_rows,
+                has_prompt,
+                ..
+            } => format!(
+                "Normal menu needs {rows} rows, but at most {max_rows} fit {}; \
+                 use fewer entries, more columns, or a list menu",
+                if *has_prompt {
+                    "with a prompt"
+                } else {
+                    "without a prompt"
+                }
             ),
         }
     }
@@ -122,6 +156,13 @@ mod tests {
                 condition: "UNKNOWN".to_string(),
                 span: 21..30,
             },
+            CompileWarning::MenuScrollableFalseOverridden { span: 31..40 },
+            CompileWarning::NormalMenuTooTall {
+                rows: 9,
+                max_rows: 8,
+                has_prompt: true,
+                span: 41..50,
+            },
         ];
 
         assert_eq!(warnings[0].span(), 1..4);
@@ -129,10 +170,14 @@ mod tests {
         assert_eq!(warnings[2].span(), 9..10);
         assert_eq!(warnings[3].span(), 11..20);
         assert_eq!(warnings[4].span(), 21..30);
+        assert_eq!(warnings[5].span(), 31..40);
+        assert_eq!(warnings[6].span(), 41..50);
         assert!(warnings[0].message().contains("FOO"));
         assert!(warnings[1].message().contains("shadows"));
         assert!(warnings[2].message().contains("#7"));
         assert!(warnings[3].message().contains("Message line 2"));
         assert!(warnings[4].message().contains("ScrCmd_Test"));
+        assert!(warnings[5].message().contains("scrollable(false)"));
+        assert!(warnings[6].message().contains("at most 8"));
     }
 }

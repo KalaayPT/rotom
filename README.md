@@ -25,6 +25,7 @@ Inspired by [poryscript](https://github.com/huderlem/poryscript) for Gen 3.
   - [Editor Support](#editor-support)
 - [Example: Rotom Syntax](#example-rotom-syntax)
   - [Match Statements](#match-statements)
+  - [Menu Builders](#menu-builders)
   - [Autovar: Commands in Conditions](#autovar-commands-in-conditions)
   - [String Literals](#string-literals)
   - [Break Statement](#break-statement)
@@ -55,6 +56,7 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - **Aliases** for constants: `alias 0x800C as VAR_RESULT`
 - **Actions** for movement data: `action WalkPattern: ... EndMovement`
 - **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, `match/endmatch`, `break`
+- **Menu builders**: Easily define list menus with `Menu(...)` and `MenuGlobal(...)` builders
 - **Autovar**: Commands that return results can be used directly in conditions (e.g., `if CheckPlayerOnBike() then`), inspired by the feature of the same name from PoryScript
 - **String literals**: Write message text directly in your script without needing to touch text archives. Use `format()` to let the compiler handle word wrapping
 - **Preprocessor**: `#include` / `#define` for decomp header integration
@@ -190,6 +192,66 @@ script HandleChoice #1:
         else:
             Message 3
     endmatch
+    End
+```
+
+### Menu Builders
+
+Menu builders turn a list of entries into the game-specific menu commands and dispatch the
+selected entry to its target label:
+
+```rotom
+script ChooseAction #1:
+    Menu(
+        "Talk" -> Talk,
+        ("Leave", "Are you sure?") -> Leave,
+    ).cancel(Leave)
+    End
+
+Talk:
+    Message "Hello!"
+    End
+
+Leave:
+    End
+```
+
+`Menu` stores the entry text in the script's local text archive. `MenuGlobal` uses the game's
+global menu-entry archive (not recommended, as this only has very limited space). A builder accepts
+1 to 28 entries. The optional `(label, hover)` form adds help text that changes with the selected
+entry. In DPPt this turns the menu into a list menu; HGSS displays the help text on the
+top screen.
+
+`label -> target`, `.position()`, `.cursor()`, `.prompt()`, `.cancel(target)`, and
+`.cancel(label -> target)` work in every game and menu type.
+
+The other available syntax by game and menu type is:
+
+| Syntax | D/P normal | D/P list | Platinum normal | Platinum list | HGSS touch/list |
+| --- | --- | --- | --- | --- | --- |
+| `(label, hover) -> target` | No | Yes | No | Yes | Yes |
+| `.cancel((label, hover) -> target)` | No | Yes | No | Yes | Yes |
+| `.scrollable()` / `.scrollable(bool)` | No | Yes | No | Yes | No |
+| `.columns(count)` | Yes | No | Yes | No | No |
+| `.width(tiles)` | No | No | No | Yes | No |
+| `.anchor(left \| right)` | No | No | Yes* | Yes* | No |
+
+Hover entries, scrolling and `.width(...)` require list mode and combining either with `.scrollable(false)` emits a warning.
+DPPt normal menus emit warnings when the list is too long to display without messing up the prompt.
+Multi-column menus require the total entry count to be divisible by the column count.
+Platinum right anchoring is limited to one-column normal menus and auto-width list menus, so
+`.anchor(right)` cannot be combined with `.columns(...)` or `.width(...)`.
+`.cancel(target)` sets the B-button fallback without adding an entry. The dispatch form `(text -> target)` also adds the supplied label, and optional hover text, as a selectable final entry.
+
+```rotom
+script ChooseItem #1:
+    MenuGlobal(
+        ("Potion", "Restore HP") -> UsePotion,
+    )
+    .position(3, 2)
+    .prompt("Choose an item.")
+    .width(8)
+    .cancel(("Cancel", "Go back") -> Cancel)
     End
 ```
 

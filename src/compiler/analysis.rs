@@ -1,11 +1,14 @@
 use std::{collections::HashMap, ops::Range};
 
 use crate::database::{
-    Command, ComparisonOperator, ConstantDb, DatabaseV2, ParamDef, ParamType, ResolvedCommandShape,
+    Command, ComparisonOperator, ConstantDb, DatabaseV2, GameFamily, ParamDef, ParamType,
+    ResolvedCommandShape,
 };
 
 use super::{
-    ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind},
+    ast::{
+        Expression, ExpressionKind, MenuConfig, MenuEntry, ScriptFile, Statement, StatementKind,
+    },
     diagnostic::{CompileError, CompileWarning, ParseResult, analysis_error},
 };
 
@@ -339,6 +342,35 @@ impl<'a> Analyzer<'a> {
                 }
             }
             StatementKind::Jump(expr) => self.collect_alias_references_in_expression(expr),
+            StatementKind::MenuBuilder {
+                entries, config, ..
+            } => {
+                for entry in entries {
+                    self.collect_alias_references_in_expression(&entry.label);
+                    if let Some(hover) = &entry.hover {
+                        self.collect_alias_references_in_expression(hover);
+                    }
+                    self.collect_alias_references_in_expression(&entry.target);
+                }
+                if let Some((x, y)) = &config.position {
+                    self.collect_alias_references_in_expression(x);
+                    self.collect_alias_references_in_expression(y);
+                }
+                for expr in [
+                    &config.cursor,
+                    &config.prompt,
+                    &config.width,
+                    &config.columns,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    self.collect_alias_references_in_expression(expr);
+                }
+                if let Some(cancel) = &config.cancel {
+                    self.collect_alias_references_in_expression(cancel);
+                }
+            }
             StatementKind::Label(_)
             | StatementKind::Break
             | StatementKind::Return
@@ -552,6 +584,11 @@ impl<'a> Analyzer<'a> {
             }
             StatementKind::AliasStatement { .. } => {
                 self.register_alias(stmt)?;
+            }
+            StatementKind::MenuBuilder {
+                entries, config, ..
+            } => {
+                self.validate_menu_builder(entries, config, &stmt.span)?;
             }
             // labels already gathered, skip; error placeholders too
             StatementKind::Label(_)
@@ -1088,13 +1125,18 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
+    /// Ensure a jump expression names an addressable code target.
     fn validate_jump_target(&self, expr: &Expression) -> ParseResult<()> {
         let (ExpressionKind::Label(name) | ExpressionKind::Identifier(name)) = &expr.node else {
             return Ok(());
         };
 
         match self.resolve_symbol(name) {
-            Some(_) => Ok(()),
+            Some(SymbolType::Function(_) | SymbolType::Action | SymbolType::Label) => Ok(()),
+            Some(_) => Err(analysis_error(
+                expr.span.clone(),
+                format!("Jump target '{}' is not a label, function, or action", name),
+            )),
             None => Err(analysis_error(
                 expr.span.clone(),
                 format!(
@@ -1103,6 +1145,189 @@ impl<'a> Analyzer<'a> {
                 ),
             )),
         }
+    }
+
+    /// Validate menu entry limits, game-specific methods, and jump targets.
+    #[allow(clippy::too_many_lines)]
+    fn validate_menu_builder(
+        &mut self,
+        entries: &[MenuEntry],
+        config: &MenuConfig,
+        span: &Range<usize>,
+    ) -> ParseResult<()> {
+        if entries.is_empty() {
+            return Err(analysis_error(
+                span.clone(),
+                "Menu builder requires at least one entry".to_string(),
+            ));
+        }
+        if entries.len() > 28 {
+            return Err(analysis_error(
+                span.clone(),
+                "Menu builder supports at most 28 entries".to_string(),
+            ));
+        }
+        for entry in entries {
+            self.validate_expression(&entry.label)?;
+            if let Some(hover) = &entry.hover {
+                self.validate_expression(hover)?;
+            }
+            // The target must be a simple label/identifier, not an expression.
+            if !matches!(
+                &entry.target.node,
+                ExpressionKind::Label(_) | ExpressionKind::Identifier(_)
+            ) {
+                return Err(analysis_error(
+                    entry.target.span.clone(),
+                    "menu entry target must be a label".to_string(),
+                ));
+            }
+            self.validate_jump_target(&entry.target)?;
+        }
+        if let Some((x, y)) = &config.position {
+            self.validate_expression(x)?;
+            self.validate_expression(y)?;
+            for coordinate in [x, y] {
+                let value = self.resolve_expression_to_int(coordinate)?;
+                if u8::try_from(value).is_err() {
+                    return Err(analysis_error(
+                        coordinate.span.clone(),
+                        ".position() coordinates must fit in an unsigned byte".to_string(),
+                    ));
+                }
+            }
+        }
+        for expr in [
+            &config.cursor,
+            &config.prompt,
+            &config.width,
+            &config.columns,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.validate_expression(expr)?;
+        }
+        if let Some(cursor) = &config.cursor {
+            let cursor_value = self.resolve_expression_to_int(cursor)?;
+            if cursor_value < 0
+                || usize::try_from(cursor_value).map_or(true, |value| value >= entries.len())
+            {
+                return Err(analysis_error(
+                    cursor.span.clone(),
+                    format!(
+                        ".cursor() must select one of the {} menu entries",
+                        entries.len()
+                    ),
+                ));
+            }
+        }
+        if let Some(width) = &config.width
+            && self.resolve_expression_to_int(width)? <= 0
+        {
+            return Err(analysis_error(
+                width.span.clone(),
+                ".width() must be greater than zero".to_string(),
+            ));
+        }
+        let columns_count = if let Some(columns) = &config.columns {
+            let value = self.resolve_expression_to_int(columns)?;
+            if value <= 0 {
+                return Err(analysis_error(
+                    columns.span.clone(),
+                    ".columns() must be greater than zero".to_string(),
+                ));
+            }
+            usize::try_from(value).expect("positive i32 fits usize")
+        } else {
+            1
+        };
+
+        if let Some(family) = self.database.and_then(DatabaseV2::game_family) {
+            let is_dp_or_pt = matches!(family, GameFamily::DP | GameFamily::Platinum);
+            let list_required =
+                entries.iter().any(|entry| entry.hover.is_some()) || config.width.is_some();
+            let is_list = is_dp_or_pt && (list_required || config.scrollable == Some(true));
+
+            if is_dp_or_pt && list_required && config.scrollable == Some(false) {
+                self.warnings
+                    .push(CompileWarning::MenuScrollableFalseOverridden { span: span.clone() });
+            }
+
+            if config.columns.is_some() && is_list {
+                return Err(analysis_error(
+                    span.clone(),
+                    ".columns() is only valid for normal (non-list) menus".to_string(),
+                ));
+            }
+            if config.width.is_some() && family != GameFamily::Platinum {
+                return Err(analysis_error(
+                    span.clone(),
+                    ".width() is only supported on Platinum menus".to_string(),
+                ));
+            }
+            if config.anchor.is_some() && family != GameFamily::Platinum {
+                return Err(analysis_error(
+                    span.clone(),
+                    ".anchor() is only supported on Platinum menus".to_string(),
+                ));
+            }
+            if config.anchor == Some(true) && (config.width.is_some() || config.columns.is_some()) {
+                return Err(analysis_error(
+                    span.clone(),
+                    ".anchor(right) cannot be combined with .width() or .columns()".to_string(),
+                ));
+            }
+            if config.scrollable.is_some() && family == GameFamily::HGSS {
+                return Err(analysis_error(
+                    span.clone(),
+                    ".scrollable() is not supported on HGSS menus".to_string(),
+                ));
+            }
+            if config.columns.is_some() && family == GameFamily::HGSS {
+                return Err(analysis_error(
+                    span.clone(),
+                    ".columns() is not supported on HGSS menus".to_string(),
+                ));
+            }
+            if is_dp_or_pt && !is_list {
+                if let Some(columns) = &config.columns
+                    && !entries.len().is_multiple_of(columns_count)
+                {
+                    return Err(analysis_error(
+                        columns.span.clone(),
+                        format!(
+                            "{} menu entries cannot be divided evenly into {columns_count} columns",
+                            entries.len()
+                        ),
+                    ));
+                }
+                let rows = entries.len().div_ceil(columns_count);
+                let has_prompt = config.prompt.is_some();
+                let max_rows = if has_prompt { 8 } else { 11 };
+                if rows > max_rows {
+                    self.warnings.push(CompileWarning::NormalMenuTooTall {
+                        rows,
+                        max_rows,
+                        has_prompt,
+                        span: span.clone(),
+                    });
+                }
+            }
+        }
+        if let Some(cancel) = &config.cancel {
+            if !matches!(
+                &cancel.node,
+                ExpressionKind::Label(_) | ExpressionKind::Identifier(_)
+            ) {
+                return Err(analysis_error(
+                    cancel.span.clone(),
+                    ".cancel expects a label".to_string(),
+                ));
+            }
+            self.validate_jump_target(cancel)?;
+        }
+        Ok(())
     }
 }
 
@@ -1231,6 +1456,145 @@ script Test #1:
         match analyzer.symbols.resolve("bar") {
             Some(SymbolType::Variable(id)) => assert_eq!(*id, 1),
             _ => panic!("Chained alias not found in symbol table"),
+        }
+    }
+
+    #[test]
+    fn test_menu_builder_rejects_non_label_target() {
+        let source = r"
+alias 3 as NotALabel
+
+script Test #1:
+    Menu(
+        10 -> NotALabel,
+    )
+    End
+";
+        let lexer = crate::compiler::Lexer::new(source);
+        let mut parser = crate::compiler::Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::new();
+        let error = analyzer.analyze(&script_file).unwrap_err();
+        assert!(error.to_string().contains("is not a label"));
+    }
+
+    #[test]
+    fn test_menu_builder_rejects_invalid_configuration() {
+        let db = DatabaseV2::test_platinum();
+        let constants = ConstantDb::new();
+        for (methods, expected) in [
+            (".columns(0)", "greater than zero"),
+            (".cursor(1)", "must select one of the 1 menu entries"),
+            (
+                ".anchor(right).width(8)",
+                "cannot be combined with .width()",
+            ),
+        ] {
+            let source = format!(
+                "script Test #1:\n    Menu(10 -> Target){methods}\n    End\n\nTarget:\n    End\n"
+            );
+            let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(&source));
+            let script_file = parser.parse_script_file().unwrap();
+            let mut analyzer = Analyzer::with_database(&constants, db);
+            let error = analyzer.analyze(&script_file).unwrap_err();
+
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn test_menu_builder_warns_when_scrollable_false_is_overridden() {
+        for menu in [
+            "Menu((10, 11) -> Target).scrollable(false)",
+            "Menu(10 -> Target).scrollable(false).width(8)",
+        ] {
+            let source = format!(
+                r"
+script Test #1:
+    {menu}
+    End
+
+Target:
+    End
+"
+            );
+            let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(&source));
+            let script_file = parser.parse_script_file().unwrap();
+            let constants = ConstantDb::new();
+            let mut analyzer = Analyzer::with_database(&constants, DatabaseV2::test_platinum());
+            analyzer.analyze(&script_file).unwrap();
+
+            assert!(matches!(
+                analyzer.warnings.as_slice(),
+                [CompileWarning::MenuScrollableFalseOverridden { .. }]
+            ));
+        }
+    }
+
+    #[test]
+    fn test_menu_builder_warns_when_normal_menu_is_too_tall() {
+        for (entry_count, methods, should_warn) in [
+            (8, ".prompt(1)", false),
+            (9, ".prompt(1)", true),
+            (11, "", false),
+            (12, "", true),
+            (16, ".columns(2).prompt(1)", false),
+            (18, ".columns(2).prompt(1)", true),
+            (12, ".scrollable()", false),
+        ] {
+            let entries = (0..entry_count)
+                .map(|index| format!("        {index} -> Target"))
+                .collect::<Vec<_>>()
+                .join(",\n");
+            let source = format!(
+                "script Test #1:\n    Menu(\n{entries},\n    ){methods}\n    End\n\nTarget:\n    End\n"
+            );
+            let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(&source));
+            let script_file = parser.parse_script_file().unwrap();
+            let constants = ConstantDb::new();
+            let mut analyzer = Analyzer::with_database(&constants, DatabaseV2::test_platinum());
+            analyzer.analyze(&script_file).unwrap();
+            let warned = analyzer
+                .warnings
+                .iter()
+                .any(|warning| matches!(warning, CompileWarning::NormalMenuTooTall { .. }));
+
+            assert_eq!(warned, should_warn, "{entry_count} entries with {methods}");
+        }
+    }
+
+    #[test]
+    fn test_menu_builder_requires_complete_multi_column_grid() {
+        let constants = ConstantDb::new();
+        let db = DatabaseV2::test_platinum();
+        for (entry_count, cancel, should_error) in [
+            (3, "", true),
+            (4, ".cancel(Target)", false),
+            (3, ".cancel(99 -> Target)", false),
+            (4, ".cancel(99 -> Target)", true),
+        ] {
+            let entries = (0..entry_count)
+                .map(|index| format!("        {index} -> Target"))
+                .collect::<Vec<_>>()
+                .join(",\n");
+            let source = format!(
+                "script Test #1:\n    Menu(\n{entries},\n    ).columns(2){cancel}\n    End\n\nTarget:\n    End\n"
+            );
+            let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(&source));
+            let script_file = parser.parse_script_file().unwrap();
+            let mut analyzer = Analyzer::with_database(&constants, db);
+            let result = analyzer.analyze(&script_file);
+
+            if should_error {
+                let error = result.unwrap_err();
+                assert!(
+                    error.to_string().contains("cannot be divided evenly"),
+                    "{error}"
+                );
+            } else {
+                result.unwrap();
+            }
         }
     }
 

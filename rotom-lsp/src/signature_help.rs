@@ -24,7 +24,8 @@ pub fn compute_signature_help(
 
     let (command_name, param_index) = extract_command_context(source, byte_offset)?;
 
-    if let Some(sig) = builtin_signature_help(&command_name, param_index) {
+    let builtin_name = command_name.strip_prefix('.').unwrap_or(&command_name);
+    if let Some(sig) = builtin_signature_help(builtin_name, param_index) {
         return Some(sig);
     }
 
@@ -81,6 +82,55 @@ fn word_ending_at(text: &str) -> Option<String> {
 
 fn builtin_signature_help(name: &str, active_param: u32) -> Option<SignatureHelp> {
     match name {
+        "Menu" | "MenuGlobal" => Some(menu_builder_signature(name, active_param)),
+        "anchor" => Some(menu_method_signature(
+            "anchor(left | right)",
+            "Select the Platinum menu anchor; right requires a one-column or auto-width menu.",
+            &["left | right"],
+            active_param,
+        )),
+        "position" => Some(menu_method_signature(
+            "position(x, y)",
+            "Set the menu position.",
+            &["x", "y"],
+            active_param,
+        )),
+        "cursor" => Some(menu_method_signature(
+            "cursor(index)",
+            "Set the initially selected entry.",
+            &["index"],
+            active_param,
+        )),
+        "prompt" => Some(menu_method_signature(
+            "prompt(text)",
+            "Show a message before opening the menu.",
+            &["text"],
+            active_param,
+        )),
+        "width" => Some(menu_method_signature(
+            "width(tiles)",
+            "Set the Platinum list-menu width.",
+            &["tiles"],
+            active_param,
+        )),
+        "columns" => Some(menu_method_signature(
+            "columns(count)",
+            "Set the number of columns in a Diamond/Pearl or Platinum normal menu.",
+            &["count"],
+            active_param,
+        )),
+        "scrollable" => Some(menu_method_signature(
+            "scrollable(bool = true)",
+            "Select list-menu mode in Diamond/Pearl or Platinum. Omitting the argument enables it.",
+            &["bool = true"],
+            active_param,
+        )),
+        "cancel" => Some(menu_method_signature(
+            "cancel(target | entry -> target)",
+            "Set the B-cancel target, optionally adding a selectable cancel entry.",
+            &["target | entry -> target"],
+            active_param,
+        )),
         "format" => Some(SignatureHelp {
             signatures: vec![SignatureInformation {
                 label: "format(string)".to_string(),
@@ -102,6 +152,43 @@ fn builtin_signature_help(name: &str, active_param: u32) -> Option<SignatureHelp
             active_parameter: Some(active_param),
         }),
         _ => None,
+    }
+}
+
+fn menu_builder_signature(name: &str, active_param: u32) -> SignatureHelp {
+    menu_method_signature(
+        &format!("{name}(entry -> target, ...)"),
+        "An entry is a label or a (label, hover) pair.",
+        &["entries"],
+        active_param,
+    )
+}
+
+fn menu_method_signature(
+    label: &str,
+    documentation: &str,
+    parameter_labels: &[&str],
+    active_param: u32,
+) -> SignatureHelp {
+    SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label: label.to_string(),
+            documentation: Some(tower_lsp::lsp_types::Documentation::String(
+                documentation.to_string(),
+            )),
+            parameters: Some(
+                parameter_labels
+                    .iter()
+                    .map(|parameter| ParameterInformation {
+                        label: ParameterLabel::Simple((*parameter).to_string()),
+                        documentation: None,
+                    })
+                    .collect(),
+            ),
+            active_parameter: Some(active_param),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(active_param),
     }
 }
 
@@ -191,6 +278,38 @@ mod tests {
 
         assert_eq!(help.active_parameter, Some(0));
         assert_eq!(help.signatures[0].label, "format(string)");
+    }
+
+    #[test]
+    fn menu_builder_signature_is_returned() {
+        let source = "script Test #1:\n    Menu(10 -> Target\n";
+        let help = compute_signature_help(
+            source,
+            LspPosition {
+                line: 1,
+                character: u32::try_from(source.lines().nth(1).unwrap().len()).unwrap(),
+            },
+            Some(test_db()),
+        )
+        .expect("expected menu signature help");
+
+        assert_eq!(help.signatures[0].label, "Menu(entry -> target, ...)");
+    }
+
+    #[test]
+    fn explicit_cancel_entry_signature_is_returned() {
+        let source = "script Test #1:\n    Menu(10 -> Target).cancel(\"Abort\" -> Cancel\n";
+        let help = compute_signature_help(
+            source,
+            LspPosition {
+                line: 1,
+                character: u32::try_from(source.lines().nth(1).unwrap().len()).unwrap(),
+            },
+            Some(test_db()),
+        )
+        .expect("expected cancel signature help");
+
+        assert_eq!(help.signatures[0].label, "cancel(target | entry -> target)");
     }
 
     #[test]

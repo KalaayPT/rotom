@@ -321,7 +321,71 @@ match ShowYesNoMenu() with
 endmatch
 ```
 
-### 4.3 Loops (while)
+### 4.3 Menu Builders
+
+Menu builders describe a text menu and the labels reached by each selection:
+
+```rotom
+script ChooseAction #1:
+    Menu(
+        "Talk" -> Talk,
+        ("Leave", "Are you sure?") -> Leave,
+    )
+    End
+```
+
+`Menu` uses the script's local text archive for literal entry text. `MenuGlobal` uses the game's
+global menu-entry archive instead:
+
+```rotom
+script UseMenu #1:
+    MenuGlobal(
+        "Use" -> UseItem,
+        "Cancel" -> Cancel,
+    )
+    End
+```
+
+A builder accepts 1 to 28 entries. The optional `(label, hover)` form adds help text that changes
+with the selected entry. It selects list mode in Diamond/Pearl and Platinum; HGSS displays the
+help text on the top screen.
+
+`label -> target`, `.position()`, `.cursor()`, `.prompt()`, `.cancel(target)`, and
+`.cancel(label -> target)` work in every game and menu type.
+
+| Syntax | D/P normal | D/P list | Platinum normal | Platinum list | HGSS touch/list |
+| --- | --- | --- | --- | --- | --- |
+| `label -> target` | Yes | Yes | Yes | Yes | Yes |
+| `(label, hover) -> target` | No | Yes | No | Yes | Yes |
+| `.position(x, y)` | Yes | Yes | Yes | Yes | Yes |
+| `.cursor(index)` | Yes | Yes | Yes | Yes | Yes |
+| `.prompt(text)` | Yes | Yes | Yes | Yes | Yes |
+| `.cancel(target)` | Yes | Yes | Yes | Yes | Yes |
+| `.cancel(label -> target)` | Yes | Yes | Yes | Yes | Yes |
+| `.cancel((label, hover) -> target)` | No | Yes | No | Yes | Yes |
+| `.scrollable()` / `.scrollable(bool)` | `false` | `true` | `false` | `true` | No |
+| `.columns(count)` | Yes | No | Yes | No | No |
+| `.width(tiles)` | No | No | No | Yes | No |
+| `.anchor(left \| right)` | No | No | Yes* | Yes* | No |
+
+`.position(x, y)` defaults to `(1, 1)`, and `.cursor(index)` defaults to `0`. A prompt uses the
+script's local text archive. `.cancel(target)` enables B-cancel without adding an entry. The
+dispatch form also adds its label, and optional hover text, as the final selectable entry. Without
+either form, B-cancel is disabled.
+Hover entries and `.width(...)` require list mode. Combining either with `.scrollable(false)`
+emits a warning because the explicit normal-menu request cannot be honored.
+Diamond/Pearl and Platinum normal menus warn above 8 rows with a prompt or 11 rows without one.
+Multi-column menus require the total entry count to divide evenly by the column count; an explicit
+cancel entry is included in that total. List menus display up to 8 rows at once and scroll when more
+entries are present.
+Calling `.scrollable()` without an argument is equivalent to `.scrollable(true)`.
+Platinum right anchoring is limited to one-column normal menus and auto-width list menus, so
+`.anchor(right)` cannot be combined with `.columns(...)` or `.width(...)`.
+
+Entry and cancel targets must be labels, scripts, or actions. Selection targets use the
+zero-based entry index. An explicit cancel entry counts toward the 28-entry limit.
+
+### 4.4 Loops (while)
 
 ```rotom
 while x < 10 do
@@ -329,7 +393,7 @@ while x < 10 do
 endwhile
 ```
 
-### 4.4 Jumps and Calls
+### 4.5 Jumps and Calls
 * `Jump LabelName` - Unconditional jump to a label or script
 * `Call ScriptName` - Call a script/helper, execution returns after `Return`
 
@@ -337,7 +401,7 @@ endwhile
 
 Restriction: You cannot Jump to a variable alias. You can only jump to Labels or Scripts.
 
-### 4.5 Expressions in Conditions
+### 4.6 Expressions in Conditions
 
 Conditions support call-expression syntax for commands that return values:
 ```rotom

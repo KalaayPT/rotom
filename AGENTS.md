@@ -6,6 +6,10 @@ Behavioral guidelines for agents working on this project.
 
 When working with DSPRE command databases, use the reference repository at [scrcmd-database](https://github.com/DS-Pokemon-Rom-Editor/scrcmd-database). Verify command names, IDs, parameter types, and parameter values against its legacy or v2 files before creating fixtures or making claims about the database.
 
+## Game Engine Reference Data
+
+This entire scripting engine compiles down to a single reference implementation: NDS pokemon field scripts. When working with scripts, verify behavior against the game engine whenever possible. For this, the platinum and hgss decompilations are available at [platinum](https://github.com/pret/pokeplatinum/) and [hgss](https://github.com/pret/pokeheartgold/) respectively. NEVER call anything engine related verified without having researched the actual in game implementation of a command, pattern or similar.
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
@@ -15,6 +19,8 @@ Before implementing:
 - If multiple interpretations exist, present them; don't pick silently.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
+
+NEVER MAKE ASSUMPTIONS YOU CAN NOT VERIFY AT THE SOURCE.
 
 ## 2. Simplicity First
 

@@ -33,6 +33,22 @@ pub fn compute_hover(
     // Parse the source once — shared by alias lookup and message text resolution.
     let ast = parse_source(source);
 
+    // `Menu` is also a legacy database command name. Call-style `Menu(...)`
+    // is always the builder syntax and must win that name collision.
+    if matches!(word.as_str(), "Menu" | "MenuGlobal")
+        && source
+            .get(byte_offset + word.len()..)
+            .is_some_and(|rest| rest.trim_start().starts_with('('))
+    {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: builtin_hover(&word)?,
+            }),
+            range: None,
+        });
+    }
+
     // Try commands first.
     if let Some(db) = db {
         if let Ok(cmd) = db.get_command(&word) {
@@ -78,7 +94,8 @@ pub fn compute_hover(
     }
 
     // Built-in language keywords.
-    if let Some(hover) = builtin_hover(&word) {
+    let builtin_word = word.strip_prefix('.').unwrap_or(&word);
+    if let Some(hover) = builtin_hover(builtin_word) {
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -389,6 +406,39 @@ fn format_command_hover(name: &str, cmd: &Command) -> String {
 /// the word is not a built-in.
 fn builtin_hover(word: &str) -> Option<String> {
     match word {
+        "Menu" | "MenuGlobal" => Some(
+            "# Menu builder\n\n\
+             Builds a menu from `label -> target` entries. `Menu` stores literal entry text in the \
+             script's local archive; `MenuGlobal` uses the game's global menu archive.\n\n\
+             Use `(label, hover) -> target` for selection-dependent help text. Diamond/Pearl and \
+             Platinum use a list menu for these entries; HGSS shows the help text on the top screen."
+                .to_string(),
+        ),
+        "anchor" => Some(
+            "# Menu.anchor\n\nSelects the horizontal anchor on Platinum. Right anchoring is available for one-column normal and auto-width list menus."
+                .to_string(),
+        ),
+        "position" => Some(
+            "# Menu.position\n\nSets the menu position as `(x, y)` tile coordinates.".to_string(),
+        ),
+        "cursor" => Some("# Menu.cursor\n\nSets the initially selected entry index (zero-indexed).".to_string()),
+        "prompt" => Some("# Menu.prompt\n\nShows a message before opening the menu.".to_string()),
+        "width" => Some(
+            "# Menu.width\n\nSets the Platinum list-menu window width and enables list mode."
+                .to_string(),
+        ),
+        "columns" => {
+            Some("# Menu.columns\n\nSets the number of columns in a Diamond/Pearl or Platinum normal menu.".to_string())
+        }
+        "scrollable" => {
+            Some("# Menu.scrollable\n\nSelects list-menu mode in Diamond/Pearl or Platinum. The argument defaults to `true`.".to_string())
+        }
+        "cancel" => {
+            Some(
+                "# Menu.cancel\n\nSets the B-cancel target. The `entry -> target` form also adds a selectable cancel entry."
+                    .to_string(),
+            )
+        }
         "format" => Some(
             "# format\n\
              \n\
@@ -607,6 +657,22 @@ mod tests {
         .expect("expected hover");
 
         assert!(hover_markdown(hover).contains("Word-wraps a message string"));
+    }
+
+    #[test]
+    fn compute_hover_shows_menu_builder_docs() {
+        let source = "script Test #1:\n    Menu(10 -> Target)\n";
+        let hover = compute_hover(
+            source,
+            position_at(source, "Menu"),
+            Some(test_db()),
+            None,
+            None,
+            None,
+        )
+        .expect("expected menu builder hover");
+
+        assert!(hover_markdown(hover).contains("Builds a menu"));
     }
 
     #[test]

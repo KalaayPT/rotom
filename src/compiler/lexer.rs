@@ -225,7 +225,14 @@ impl<'a> Lexer<'a> {
                 }
             }
             Some('+') => TokenType::Plus,
-            Some('-') => TokenType::Minus,
+            Some('-') => {
+                if matches!(self.chars.peek(), Some('>')) {
+                    self.read_char();
+                    TokenType::Arrow
+                } else {
+                    TokenType::Minus
+                }
+            }
             Some('*') => TokenType::Mul,
             Some('\n') => TokenType::Newline,
             Some(c) if is_identifier_start(c) => self.read_identifier(c),

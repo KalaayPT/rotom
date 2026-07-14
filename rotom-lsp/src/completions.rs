@@ -5,9 +5,20 @@ use tower_lsp::lsp_types::{
 
 use rotom::compiler::lexer::is_identifier_char;
 use rotom::compiler::sourcemap::{Position as SourcePosition, SourceMap};
-use rotom::database::{DatabaseV2, ParamType};
+use rotom::database::{DatabaseV2, GameFamily, ParamType};
 
 use crate::signature_help::extract_command_context;
+
+const MENU_BUILDER_METHODS: [(&str, &str); 8] = [
+    ("anchor", "anchor(left | right)"),
+    ("position", "position(x, y)"),
+    ("cursor", "cursor(index)"),
+    ("prompt", "prompt(text)"),
+    ("width", "width(tiles)"),
+    ("columns", "columns(count)"),
+    ("scrollable", "scrollable(bool = true)"),
+    ("cancel", "cancel(target | entry -> target)"),
+];
 
 /// Produce LSP completion items for the given document position.
 ///
@@ -35,6 +46,50 @@ pub fn compute_completions(
     }
 
     let prefix = extract_prefix(source, byte_offset);
+
+    if menu_builder_method_prefix(source, byte_offset) {
+        let method_prefix = prefix.strip_prefix('.').unwrap_or(&prefix);
+        let family = db.and_then(DatabaseV2::game_family);
+        return MENU_BUILDER_METHODS
+            .iter()
+            .filter(|(name, _)| matches_prefix(name, method_prefix))
+            .filter(|(name, _)| match family {
+                Some(GameFamily::HGSS) => {
+                    matches!(*name, "position" | "cursor" | "prompt" | "cancel")
+                }
+                Some(GameFamily::DP) => !matches!(*name, "anchor" | "width"),
+                Some(GameFamily::Platinum) | None => true,
+            })
+            .map(|(name, detail)| CompletionItem {
+                label: (*name).to_string(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: Some((*detail).to_string()),
+                ..Default::default()
+            })
+            .collect();
+    }
+
+    if menu_builder_target_prefix(source, byte_offset) {
+        let mut items = Vec::new();
+        if let Some(local_symbols) = local_symbols {
+            for group in local_symbols {
+                if let Some(children) = &group.children {
+                    for sym in children {
+                        if matches!(sym.kind, SymbolKind::FUNCTION | SymbolKind::PROPERTY)
+                            && matches_prefix(&sym.name, &prefix)
+                        {
+                            items.push(CompletionItem {
+                                label: sym.name.clone(),
+                                kind: Some(symbol_kind_to_completion_kind(sym.kind)),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        return items;
+    }
 
     // Detect if we're typing a command parameter and which one.
     // Returns:
@@ -113,6 +168,19 @@ pub fn compute_completions(
         }
         // Not in parameter context (typing a command name).
         None => {
+            for (name, detail) in [
+                ("Menu", "Menu(entry -> target, ...)"),
+                ("MenuGlobal", "MenuGlobal(entry -> target, ...)"),
+            ] {
+                if matches_prefix(name, &prefix) {
+                    items.push(CompletionItem {
+                        label: name.to_string(),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        detail: Some(detail.to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
             if let Some(db) = db {
                 for (name, cmd) in &db.commands {
                     if matches_prefix(name, &prefix) {
@@ -164,6 +232,78 @@ pub fn compute_completions(
     }
 
     items
+}
+
+/// Return whether the cursor is completing a menu-builder method after `.`.
+fn menu_builder_method_prefix(source: &str, byte_offset: usize) -> bool {
+    let before = &source[..byte_offset.min(source.len())];
+    let Some(dot) = before.rfind('.') else {
+        return false;
+    };
+    if !before[dot + 1..].chars().all(is_identifier_char) {
+        return false;
+    }
+    let before_dot = before[..dot].trim_end();
+    if !before_dot.ends_with(')') {
+        return false;
+    }
+    is_menu_builder_call(before_dot)
+}
+
+/// Return the menu-builder method whose argument contains the cursor.
+fn menu_builder_method_context(source: &str, byte_offset: usize) -> Option<&str> {
+    let before = &source[..byte_offset.min(source.len())];
+    let open = before.rfind('(')?;
+    if before[open + 1..].contains(')') {
+        return None;
+    }
+    let before_open = before[..open].trim_end();
+    let dot = before_open.rfind('.')?;
+    let method = &before_open[dot + 1..];
+    if method.is_empty() || !method.chars().all(is_identifier_char) {
+        return None;
+    }
+    is_menu_builder_call(&before_open[..dot]).then_some(method)
+}
+
+/// Return whether the cursor is completing a menu entry or cancel target.
+fn menu_builder_target_prefix(source: &str, byte_offset: usize) -> bool {
+    let before = &source[..byte_offset.min(source.len())];
+    let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+    let line = &before[line_start..];
+
+    if let Some(arrow) = line.rfind("->")
+        && line[arrow + 2..]
+            .trim_start()
+            .chars()
+            .all(is_identifier_char)
+    {
+        return true;
+    }
+
+    if menu_builder_method_context(source, byte_offset) != Some("cancel") {
+        return false;
+    }
+    let Some(open) = before.rfind('(') else {
+        return false;
+    };
+    before[open + 1..]
+        .trim_start()
+        .chars()
+        .all(is_identifier_char)
+}
+
+fn is_menu_builder_call(text: &str) -> bool {
+    ["Menu(", "MenuGlobal("]
+        .into_iter()
+        .filter_map(|name| text.rfind(name))
+        .any(|start| {
+            start == 0
+                || text[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| !is_identifier_char(c))
+        })
 }
 
 /// True if `name` is a valid rotom identifier (starts with a letter or
@@ -390,6 +530,96 @@ mod tests {
                 .iter()
                 .all(|item| item.kind == Some(CompletionItemKind::FUNCTION))
         );
+    }
+
+    #[test]
+    fn compute_completions_suggests_menu_builder_methods() {
+        let source = "    Menu(10 -> Target).scr";
+        let items = compute_completions(source, pos_at(source, "scr"), Some(test_db()), None, None);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "scrollable");
+        assert_eq!(items[0].kind, Some(CompletionItemKind::METHOD));
+    }
+
+    #[test]
+    fn menu_builder_method_completions_follow_multiline_chains() {
+        let source = "    Menu(10 -> Target)\n    .position(1, 1)\n    .cur";
+        let items = compute_completions(source, pos_at(source, "cur"), Some(test_db()), None, None);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "cursor");
+        assert_eq!(items[0].detail.as_deref(), Some("cursor(index)"));
+    }
+
+    #[test]
+    fn menu_builder_targets_only_complete_labels_and_scripts() {
+        let symbols = crate::document::compute_document_symbols(
+            r#"alias 1 as AliasTarget
+
+script ScriptTarget #1:
+    End
+
+LabelTarget:
+    End
+
+action ActionTarget:
+    EndMovement
+"#,
+        );
+
+        for source in [
+            "    Menu(10 -> ",
+            "    Menu(10 -> Done).cancel(\"Abort\" -> ",
+            "    Menu(10 -> Done).cancel(",
+        ] {
+            let position = SourceMap::new(source).byte_to_position(source.len());
+            let items = compute_completions(
+                source,
+                LspPosition {
+                    line: position.line,
+                    character: position.character,
+                },
+                Some(test_db()),
+                None,
+                Some(&symbols),
+            );
+            let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+
+            assert_eq!(labels, ["ScriptTarget", "LabelTarget"]);
+        }
+    }
+
+    #[test]
+    fn menu_builder_method_completions_follow_game_family() {
+        let source = "    Menu(10 -> Target).";
+        let items = compute_completions(
+            source,
+            pos_at(source, "."),
+            Some(DatabaseV2::test_hgss()),
+            None,
+            None,
+        );
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+
+        assert_eq!(labels, ["position", "cursor", "prompt", "cancel"]);
+    }
+
+    #[test]
+    fn compute_completions_does_not_match_longer_command_names() {
+        let source = "    NotMenu(1).ca";
+        let items = compute_completions(source, pos_at(source, "ca"), Some(test_db()), None, None);
+
+        assert!(items.iter().all(|item| item.label != "cancel"));
+    }
+
+    #[test]
+    fn compute_completions_suggests_menu_builder_names() {
+        let source = "    MenuG";
+        let items =
+            compute_completions(source, pos_at(source, "MenuG"), Some(test_db()), None, None);
+
+        assert!(items.iter().any(|item| item.label == "MenuGlobal"));
     }
 
     #[test]

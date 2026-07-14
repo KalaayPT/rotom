@@ -27,7 +27,7 @@ impl fmt::Display for IrOpcode {
 }
 
 /// An argument to an IR command
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
     Value(i32),
     Pointer(String),

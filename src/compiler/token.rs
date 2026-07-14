@@ -63,6 +63,7 @@ pub enum TokenType {
     As,           // "as"
     Plus,         // '+'
     Minus,        // '-'
+    Arrow,        // '->'
     Mul,          // '*'
 
     Newline,
@@ -167,6 +168,7 @@ impl fmt::Display for TokenType {
             TokenType::GreaterEqual => write!(f, "'>='"),
             TokenType::Plus => write!(f, "'+'"),
             TokenType::Minus => write!(f, "'-'"),
+            TokenType::Arrow => write!(f, "'->'"),
             TokenType::Mul => write!(f, "'*'"),
             TokenType::Not => write!(f, "'!'"),
             TokenType::And => write!(f, "'&&'"),

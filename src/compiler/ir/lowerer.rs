@@ -12,7 +12,10 @@ use std::sync::Arc;
 
 use crate::autovar::{VAR_RESULT, autovar_param_index};
 use crate::compiler::analysis::{SymbolTable, SymbolType};
-use crate::compiler::ast::{Expression, ExpressionKind, ScriptFile, Statement, StatementKind};
+use crate::compiler::ast::{
+    Expression, ExpressionKind, MatchCase, MenuConfig, MenuEntry, ScriptFile, Statement,
+    StatementKind,
+};
 use crate::compiler::diagnostic::{ParseResult, lowering_error, lowering_error_at};
 use crate::compiler::token::TokenType;
 use crate::compiler::{Lexer, Parser};
@@ -22,6 +25,11 @@ use super::{Arg, IrAction, IrFunction, IrOpcode, OperandType, TopLevelItem};
 
 /// Maximum depth for macro expansion to prevent infinite recursion
 const MAX_MACRO_DEPTH: usize = 10;
+
+/// Sentinel for a menu entry with no hover/alt text. Matches
+/// `LIST_MENU_ENTRY_NO_ALT_TEXT` in pokeplatinum's `include/constants/scrcmd.h`
+/// and the equivalent HGSS menu value.
+const LIST_MENU_ENTRY_NO_ALT_TEXT: i32 = 0xff;
 
 #[derive(Clone)]
 pub struct Lowerer<'a> {
@@ -150,6 +158,7 @@ impl<'a> Lowerer<'a> {
         self.lower_statement_with_depth(stmt, 0)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_statement_with_depth(
         &mut self,
         stmt: &Statement,
@@ -252,6 +261,13 @@ impl<'a> Lowerer<'a> {
             StatementKind::AliasStatement { name, value, .. } => {
                 let resolved = self.resolve_arg_to_int(value)?;
                 self.active_aliases.insert(name.clone(), resolved);
+            }
+            StatementKind::MenuBuilder {
+                is_global,
+                entries,
+                config,
+            } => {
+                self.lower_menu_builder(*is_global, entries, config, macro_depth)?;
             }
 
             _ => {}
@@ -411,6 +427,255 @@ impl<'a> Lowerer<'a> {
         if need_end_label {
             self.output.push(IrOpcode::Label(label_end));
         }
+        Ok(())
+    }
+
+    /// Lower a `Menu(...)` / `MenuGlobal(...)` builder to the family-specific
+    /// init/add/show command sequence, then synthesize a `match VAR_RESULT`
+    /// dispatch (with an `else: Jump <cancel>` when `.cancel(target)` is set)
+    /// and lower it via the normal match path.
+    #[allow(clippy::too_many_lines)]
+    fn lower_menu_builder(
+        &mut self,
+        is_global: bool,
+        entries: &[MenuEntry],
+        config: &MenuConfig,
+        macro_depth: usize,
+    ) -> ParseResult<()> {
+        let is_platinum = self.workspace.family == uxie::GameFamily::Platinum;
+        let is_dp_or_pt = matches!(
+            self.workspace.family,
+            uxie::GameFamily::Platinum | uxie::GameFamily::DP
+        );
+
+        // Diamond/Pearl and Platinum have separate normal and list menu paths.
+        // The HGSS builder always uses its touch/list menu path. Configuration
+        // validation (game-specific method combos, cursor/width/columns ranges,
+        // divisibility) is performed in `Analyzer::validate_menu_builder`, which
+        // always runs before lowering and has the game family + precise spans.
+        let has_hover = entries.iter().any(|e| e.hover.is_some());
+        let is_list =
+            is_dp_or_pt && (has_hover || config.scrollable == Some(true) || config.width.is_some());
+
+        let (x, y) = match &config.position {
+            Some((x, y)) => (self.resolve_arg_to_int(x)?, self.resolve_arg_to_int(y)?),
+            None => (1, 1),
+        };
+        let cursor = match &config.cursor {
+            Some(c) => self.resolve_arg_to_int(c)?,
+            None => 0,
+        };
+        // `.cancel(target)` opts into B-exit (canExitWithB = TRUE); otherwise the
+        // player must pick an entry.
+        let cancel_enabled = config.cancel.is_some();
+
+        // String literals for entry labels/hover route to the global menu-entry
+        // archive for `MenuGlobal`, or the script's local archive for `Menu`.
+        // `msg_archive_for_command` resolves the global archive for the
+        // family's add-entry command (`AddMenuEntryImm` on D/P and Pt,
+        // `MenuItemAdd` on HGSS).
+        let entry_archive = if is_global {
+            let key = if is_dp_or_pt {
+                "AddMenuEntryImm"
+            } else {
+                "MenuItemAdd"
+            };
+            self.msg_archive_for_command(key)
+        } else {
+            None
+        };
+
+        // 1. Prompt. Hover text needs an open message window, but an empty
+        //    synthetic message would unnecessarily consume a local archive slot.
+        if let Some(prompt) = &config.prompt {
+            let prompt_arg = self.resolve_arg_with_archive(prompt, None)?;
+            self.output.push(IrOpcode::Command {
+                name: "Message".to_string(),
+                args: vec![prompt_arg],
+            });
+        } else if has_hover {
+            self.output.push(IrOpcode::Command {
+                name: "OpenMessage".to_string(),
+                args: vec![],
+            });
+        }
+
+        // 2. Init.
+        let init_cmd = if is_dp_or_pt {
+            match (is_global, is_list) {
+                (false, false) => "InitLocalTextMenu",
+                (true, false) => "InitGlobalTextMenu",
+                (false, true) => "InitLocalTextListMenu",
+                (true, true) => "InitGlobalTextListMenu",
+            }
+        } else if is_global {
+            "MenuInitStdGmm"
+        } else {
+            "MenuInit"
+        };
+        self.output.push(IrOpcode::Command {
+            name: init_cmd.to_string(),
+            args: vec![
+                Arg::Value(x),
+                Arg::Value(y),
+                Arg::Value(cursor),
+                Arg::Value(i32::from(cancel_enabled)),
+                Arg::Value(VAR_RESULT),
+            ],
+        });
+
+        // 3. Anchor (Platinum only; left is the engine default).
+        if is_platinum && config.anchor == Some(true) {
+            self.output.push(IrOpcode::Command {
+                name: "SetMenuXOriginSide".to_string(),
+                args: vec![Arg::Value(1)],
+            });
+        }
+
+        // 4. Entries.
+        for (i, entry) in entries.iter().enumerate() {
+            let label_arg = self.resolve_arg_with_archive(&entry.label, entry_archive)?;
+            // D/P and Platinum narrow resolved list text IDs to u8. Values at
+            // 0x4000 and above are runtime variable IDs, not literal text IDs.
+            if is_dp_or_pt
+                && is_list
+                && matches!(&label_arg, Arg::Value(value) if !((0..=0xff).contains(value) || (0x4000..=0xffff).contains(value)))
+            {
+                return Err(lowering_error_at(
+                    entry.label.span.clone(),
+                    "Diamond/Pearl and Platinum menu text IDs must fit in u8".to_string(),
+                ));
+            }
+            if is_dp_or_pt && is_list {
+                let hover_arg = match &entry.hover {
+                    Some(h) => {
+                        let arg = self.resolve_arg_with_archive(h, entry_archive)?;
+                        if arg == Arg::Value(LIST_MENU_ENTRY_NO_ALT_TEXT) {
+                            return Err(lowering_error_at(
+                                h.span.clone(),
+                                "menu hover text cannot use reserved message ID 255".to_string(),
+                            ));
+                        }
+                        if matches!(&arg, Arg::Value(value) if !((0..=0xff).contains(value) || (0x4000..=0xffff).contains(value)))
+                        {
+                            return Err(lowering_error_at(
+                                h.span.clone(),
+                                "Diamond/Pearl and Platinum menu text IDs must fit in u8"
+                                    .to_string(),
+                            ));
+                        }
+                        arg
+                    }
+                    None => Arg::Value(LIST_MENU_ENTRY_NO_ALT_TEXT),
+                };
+                self.output.push(IrOpcode::Command {
+                    name: "AddListMenuEntry".to_string(),
+                    args: vec![label_arg, hover_arg, Arg::Value(i as i32)],
+                });
+            } else if is_dp_or_pt {
+                self.output.push(IrOpcode::Command {
+                    name: "AddMenuEntryImm".to_string(),
+                    args: vec![label_arg, Arg::Value(i as i32)],
+                });
+            } else {
+                let hover_arg = match &entry.hover {
+                    Some(h) => {
+                        let arg = self.resolve_arg_with_archive(h, entry_archive)?;
+                        if arg == Arg::Value(LIST_MENU_ENTRY_NO_ALT_TEXT) {
+                            return Err(lowering_error_at(
+                                h.span.clone(),
+                                "menu hover text cannot use reserved message ID 255".to_string(),
+                            ));
+                        }
+                        arg
+                    }
+                    None => Arg::Value(LIST_MENU_ENTRY_NO_ALT_TEXT),
+                };
+                self.output.push(IrOpcode::Command {
+                    name: "MenuItemAdd".to_string(),
+                    args: vec![label_arg, hover_arg, Arg::Value(i as i32)],
+                });
+            }
+        }
+
+        // 5. Show.
+        if is_dp_or_pt && is_list {
+            match &config.width {
+                Some(w) => {
+                    let wv = self.resolve_arg_to_int(w)?;
+                    self.output.push(IrOpcode::Command {
+                        name: "ShowListMenuSetWidth".to_string(),
+                        args: vec![Arg::Value(wv)],
+                    });
+                }
+                None => {
+                    self.output.push(IrOpcode::Command {
+                        name: "ShowListMenu".to_string(),
+                        args: vec![],
+                    });
+                }
+            }
+        } else if is_dp_or_pt {
+            match &config.columns {
+                Some(c) => {
+                    let cv = self.resolve_arg_to_int(c)?;
+                    self.output.push(IrOpcode::Command {
+                        name: "ShowMenuMultiColumn".to_string(),
+                        args: vec![Arg::Value(cv)],
+                    });
+                }
+                None => {
+                    self.output.push(IrOpcode::Command {
+                        name: "ShowMenu".to_string(),
+                        args: vec![],
+                    });
+                }
+            }
+        } else {
+            self.output.push(IrOpcode::Command {
+                name: "MenuExec".to_string(),
+                args: vec![],
+            });
+        }
+
+        // 6. Dispatch: synthesize `match VAR_RESULT with case i: Jump target_i
+        //    else: Jump cancel`. The match optimizer emits the per-family
+        //    `CompareVarValue` + `JumpIf EQUAL` chain; the `else` catches the
+        //    B-press sentinel (MENU_CANCEL = -2 / 0xFFFE). With no `.cancel`,
+        //    there is no `else` and B-exit is disabled, so the chain always
+        //    matches a selected entry.
+        let subject = Expression {
+            node: ExpressionKind::Number(VAR_RESULT),
+            span: 0..0,
+        };
+        let cases: Vec<MatchCase> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| MatchCase {
+                values: vec![Expression {
+                    node: ExpressionKind::Number(i as i32),
+                    span: entry.target.span.clone(),
+                }],
+                body: vec![Statement {
+                    node: StatementKind::Jump(entry.target.clone()),
+                    span: entry.target.span.clone(),
+                }],
+                span: entry.target.span.clone(),
+            })
+            .collect();
+        let default = config.cancel.as_ref().map(|cancel| {
+            vec![Statement {
+                node: StatementKind::Jump(cancel.clone()),
+                span: cancel.span.clone(),
+            }]
+        });
+        self.lower_match_with_per_case_optimization(
+            &subject,
+            &cases,
+            default.as_deref(),
+            macro_depth,
+        )?;
+
         Ok(())
     }
 
@@ -2223,6 +2488,539 @@ script TestFunc #1:
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
         }
+    }
+
+    /// Extract the first function's instruction list from lowered items.
+    fn ir_func(items: &[TopLevelItem]) -> &IrFunction {
+        match &items[0] {
+            TopLevelItem::Function(f) => f,
+            TopLevelItem::Action(_) => panic!("Expected a function, got an action"),
+        }
+    }
+
+    /// Return the names of every command opcode in emission order, skipping
+    /// generated labels. Useful for asserting the overall command sequence
+    /// emitted by a `Menu(...)` builder.
+    fn cmd_names(items: &[TopLevelItem]) -> Vec<&str> {
+        ir_func(items)
+            .instructions
+            .iter()
+            .filter_map(|op| match op {
+                IrOpcode::Command { name, .. } => Some(name.as_str()),
+                IrOpcode::Label(_) => None,
+            })
+            .collect()
+    }
+
+    fn find_cmd<'a>(items: &'a [TopLevelItem], name: &str) -> Option<&'a [Arg]> {
+        ir_func(items).instructions.iter().find_map(|op| match op {
+            IrOpcode::Command { name: n, args } if n == name => Some(args.as_slice()),
+            _ => None,
+        })
+    }
+
+    /// All arg-lists for `name`, in emission order (use when a command repeats).
+    fn find_cmds<'a>(items: &'a [TopLevelItem], name: &str) -> Vec<&'a [Arg]> {
+        ir_func(items)
+            .instructions
+            .iter()
+            .filter_map(|op| match op {
+                IrOpcode::Command { name: n, args } if n == name => Some(args.as_slice()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Build a test workspace with empty JSON text archives at the given IDs.
+    fn workspace_with_archives(
+        game: uxie::game::Game,
+        archives: &[u16],
+    ) -> (tempfile::TempDir, Arc<uxie::Workspace>) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let dir = temp.path().join("expanded/textArchives");
+        std::fs::create_dir_all(&dir).expect("create archives dir");
+        for &id in archives {
+            std::fs::write(
+                dir.join(format!("{id:04}.json")),
+                r#"{"key":0,"messages":[]}"#,
+            )
+            .expect("write archive");
+        }
+        let mut ws = uxie::Workspace::new(temp.path().to_path_buf(), game);
+        ws.global_script_table = uxie::script_file::GlobalScriptTable::from_entries(vec![
+            uxie::script_file::GlobalScriptEntry::new(0, 1, 1, "test"),
+        ]);
+        (temp, Arc::new(ws))
+    }
+
+    #[test]
+    fn test_lower_menu_builder_normal_local() {
+        // Local normal menu: numeric msg IDs (no workspace/archive needed),
+        // .cancel(Fallback) opts into B-exit. No prompt is emitted for normal
+        // menus without .prompt.
+        let source = r"
+script Test #1:
+    Menu(
+        10 -> OptionA,
+        11 -> OptionB,
+    ).cancel(Fallback)
+    End
+
+OptionA:
+    End
+OptionB:
+    End
+Fallback:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        // Trailing "End" is the script's own terminator, not emitted by the builder.
+        assert_eq!(
+            cmd_names(&items),
+            vec![
+                "InitLocalTextMenu",
+                "AddMenuEntryImm",
+                "AddMenuEntryImm",
+                "ShowMenu",
+                "CompareVarValue",
+                "JumpIf",
+                "CompareVarValue",
+                "JumpIf",
+                "Jump",
+                "End",
+            ]
+        );
+
+        // Init: x=1, y=1, cursor=0, cancel=1 (B-exit enabled), selection=VAR_RESULT.
+        let init = find_cmd(&items, "InitLocalTextMenu").unwrap();
+        assert_eq!(
+            init,
+            [
+                Arg::Value(1),
+                Arg::Value(1),
+                Arg::Value(0),
+                Arg::Value(1),
+                Arg::Value(VAR_RESULT),
+            ]
+        );
+
+        // Entries: (msg 10, slot 0) and (msg 11, slot 1).
+        assert_eq!(
+            find_cmds(&items, "AddMenuEntryImm"),
+            vec![
+                &[Arg::Value(10), Arg::Value(0)][..],
+                &[Arg::Value(11), Arg::Value(1)][..]
+            ]
+        );
+
+        // Dispatch: JumpIf EQUAL to OptionA/OptionB, then Jump to Fallback (B-press).
+        let jumps: Vec<String> = ir_func(&items)
+            .instructions
+            .iter()
+            .filter_map(|op| match op {
+                IrOpcode::Command { name, args } if name == "JumpIf" || name == "Jump" => {
+                    args.iter().find_map(|a| match a {
+                        Arg::Pointer(p) => Some(p.clone()),
+                        Arg::Value(_) => None,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(jumps, vec!["OptionA", "OptionB", "Fallback"]);
+    }
+
+    #[test]
+    fn test_lower_menu_builder_list() {
+        // Hover tuples + .width force list mode on Platinum. Hover text requires
+        // an open message window, but does not require a synthetic local message.
+        //
+        // String-literal entries on a `MenuGlobal` route to the Platinum global
+        // menu archive (361); the hover window is opened without using the
+        // script's own archive (0001, from the source stem).
+        let source = r#"
+script Test #1:
+    MenuGlobal(
+        ("Yes", "yes-hover") -> A,
+        "No"                  -> B,
+    ).width(6)
+    End
+
+A:
+    End
+B:
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let constants = ConstantDb::new();
+        let (_temp, workspace) = workspace_with_archives(uxie::game::Game::Platinum, &[1, 361]);
+        let mut lowerer = Lowerer::for_file(
+            &symbols,
+            db,
+            &constants,
+            workspace.clone(),
+            "0001".to_string(),
+        );
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        // Open the hover window, then init/entries/show, then the VAR_RESULT dispatch.
+        assert_eq!(
+            cmd_names(&items),
+            vec![
+                "OpenMessage",
+                "InitGlobalTextListMenu",
+                "AddListMenuEntry",
+                "AddListMenuEntry",
+                "ShowListMenuSetWidth",
+                "CompareVarValue",
+                "JumpIf",
+                "CompareVarValue",
+                "JumpIf",
+                "End",
+            ]
+        );
+
+        // No .cancel → canExitWithB = FALSE.
+        let init = find_cmd(&items, "InitGlobalTextListMenu").unwrap();
+        assert_eq!(
+            init[3],
+            Arg::Value(0),
+            "cancel must be FALSE without .cancel"
+        );
+
+        // Entries carry the resolved archive indices (label, hover, slot).
+        assert_eq!(
+            find_cmds(&items, "AddListMenuEntry"),
+            vec![
+                &[Arg::Value(0), Arg::Value(1), Arg::Value(0)][..],
+                &[Arg::Value(2), Arg::Value(255), Arg::Value(1)][..],
+            ]
+        );
+
+        // ShowListMenuSetWidth carries the width.
+        assert_eq!(
+            find_cmd(&items, "ShowListMenuSetWidth").unwrap(),
+            [Arg::Value(6)]
+        );
+
+        // The string literals were written into the global menu archive (361),
+        // in entry-resolution order: label, hover, label.
+        assert_eq!(workspace.read_message(361, 0), Some("Yes".to_string()));
+        assert_eq!(
+            workspace.read_message(361, 1),
+            Some("yes-hover".to_string())
+        );
+        assert_eq!(workspace.read_message(361, 2), Some("No".to_string()));
+        assert!(find_cmd(&items, "Message").is_none());
+        assert!(workspace.read_message(1, 0).is_none());
+    }
+
+    #[test]
+    fn test_lower_menu_builder_list_without_text_does_not_require_archive() {
+        let source = r"
+script Test #1:
+    Menu(
+        10 -> A,
+    ).scrollable()
+    End
+
+A:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let mut lowerer = Lowerer::new(&symbols, create_test_db());
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(
+            cmd_names(&items),
+            vec![
+                "InitLocalTextListMenu",
+                "AddListMenuEntry",
+                "ShowListMenu",
+                "CompareVarValue",
+                "JumpIf",
+                "End",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_lower_menu_builder_rejects_invalid_hover_ids() {
+        for (entry, expected) in [
+            ("(300, 1)", "must fit in u8"),
+            ("(1, 255)", "reserved message ID 255"),
+        ] {
+            let source =
+                format!("script Test #1:\n    Menu({entry} -> A)\n    End\n\nA:\n    End\n");
+            let (script_file, symbols) = parse_and_analyze(&source);
+            let mut lowerer = Lowerer::new(&symbols, create_test_db());
+            let error = lowerer.lower_script_file(&script_file).unwrap_err();
+
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn test_lower_menu_builder_anchor_emits_real_command() {
+        let source = r"
+script Test #1:
+    Menu(
+        10 -> A,
+    ).anchor(right)
+    End
+
+A:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(
+            find_cmd(&items, "SetMenuXOriginSide").unwrap(),
+            [Arg::Value(1)]
+        );
+        let mut emitter = crate::compiler::codegen::Emitter::new(db);
+        emitter.emit_script_file(&items, 1).unwrap();
+    }
+
+    #[test]
+    fn test_lower_menu_builder_local_strings_with_explicit_cancel_entry() {
+        // A local `Menu` (not `MenuGlobal`) writes entry strings to the script's
+        // own archive (0001 from the stem), NOT the global menu archive. Normal
+        // menus also emit no `Message` without `.prompt`. The explicit cancel
+        // form adds its text as a normal entry and uses its target for B-cancel.
+        let source = r#"
+script Test #1:
+    Menu(
+        "Yes" -> A,
+    )
+    .cancel("No" -> B)
+    End
+
+A:
+    End
+B:
+    End
+"#;
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let constants = ConstantDb::new();
+        let (_temp, workspace) = workspace_with_archives(uxie::game::Game::Platinum, &[1]);
+        let mut lowerer = Lowerer::for_file(
+            &symbols,
+            db,
+            &constants,
+            workspace.clone(),
+            "0001".to_string(),
+        );
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        let names = cmd_names(&items);
+        assert!(
+            !names.contains(&"Message"),
+            "normal menu must not emit a Message without .prompt"
+        );
+
+        // Entry strings resolved into the script's local archive (1), in order.
+        assert_eq!(
+            find_cmds(&items, "AddMenuEntryImm"),
+            vec![
+                &[Arg::Value(0), Arg::Value(0)][..],
+                &[Arg::Value(1), Arg::Value(1)][..],
+            ]
+        );
+        assert_eq!(workspace.read_message(1, 0), Some("Yes".to_string()));
+        assert_eq!(workspace.read_message(1, 1), Some("No".to_string()));
+
+        let init = find_cmd(&items, "InitLocalTextMenu").unwrap();
+        assert_eq!(init[3], Arg::Value(1));
+        let jumps: Vec<String> = ir_func(&items)
+            .instructions
+            .iter()
+            .filter_map(|op| match op {
+                IrOpcode::Command { name, args } if name == "JumpIf" || name == "Jump" => {
+                    args.iter().find_map(|arg| match arg {
+                        Arg::Pointer(target) => Some(target.clone()),
+                        Arg::Value(_) => None,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(jumps, vec!["A", "B", "B"]);
+    }
+
+    #[test]
+    fn test_lower_menu_builder_columns() {
+        let source = r"
+script Test #1:
+    Menu(
+        10 -> A,
+        11 -> B,
+        12 -> C,
+        13 -> D,
+    ).columns(2)
+    End
+
+A:
+    End
+B:
+    End
+C:
+    End
+D:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert!(cmd_names(&items).contains(&"ShowMenuMultiColumn"));
+        assert_eq!(
+            find_cmd(&items, "ShowMenuMultiColumn").unwrap(),
+            [Arg::Value(2)]
+        );
+        assert!(!cmd_names(&items).contains(&"ShowMenu"));
+    }
+
+    #[test]
+    fn test_lower_menu_builder_hgss() {
+        let source = r#"
+script Test #1:
+    MenuGlobal(
+        ("Label", "Hover") -> A,
+    ).cancel("Cancel" -> B)
+    End
+
+A:
+    End
+B:
+    End
+"#;
+        let db = DatabaseV2::test_hgss();
+        let (script_file, symbols) = parse_and_analyze_with_db(source, db);
+        let constants = ConstantDb::new();
+        let (_temp, workspace) = workspace_with_archives(uxie::game::Game::HeartGold, &[191]);
+        let mut lowerer = Lowerer::for_file(
+            &symbols,
+            db,
+            &constants,
+            workspace.clone(),
+            "0001".to_string(),
+        );
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(
+            cmd_names(&items),
+            vec![
+                "OpenMessage",
+                "MenuInitStdGmm",
+                "MenuItemAdd",
+                "MenuItemAdd",
+                "MenuExec",
+                "CompareVarValue",
+                "JumpIf",
+                "CompareVarValue",
+                "JumpIf",
+                "Jump",
+                "End",
+            ]
+        );
+
+        assert_eq!(
+            find_cmds(&items, "MenuItemAdd"),
+            vec![
+                &[Arg::Value(0), Arg::Value(1), Arg::Value(0)][..],
+                &[Arg::Value(2), Arg::Value(255), Arg::Value(1)][..],
+            ]
+        );
+        assert_eq!(workspace.read_message(191, 0), Some("Label".to_string()));
+        assert_eq!(workspace.read_message(191, 1), Some("Hover".to_string()));
+        assert_eq!(workspace.read_message(191, 2), Some("Cancel".to_string()));
+
+        // The cancel entry selects B, and pressing B uses the same target.
+        let init = find_cmd(&items, "MenuInitStdGmm").unwrap();
+        assert_eq!(init[3], Arg::Value(1));
+        let jump = find_cmd(&items, "Jump").unwrap();
+        assert_eq!(jump, [Arg::Pointer("B".to_string())]);
+        let mut emitter = crate::compiler::codegen::Emitter::new(db);
+        emitter.emit_script_file(&items, 1).unwrap();
+    }
+
+    #[test]
+    fn test_lower_menu_builder_hgss_without_hover_does_not_open_message() {
+        let source = r"
+script Test #1:
+    MenuGlobal(
+        20 -> A,
+    )
+    End
+
+A:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze_with_db(source, DatabaseV2::test_hgss());
+        let constants = ConstantDb::new();
+        let workspace = Arc::new(uxie::Workspace::new(
+            std::path::PathBuf::new(),
+            uxie::game::Game::HeartGold,
+        ));
+        let mut lowerer = Lowerer::for_file(
+            &symbols,
+            DatabaseV2::test_hgss(),
+            &constants,
+            workspace,
+            "t".to_string(),
+        );
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert!(!cmd_names(&items).contains(&"OpenMessage"));
+        assert_eq!(
+            find_cmd(&items, "MenuItemAdd").unwrap(),
+            &[Arg::Value(20), Arg::Value(255), Arg::Value(0)][..]
+        );
+    }
+
+    #[test]
+    fn test_lower_menu_builder_no_cancel_no_fallthrough_jump() {
+        // Without .cancel, B-exit is disabled and no trailing Jump (else) is
+        // emitted — the dispatch chain alone is emitted.
+        let source = r"
+script Test #1:
+    Menu(
+        10 -> A,
+    )
+    End
+
+A:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        let names = cmd_names(&items);
+        assert!(names.contains(&"ShowMenu"));
+        assert!(
+            !names.contains(&"Jump"),
+            "no unconditional Jump without .cancel"
+        );
+        assert!(names.contains(&"JumpIf"));
+        let init = find_cmd(&items, "InitLocalTextMenu").unwrap();
+        assert_eq!(
+            init[3],
+            Arg::Value(0),
+            "cancel must be FALSE without .cancel"
+        );
     }
 
     #[test]

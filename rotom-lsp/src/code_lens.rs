@@ -153,6 +153,39 @@ fn count_refs(
             StatementKind::AliasStatement { value, .. } => {
                 count_alias_refs_in_expr(value, uri, map, refs, aliases);
             }
+            StatementKind::MenuBuilder {
+                entries, config, ..
+            } => {
+                for entry in entries {
+                    count_label_ref(&entry.target, uri, map, refs);
+                    count_alias_refs_in_expr(&entry.label, uri, map, refs, aliases);
+                    if let Some(hover) = &entry.hover {
+                        count_alias_refs_in_expr(hover, uri, map, refs, aliases);
+                    }
+                    count_alias_refs_in_expr(&entry.target, uri, map, refs, aliases);
+                }
+                if let Some((x, y)) = &config.position {
+                    count_alias_refs_in_expr(x, uri, map, refs, aliases);
+                    count_alias_refs_in_expr(y, uri, map, refs, aliases);
+                }
+                for expr in [
+                    &config.cursor,
+                    &config.prompt,
+                    &config.width,
+                    &config.columns,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    count_alias_refs_in_expr(expr, uri, map, refs, aliases);
+                }
+                if let Some(cancel) = &config.cancel
+                    && !entries.iter().any(|entry| entry.target.span == cancel.span)
+                {
+                    count_label_ref(cancel, uri, map, refs);
+                    count_alias_refs_in_expr(cancel, uri, map, refs, aliases);
+                }
+            }
             StatementKind::Function { body, .. } | StatementKind::Action { body, .. } => {
                 count_refs(body, uri, map, refs, db, aliases);
             }
@@ -419,6 +452,25 @@ mod tests {
             .and_then(|lens| lens.command.as_ref())
             .expect("label lens");
         assert_eq!(label_lens.title, "0 references");
+    }
+
+    #[test]
+    fn script_code_lens_counts_menu_targets() {
+        let uri = Url::from_file_path("/tmp/test.rotom").expect("uri");
+        let source = "script Main #1:\n    Menu(10 -> Helper).cancel(11 -> Cancel)\nHelper:\n    End\nCancel:\n    End\n";
+        let lenses = compute_script_code_lens(source, &uri, None);
+        let helper_lens = lenses
+            .iter()
+            .find(|lens| lens.range.start.line == 2)
+            .and_then(|lens| lens.command.as_ref())
+            .expect("label lens");
+        assert_eq!(helper_lens.title, "1 reference");
+        let cancel_lens = lenses
+            .iter()
+            .find(|lens| lens.range.start.line == 4)
+            .and_then(|lens| lens.command.as_ref())
+            .expect("cancel label lens");
+        assert_eq!(cancel_lens.title, "1 reference");
     }
 
     #[test]

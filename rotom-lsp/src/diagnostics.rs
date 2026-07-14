@@ -230,4 +230,105 @@ script
                 .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR))
         );
     }
+
+    #[test]
+    fn menu_builder_is_understood_by_diagnostics() {
+        let source = r#"script Main #1:
+    Menu(
+        "Option" -> Handle,
+    )
+    .cancel("Cancel" -> Cancel)
+    End
+
+Handle:
+    End
+Cancel:
+    End
+"#;
+        let diagnostics = compute_diagnostics(
+            source,
+            Some(DatabaseV2::test_platinum()),
+            Some(&ConstantDb::new()),
+            None,
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "valid menu builder should not produce diagnostics: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn menu_builder_layout_warnings_are_reported() {
+        let source = r#"script Main #1:
+    Menu((10, 11) -> Handle).scrollable(false)
+    Menu(
+        0 -> Handle,
+        1 -> Handle,
+        2 -> Handle,
+        3 -> Handle,
+        4 -> Handle,
+        5 -> Handle,
+        6 -> Handle,
+        7 -> Handle,
+        8 -> Handle,
+    ).prompt(1)
+    End
+
+Handle:
+    End
+"#;
+        let diagnostics = compute_diagnostics(
+            source,
+            Some(DatabaseV2::test_platinum()),
+            Some(&ConstantDb::new()),
+            None,
+        );
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::WARNING))
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+
+        assert_eq!(warnings.len(), 2, "{diagnostics:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("scrollable(false)"))
+        );
+        assert!(warnings.iter().any(|warning| warning.contains("at most 8")));
+    }
+
+    #[test]
+    fn menu_builder_diagnostics_follow_game_family() {
+        let valid_hgss = r#"script Main #1:
+    MenuGlobal(
+        (10, 20) -> Handle,
+    )
+    End
+
+Handle:
+    End
+"#;
+        let constants = ConstantDb::new();
+        let diagnostics = compute_diagnostics(
+            valid_hgss,
+            Some(DatabaseV2::test_hgss()),
+            Some(&constants),
+            None,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+        let invalid_hgss = valid_hgss.replace(")\n    End", ").width(8)\n    End");
+        let diagnostics = compute_diagnostics(
+            &invalid_hgss,
+            Some(DatabaseV2::test_hgss()),
+            Some(&constants),
+            None,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("only supported on Platinum"))
+        );
+    }
 }

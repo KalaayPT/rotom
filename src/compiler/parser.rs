@@ -1,7 +1,7 @@
 use super::{
     ast::{
-        Expression, ExpressionKind, FunctionHeader, MatchCase, Precedence, ScriptFile, Spanned,
-        Statement, StatementKind,
+        Expression, ExpressionKind, FunctionHeader, MatchCase, MenuConfig, MenuEntry, Precedence,
+        ScriptFile, Spanned, Statement, StatementKind,
     },
     diagnostic::{CompileError, ParseResult, parse_error},
     lexer::Lexer,
@@ -56,6 +56,12 @@ impl<'a> Parser<'a> {
     }
     pub fn current_token_is(&self, kind: &TokenType) -> bool {
         self.current_token.kind == *kind
+    }
+    /// Consume newlines where the menu builder grammar permits line breaks.
+    fn skip_newlines(&mut self) {
+        while self.current_token_is(&TokenType::Newline) {
+            self.advance();
+        }
     }
     pub fn current_token_is_keyword(&self) -> bool {
         matches!(
@@ -216,6 +222,12 @@ impl<'a> Parser<'a> {
                     node: StatementKind::Break,
                     span,
                 }
+            }
+            TokenType::Identifier(name)
+                if (name == "Menu" || name == "MenuGlobal")
+                    && self.peek_token.kind == TokenType::LParen =>
+            {
+                self.parse_menu_builder()?
             }
             TokenType::Identifier(_) => self.parse_command()?,
             TokenType::Jump => self.parse_jump()?,
@@ -694,6 +706,175 @@ impl<'a> Parser<'a> {
             },
             span: start..end,
         })
+    }
+    /// Parse a `Menu(...)` / `MenuGlobal(...)` builder with a `.method()` chain.
+    fn parse_menu_builder(&mut self) -> ParseResult<Statement> {
+        let start = self.current_token.span.start;
+        let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
+        let TokenType::Identifier(name) = name_token.kind else {
+            unreachable!()
+        };
+        let is_global = name == "MenuGlobal";
+
+        self.expect_advance(&TokenType::LParen)?;
+        let mut entries = Vec::new();
+        self.skip_newlines();
+        while !self.current_token_is(&TokenType::RParen) {
+            let (label, hover) = self.parse_menu_entry_label()?;
+            self.expect_advance(&TokenType::Arrow)?;
+            let target = self.parse_expression(Precedence::Lowest)?;
+            entries.push(MenuEntry {
+                label,
+                hover,
+                target,
+            });
+            if self.current_token_is(&TokenType::Comma) {
+                self.advance();
+                self.skip_newlines();
+            } else {
+                break;
+            }
+        }
+        self.skip_newlines();
+        self.expect_advance(&TokenType::RParen)?;
+
+        let mut config = MenuConfig::default();
+        self.skip_newlines();
+        // The lexer folds `.foo` into a single dot-prefixed `Identifier(".foo")`
+        // token (for label syntax), so a builder method chain `.method(args)`
+        // arrives as `Identifier(".method")` followed by `(`. A dot-prefixed
+        // identifier followed by `:` is a label definition, not a method call,
+        // so it ends the chain.
+        while matches!(
+            &self.current_token.kind,
+            TokenType::Identifier(name)
+                if name.starts_with('.') && name.len() > 1 && self.peek_token.kind == TokenType::LParen
+        ) {
+            let method = match &self.current_token.kind {
+                TokenType::Identifier(name) => name[1..].to_string(),
+                _ => unreachable!(),
+            };
+            self.advance();
+            self.expect_advance(&TokenType::LParen)?;
+            self.apply_menu_method(&method, &mut config, &mut entries)?;
+            self.skip_newlines();
+            self.expect_advance(&TokenType::RParen)?;
+            self.skip_newlines();
+        }
+
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: StatementKind::MenuBuilder {
+                is_global,
+                entries,
+                config: Box::new(config),
+            },
+            span: start..end,
+        })
+    }
+    /// Parse the label part of a menu entry: `"text"` or `("text", "hover")`.
+    fn parse_menu_entry_label(&mut self) -> ParseResult<(Expression, Option<Expression>)> {
+        if self.current_token_is(&TokenType::LParen) {
+            self.advance();
+            let label = self.parse_expression(Precedence::Lowest)?;
+            self.expect_advance(&TokenType::Comma)?;
+            self.skip_newlines();
+            let hover = self.parse_expression(Precedence::Lowest)?;
+            self.skip_newlines();
+            self.expect_advance(&TokenType::RParen)?;
+            Ok((label, Some(hover)))
+        } else {
+            let label = self.parse_expression(Precedence::Lowest)?;
+            Ok((label, None))
+        }
+    }
+    /// Parse one menu builder method into its configuration and entries.
+    fn apply_menu_method(
+        &mut self,
+        method: &str,
+        config: &mut MenuConfig,
+        entries: &mut Vec<MenuEntry>,
+    ) -> ParseResult<()> {
+        match method {
+            "anchor" => {
+                let side_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
+                let TokenType::Identifier(side) = side_token.kind else {
+                    unreachable!()
+                };
+                let right = match side.as_str() {
+                    "left" => false,
+                    "right" => true,
+                    other => {
+                        return Err(parse_error(
+                            side_token.span,
+                            format!("anchor expects 'left' or 'right', got '{other}'"),
+                        ));
+                    }
+                };
+                config.anchor = Some(right);
+            }
+            "scrollable" => {
+                config.scrollable = Some(if self.current_token_is(&TokenType::RParen) {
+                    true
+                } else {
+                    self.parse_bool_arg()?
+                });
+            }
+            "position" => {
+                let x = self.parse_expression(Precedence::Lowest)?;
+                self.expect_advance(&TokenType::Comma)?;
+                self.skip_newlines();
+                let y = self.parse_expression(Precedence::Lowest)?;
+                config.position = Some((x, y));
+            }
+            "cursor" => config.cursor = Some(self.parse_expression(Precedence::Lowest)?),
+            "prompt" => config.prompt = Some(self.parse_expression(Precedence::Lowest)?),
+            "width" => config.width = Some(self.parse_expression(Precedence::Lowest)?),
+            "columns" => config.columns = Some(self.parse_expression(Precedence::Lowest)?),
+            "cancel" => {
+                let (label, hover) = self.parse_menu_entry_label()?;
+                if self.current_token_is(&TokenType::Arrow) {
+                    self.advance();
+                    let target = self.parse_expression(Precedence::Lowest)?;
+                    config.cancel = Some(target.clone());
+                    entries.push(MenuEntry {
+                        label,
+                        hover,
+                        target,
+                    });
+                } else {
+                    if hover.is_some() {
+                        return Err(parse_error(
+                            self.current_token.span.clone(),
+                            "cancel hover text requires '-> target'".to_string(),
+                        ));
+                    }
+                    config.cancel = Some(label);
+                }
+            }
+            other => {
+                return Err(parse_error(
+                    self.current_token.span.clone(),
+                    format!("unknown Menu builder method '.{other}'"),
+                ));
+            }
+        }
+        Ok(())
+    }
+    /// Parse a literal boolean menu builder argument.
+    fn parse_bool_arg(&mut self) -> ParseResult<bool> {
+        if self.current_token_is(&TokenType::True) {
+            self.advance();
+            Ok(true)
+        } else if self.current_token_is(&TokenType::False) {
+            self.advance();
+            Ok(false)
+        } else {
+            Err(parse_error(
+                self.current_token.span.clone(),
+                "expected 'true' or 'false'".to_string(),
+            ))
+        }
     }
     fn parse_jump(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
@@ -1662,6 +1843,77 @@ script Test #1:
             }
             _ => panic!("Expected function"),
         }
+    }
+
+    #[test]
+    fn test_parse_menu_builder_allows_multiline_chain_and_hover_tuple() {
+        let source = r#"
+script Test #1:
+    Menu(
+        ("Option", "Hover"
+        ) -> Option,
+        10 -> Other,
+    )
+    .scrollable()
+    .cursor(1)
+    .cancel(("Cancel", "Back") -> Cancel)
+    End
+
+Option:
+    End
+Other:
+    End
+Cancel:
+    End
+"#;
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let StatementKind::Function { body, .. } = &script_file.items[0].node else {
+            panic!("Expected function");
+        };
+        let StatementKind::MenuBuilder {
+            entries, config, ..
+        } = &body[0].node
+        else {
+            panic!("Expected menu builder");
+        };
+        assert_eq!(entries.len(), 3);
+        assert!(entries[0].hover.is_some());
+        assert!(entries[2].hover.is_some());
+        assert_eq!(config.scrollable, Some(true));
+        assert!(matches!(
+            config.cancel.as_ref().map(|expr| &expr.node),
+            Some(ExpressionKind::Identifier(label)) if label == "Cancel"
+        ));
+        assert!(matches!(
+            config.cursor.as_ref().map(|expr| &expr.node),
+            Some(ExpressionKind::Number(1))
+        ));
+    }
+
+    #[test]
+    fn test_parse_menu_builder_scrollable_accepts_explicit_false() {
+        let source = r"
+script Test #1:
+    Menu(10 -> Target).scrollable(false)
+    End
+
+Target:
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let StatementKind::Function { body, .. } = &script_file.items[0].node else {
+            panic!("Expected function");
+        };
+        let StatementKind::MenuBuilder { config, .. } = &body[0].node else {
+            panic!("Expected menu builder");
+        };
+        assert_eq!(config.scrollable, Some(false));
     }
 
     #[test]

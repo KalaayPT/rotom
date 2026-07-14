@@ -9,6 +9,39 @@ pub struct MatchCase {
     pub span: Range<usize>,
 }
 
+/// One entry in a `Menu(...)` builder: label text, optional selection-dependent
+/// help text, and the code label to jump to when selected.
+#[derive(Debug, Clone)]
+pub struct MenuEntry {
+    pub label: Expression,
+    pub hover: Option<Expression>,
+    pub target: Expression,
+}
+
+/// Configuration collected from the `.method(args)` chain of a `Menu(...)`.
+///
+/// Each field is `None` when the corresponding builder method was not used;
+/// lowering applies the documented defaults.
+#[derive(Debug, Clone, Default)]
+pub struct MenuConfig {
+    /// `.anchor(left|right)` — `Some(true)` = right, `Some(false)` = left.
+    pub anchor: Option<bool>,
+    /// `.position(x, y)` — tile coordinates.
+    pub position: Option<(Expression, Expression)>,
+    /// `.cursor(n)` — initial cursor position.
+    pub cursor: Option<Expression>,
+    /// `.prompt(text)` — message shown before the menu.
+    pub prompt: Option<Expression>,
+    /// `.width(n)` — list-menu window width (implies list mode).
+    pub width: Option<Expression>,
+    /// `.columns(n)` — normal-menu column count.
+    pub columns: Option<Expression>,
+    /// `.scrollable()` / `.scrollable(true)` — forces list mode on Platinum/DP.
+    pub scrollable: Option<bool>,
+    /// `.cancel(target)` — enables B-exit and names the fallback jump target.
+    pub cancel: Option<Expression>,
+}
+
 #[derive(Debug)]
 pub struct ScriptFile {
     pub aliases: Vec<Statement>,
@@ -67,6 +100,18 @@ pub enum StatementKind {
     ScriptCommand {
         command: String,
         args: Vec<Expression>,
+    },
+    /// A `Menu(...)` / `MenuGlobal(...)` builder with chained `.method()`
+    /// configuration.
+    ///
+    /// `is_global` selects the global menu-entry text archive instead of the
+    /// script's local archive. Each entry's `target` is a code label jumped to
+    /// on selection; an explicit cancel entry is included in `entries`. When
+    /// `config.cancel` is set, B-press jumps there instead.
+    MenuBuilder {
+        is_global: bool,
+        entries: Vec<MenuEntry>,
+        config: Box<MenuConfig>,
     },
     Label(String),
     Jump(Expression),
