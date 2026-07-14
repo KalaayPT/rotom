@@ -35,7 +35,8 @@ pub use compiler::{
 pub use database::{ConstantDb, DatabaseV2, GameFamily, GameFamilyExt, game_family_from_hint};
 pub use decompiler::{
     DecompileError, DecompileResult, Disassembler, LevelScript, LevelScriptHeaderEntry,
-    LevelScriptVarConditionEntry, ScriptOutput, ScriptType, disassemble_bytes, ir_to_source,
+    LevelScriptValidationError, LevelScriptVarConditionEntry, ScriptOutput, ScriptType,
+    disassemble_bytes, ir_to_source,
 };
 pub use progress::CompileProgress;
 
@@ -234,6 +235,10 @@ pub fn compile_levelscript_json_to_bytes(
 ) -> Result<Vec<u8>, CompileError> {
     let levelscript = LevelScript::from_json(source).map_err(|e| CompileError::Transpile {
         message: format!("Failed to parse levelscript JSON: {}", e),
+    })?;
+
+    levelscript.validate().map_err(|e| CompileError::Transpile {
+        message: e.to_string(),
     })?;
 
     let mut bytes = levelscript.to_bytes();

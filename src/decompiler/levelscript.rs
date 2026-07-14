@@ -10,6 +10,7 @@
 //! - Binary serialization that preserves ordered header layout for round-trip fidelity
 
 use serde::{Deserialize, Serialize};
+use snafu::Snafu;
 
 /// Binary command IDs for levelscript header entries
 mod cmd_ids {
@@ -61,6 +62,33 @@ pub struct LevelScriptVarConditionEntry {
     pub script_id: u16,
 }
 
+/// Semantic error in a [`LevelScript`] that would produce binary the game
+/// silently ignores or misreads.
+///
+/// These invariants mirror the reference engine (see `FieldSystem_RunInitScript`
+/// in pokeplatinum): a `var == 0` terminates the frame table, and only the
+/// first `OnVarCondition` header is honored.
+#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
+pub enum LevelScriptValidationError {
+    /// A var-condition entry used `var == 0`. The engine treats a zero
+    /// variable ID as the frame-table terminator, so the entry (and any
+    /// after it) would be discarded. `index` is the position in
+    /// [`LevelScript::var_conditions`].
+    #[snafu(display("var-condition entry at index {index} has var == 0, which is the binary frame-table terminator and would be ignored by the game"))]
+    ZeroVarInCondition { index: usize },
+
+    /// More than one `OnVarCondition` header entry was found. The engine
+    /// only honors the first, and serialization only patches the last, so
+    /// earlier pointers would point at unintended data.
+    #[snafu(display("found {count} on_var_condition header entries; at most one is allowed"))]
+    DuplicateOnVarCondition { count: usize },
+
+    /// `var_conditions` is non-empty but no `OnVarCondition` header entry
+    /// references them, so they would be silently dropped during serialization.
+    #[snafu(display("{condition_count} var-condition(s) present but no on_var_condition header entry to reference them"))]
+    ConditionsWithoutHeader { condition_count: usize },
+}
+
 /// A complete levelscript definition.
 ///
 /// The important bit for round-trip correctness is that header ordering is
@@ -100,6 +128,42 @@ impl LevelScript {
     /// Check if this levelscript has any `var_equals` conditions.
     pub fn has_var_conditions(&self) -> bool {
         !self.var_conditions.is_empty()
+    }
+
+    /// Validate the semantic invariants required for the binary output to match
+    /// the engine's expectations.
+    ///
+    /// `to_bytes()` assumes the model is well-formed; without this check a few
+    /// inputs (e.g. `var: 0`, or conditions with no referencing header) compile
+    /// successfully but are silently ignored or misread by the game. Call this
+    /// before serializing untrusted JSON, e.g. via
+    /// [`compile_levelscript_json_to_bytes`](crate::compile_levelscript_json_to_bytes).
+    pub fn validate(&self) -> Result<(), LevelScriptValidationError> {
+        let on_var_condition_count = self
+            .header_entries
+            .iter()
+            .filter(|e| matches!(e, LevelScriptHeaderEntry::OnVarCondition))
+            .count();
+
+        if on_var_condition_count > 1 {
+            return Err(LevelScriptValidationError::DuplicateOnVarCondition {
+                count: on_var_condition_count,
+            });
+        }
+
+        if !self.var_conditions.is_empty() && on_var_condition_count == 0 {
+            return Err(LevelScriptValidationError::ConditionsWithoutHeader {
+                condition_count: self.var_conditions.len(),
+            });
+        }
+
+        for (index, entry) in self.var_conditions.iter().enumerate() {
+            if entry.var == 0 {
+                return Err(LevelScriptValidationError::ZeroVarInCondition { index });
+            }
+        }
+
+        Ok(())
     }
 
     /// Parse a levelscript from binary data
@@ -562,6 +626,183 @@ mod tests {
         assert_eq!(
             LevelScript::from_bytes(&bytes).unwrap_err(),
             "Levelscript: Var-condition entry truncated"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_zero_var() {
+        let mut ls = LevelScript::new();
+        ls.header_entries
+            .push(LevelScriptHeaderEntry::OnVarCondition);
+        ls.var_conditions.push(LevelScriptVarConditionEntry {
+            var: 0,
+            value: 1,
+            script_id: 5,
+        });
+
+        assert_eq!(
+            ls.validate(),
+            Err(LevelScriptValidationError::ZeroVarInCondition { index: 0 })
+        );
+    }
+
+    #[test]
+    fn validate_accepts_nonzero_vars() {
+        let mut ls = LevelScript::new();
+        ls.header_entries
+            .push(LevelScriptHeaderEntry::OnVarCondition);
+        ls.var_conditions.push(LevelScriptVarConditionEntry {
+            var: 1,
+            value: 1,
+            script_id: 5,
+        });
+        ls.var_conditions.push(LevelScriptVarConditionEntry {
+            var: 0x4000,
+            value: 5,
+            script_id: 3,
+        });
+
+        ls.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_conditions_without_header() {
+        let mut ls = LevelScript::new();
+        ls.var_conditions.push(LevelScriptVarConditionEntry {
+            var: 0x4000,
+            value: 1,
+            script_id: 5,
+        });
+
+        assert_eq!(
+            ls.validate(),
+            Err(LevelScriptValidationError::ConditionsWithoutHeader {
+                condition_count: 1
+            })
+        );
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_on_var_condition() {
+        let mut ls = LevelScript::new();
+        ls.header_entries
+            .push(LevelScriptHeaderEntry::OnVarCondition);
+        ls.header_entries
+            .push(LevelScriptHeaderEntry::OnVarCondition);
+
+        assert_eq!(
+            ls.validate(),
+            Err(LevelScriptValidationError::DuplicateOnVarCondition { count: 2 })
+        );
+    }
+
+    #[test]
+    fn validate_accepts_empty_on_var_condition_header() {
+        let mut ls = LevelScript::new();
+        ls.header_entries
+            .push(LevelScriptHeaderEntry::OnVarCondition);
+
+        ls.validate().unwrap();
+        assert_eq!(
+            ls.to_bytes(),
+            vec![cmd_ids::ON_FRAME_TABLE, 0x01, 0, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn validate_preserves_header_ordering_around_marker() {
+        let mut ls = LevelScript::new();
+        ls.header_entries
+            .push(LevelScriptHeaderEntry::OnTransition { script_id: 1 });
+        ls.header_entries
+            .push(LevelScriptHeaderEntry::OnVarCondition);
+        ls.header_entries
+            .push(LevelScriptHeaderEntry::OnLoad { script_id: 2 });
+        ls.var_conditions.push(LevelScriptVarConditionEntry {
+            var: 0x411A,
+            value: 1,
+            script_id: 29,
+        });
+
+        ls.validate().unwrap();
+
+        let bytes = ls.to_bytes();
+        let parsed = LevelScript::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.header_entries, ls.header_entries);
+        assert_eq!(parsed.var_conditions, ls.var_conditions);
+    }
+
+    #[test]
+    fn from_json_rejects_missing_condition_field() {
+        let json = r#"{"header_entries":[{"type":"on_var_condition"}],"var_conditions":[{"var":16384,"value":1}]}"#;
+        assert!(LevelScript::from_json(json).is_err());
+    }
+
+    #[test]
+    fn from_json_rejects_out_of_range_u16() {
+        let json = r#"{"header_entries":[{"type":"on_var_condition"}],"var_conditions":[{"var":70000,"value":1,"script_id":5}]}"#;
+        assert!(LevelScript::from_json(json).is_err());
+    }
+
+    #[test]
+    fn compile_json_rejects_zero_var_end_to_end() {
+        let json = r#"{"header_entries":[{"type":"on_var_condition"}],"var_conditions":[{"var":0,"value":1,"script_id":5}]}"#;
+        let err = crate::compile_levelscript_json_to_bytes(json, crate::BinaryQuirk::default())
+            .expect_err("var == 0 must fail compilation");
+        assert!(format!("{err}").contains("var == 0"));
+    }
+
+    #[test]
+    fn compile_json_wraps_parse_errors() {
+        // Missing required `script_id` -> serde error, surfaced as a Transpile error.
+        let json = r#"{"header_entries":[{"type":"on_var_condition"}],"var_conditions":[{"var":16384,"value":1}]}"#;
+        let err = crate::compile_levelscript_json_to_bytes(json, crate::BinaryQuirk::default())
+            .expect_err("malformed JSON must fail compilation");
+        assert!(format!("{err}").contains("Failed to parse levelscript JSON"));
+    }
+
+    #[test]
+    fn compile_json_emits_bytes_for_valid_input() {
+        let json = r#"{"header_entries":[{"type":"on_transition","script_id":1},{"type":"on_var_condition"}],"var_conditions":[{"var":16384,"value":1,"script_id":5}]}"#;
+
+        let bytes = crate::compile_levelscript_json_to_bytes(json, crate::BinaryQuirk::default())
+            .expect("valid JSON must compile");
+
+        assert_eq!(bytes.len() % 4, 0);
+        let parsed = LevelScript::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.var_conditions.len(), 1);
+        assert!(matches!(
+            parsed.header_entries[0],
+            LevelScriptHeaderEntry::OnTransition { script_id: 1 }
+        ));
+    }
+
+    #[test]
+    fn compile_json_applies_levelscript_padding() {
+        let mut quirk = crate::BinaryQuirk::default();
+        quirk.levelscript_padding = Some(4);
+
+        // Empty levelscript serializes to 4 zero bytes; padding adds 4 more.
+        let bytes =
+            crate::compile_levelscript_json_to_bytes(r#"{"header_entries":[]}"#, quirk).unwrap();
+        assert_eq!(bytes, vec![0; 8]);
+    }
+
+    #[test]
+    fn validation_error_display_formats_all_variants() {
+        assert_eq!(
+            LevelScriptValidationError::ZeroVarInCondition { index: 3 }.to_string(),
+            "var-condition entry at index 3 has var == 0, which is the binary frame-table \
+             terminator and would be ignored by the game",
+        );
+        assert_eq!(
+            LevelScriptValidationError::DuplicateOnVarCondition { count: 2 }.to_string(),
+            "found 2 on_var_condition header entries; at most one is allowed",
+        );
+        assert_eq!(
+            LevelScriptValidationError::ConditionsWithoutHeader { condition_count: 4 }
+                .to_string(),
+            "4 var-condition(s) present but no on_var_condition header entry to reference them",
         );
     }
 }
