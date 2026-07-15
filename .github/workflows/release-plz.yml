@@ -6,11 +6,12 @@ on:
       - main
 
 jobs:
-  # Publish the unpublished packages: create the `v{version}` tag and the
-  # GitHub release with the generated changelog as notes.
+  # Create the `v{version}` tag and GitHub release with generated changelog notes.
   release-plz-release:
     name: release-plz release
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.release_tag.outputs.tag }}
     permissions:
       contents: write
       pull-requests: read
@@ -25,11 +26,99 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run release-plz
+        id: release_plz
         uses: release-plz/action@v0.5
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get release tag
+        id: release_tag
+        if: steps.release_plz.outputs.releases_created == 'true'
+        env:
+          RELEASES: ${{ steps.release_plz.outputs.releases }}
+        run: echo "tag=$(jq -r '.[0].tag' <<< "$RELEASES")" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    name: Build (Linux x86-64)
+    runs-on: ubuntu-latest
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.release_tag != ''
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-plz-release.outputs.release_tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Package
+        run: |
+          NAME="rotom-${{ needs.release-plz-release.outputs.release_tag }}-linux-x86_64"
+          mkdir "$NAME"
+          cp target/release/rotom target/release/rotom-lsp target/release/libnitroarc_ffi.so "$NAME/"
+          tar -czf "${NAME}.tar.gz" "$NAME"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-plz-release.outputs.release_tag }}
+          files: rotom-${{ needs.release-plz-release.outputs.release_tag }}-linux-x86_64.tar.gz
+          fail_on_unmatched_files: true
+
+  build-windows:
+    name: Build (Windows x86-64)
+    runs-on: windows-latest
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.release_tag != ''
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-plz-release.outputs.release_tag }}
+
+      - name: Set up MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: base-devel mingw-w64-x86_64-gcc
+          path-type: inherit
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Build
+        run: cargo build --release --workspace --target x86_64-pc-windows-gnu
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "rotom-${{ needs.release-plz-release.outputs.release_tag }}-windows-x86_64"
+          New-Item -ItemType Directory $name
+          Copy-Item "target/x86_64-pc-windows-gnu/release/rotom.exe",
+                    "target/x86_64-pc-windows-gnu/release/rotom-lsp.exe",
+                    "target/x86_64-pc-windows-gnu/release/nitroarc_ffi.dll" "$name/"
+          Compress-Archive -Path "$name/*" -DestinationPath "${name}.zip"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-plz-release.outputs.release_tag }}
+          files: rotom-${{ needs.release-plz-release.outputs.release_tag }}-windows-x86_64.zip
+          fail_on_unmatched_files: true
 
   # Open (or update) the rolling release PR proposing the next version bump
   # and changelog, ready for a maintainer to merge when it's time to release.
