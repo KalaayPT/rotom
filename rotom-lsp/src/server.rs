@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -21,7 +22,8 @@ use tower_lsp::lsp_types::{
 use tower_lsp::{Client, LanguageServer};
 
 use crate::code_lens::{
-    build_message_code_lens, compute_script_code_lens, is_message_archive_uri, is_rotom_script_uri,
+    build_message_code_lens, collect_global_script_refs, compute_script_code_lens,
+    is_message_archive_uri, is_rotom_script_uri,
 };
 use crate::completions::compute_completions;
 use crate::diagnostics::compute_diagnostics;
@@ -32,9 +34,8 @@ use crate::inlay_hints::compute_inlay_hints;
 use crate::message_refs::{MessageRef, collect_message_refs};
 use crate::signature_help::compute_signature_help;
 
-use rotom::compiler::{ast::ScriptFile, diagnostic::CompileError};
-use rotom::database::{ConstantDb, DatabaseV2};
-use rotom::project::config::{ProjectTypeConfig, RotomConfig, find_project_root, load_config};
+use rotom::database::ConstantDb;
+use rotom::project::config::{RotomConfig, find_project_root, load_config};
 
 /// How long to wait after the last keystroke before re-running diagnostics.
 const DIAGNOSTIC_DEBOUNCE_MS: u64 = 300;
@@ -43,10 +44,9 @@ const DIAGNOSTIC_DEBOUNCE_MS: u64 = 300;
 /// and the uxie workspace for message lookups and script resolution.
 #[derive(Clone)]
 struct ProjectState {
-    db: Arc<DatabaseV2>,
-    constants: ConstantDb,
-    workspace: Option<Arc<uxie::Workspace>>,
+    project: Arc<rotom::ProjectContext>,
     message_refs: Arc<MessageRefIndex>,
+    global_script_refs: Arc<GlobalScriptRefIndex>,
 }
 
 #[derive(Default)]
@@ -60,11 +60,15 @@ struct MessageRefIndex {
     reindex_locks: DashMap<PathBuf, Arc<std::sync::Mutex<()>>>,
 }
 
-/// File-local constants for a `.rotom` buffer; may carry the directive parse for diagnostics reuse.
-struct RotomFileConstantsPrep {
-    constants: ConstantDb,
-    /// AST and recoverable lexer/parser errors from the same parse used for `#include` / `#define`.
-    directive_parse_for_diagnostics: Option<(Arc<ScriptFile>, Vec<CompileError>)>,
+type GlobalScriptTarget = (PathBuf, String);
+
+#[derive(Default)]
+struct GlobalScriptRefIndex {
+    /// Per-script contributions used for save invalidation.
+    by_file: DashMap<PathBuf, Vec<GlobalScriptTarget>>,
+    /// References grouped by resolved target source path and public label.
+    by_target: DashMap<GlobalScriptTarget, Vec<tower_lsp::lsp_types::Location>>,
+    reindex_locks: DashMap<PathBuf, Arc<std::sync::Mutex<()>>>,
 }
 
 pub struct RotomServer {
@@ -108,18 +112,41 @@ impl RotomServer {
         Some(state)
     }
 
-    /// Remove cached project state for the project containing `path`, if any.
-    fn invalidate_project_for_path(&self, path: &std::path::Path) {
-        if let Some(project_root) = find_project_root(path) {
-            self.projects.remove(&project_root);
+    /// Remove cached project state and return the affected project root.
+    fn invalidate_project_for_path(&self, path: &std::path::Path) -> Option<PathBuf> {
+        let project_root = find_project_root(path)?;
+        self.projects.remove(&project_root);
+        Some(project_root)
+    }
+
+    /// Reschedule diagnostics for open Rotoscript documents in one project.
+    fn publish_project_diagnostics(&self, project_root: &std::path::Path) {
+        for uri in self.documents.uris() {
+            let belongs_to_project = uri
+                .to_file_path()
+                .ok()
+                .and_then(|path| find_project_root(&path))
+                .is_some_and(|root| root == project_root);
+            if belongs_to_project && is_rotom_script_uri(&uri) {
+                self.publish_diagnostics(&uri);
+            }
         }
     }
 
     /// Returns `true` when a file change at `path` warrants clearing
-    /// the project-level cache (database, config, header, or generated file).
+    /// the project-level cache (database, config, constants, or script source).
     fn should_invalidate_project_state(path: &std::path::Path) -> bool {
         let file_name = path.file_name().and_then(|s| s.to_str());
-        if file_name == Some("rotom.toml") {
+        if matches!(
+            file_name,
+            Some("rotom.toml" | "scripts.order" | "script_manager.c" | "fieldmap.c" | "arm9.bin")
+        ) {
+            return true;
+        }
+        if matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("rotom" | "s" | "script")
+        ) {
             return true;
         }
 
@@ -151,9 +178,13 @@ impl RotomServer {
         let watch_kind = Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete);
         let watchers = [
             "**/rotom.toml",
+            "**/scripts.order",
+            "**/src/{script_manager,fieldmap}.c",
+            "**/arm9.bin",
             "**/.rotom/command_database/**/*.json",
             "**/include/**/*.{h,inc,json}",
             "**/generated/**/*.{h,inc,json}",
+            "**/*.{rotom,s,script}",
         ]
         .into_iter()
         .map(|pattern| FileSystemWatcher {
@@ -182,78 +213,27 @@ impl RotomServer {
             .unwrap_or(false)
     }
 
-    /// Load database, constants, and optional Uxie workspace for one project root.
+    /// Load project resources and editor-specific indexes for one project root.
     fn load_project_state(
         root: &std::path::Path,
         config: &RotomConfig,
         client: Client,
     ) -> std::result::Result<ProjectState, String> {
-        let db_path = config
-            .database_file(root)
-            .ok_or_else(|| "No database configured in rotom.toml".to_string())?;
-        let db = DatabaseV2::load(&db_path)
-            .map_err(|e| format!("Failed to load database {}: {}", db_path.display(), e))?;
-
-        let mut constants = ConstantDb::new();
-        let _ = constants.load_from_db(&db);
-
-        let database_dir = config.database_dir(root);
-        if database_dir.exists() {
-            let _ = constants.load_directory(&database_dir);
-        }
-
-        let workspace: Option<Arc<uxie::Workspace>> = match config.workspace.project_type {
-            ProjectTypeConfig::Decomp => {
-                if let Some(game_family) = config.game_family() {
-                    let cache_dir = config.cache_dir(root);
-                    if let Ok((symbols, _rebuilt)) = uxie::Workspace::load_cached_symbols(
-                        &cache_dir,
-                        root,
-                        &config.include_roots(root),
-                        game_family,
-                    ) {
-                        let _ = constants.load_decomp_symbols(root, (*symbols).clone());
-                    }
-                }
-                uxie::Workspace::open(root).ok().map(Arc::new)
-            }
-            ProjectTypeConfig::Dspre => {
-                if let Ok(ws) = uxie::Workspace::open(root) {
-                    let _ = constants.load_dspre_symbols((*ws.symbols).clone());
-                    let _ = constants.load_dspre_text_archives(root, ws.language);
-                    Some(Arc::new(ws))
-                } else {
-                    None
-                }
-            }
-            ProjectTypeConfig::HgEngine => {
-                if let Ok(mut ws) = uxie::Workspace::open(root) {
-                    let _ = ws.load_hg_engine_constants();
-                    let _ = constants.load_decomp_symbols(root, (*ws.symbols).clone());
-                    Some(Arc::new(ws))
-                } else {
-                    None
-                }
-            }
-            ProjectTypeConfig::Generic => None,
-        };
-
-        if let Some(ws) = &workspace {
-            constants.set_message_ids(ws.shared_message_ids());
-        }
-
+        let project = Arc::new(
+            rotom::ProjectContext::load_tolerant(root, config)
+                .map_err(|error| error.to_string())?,
+        );
         let message_refs = Arc::new(MessageRefIndex::default());
         let state = ProjectState {
-            db: Arc::new(db),
-            constants,
-            workspace,
+            project,
             message_refs,
+            global_script_refs: Arc::new(GlobalScriptRefIndex::default()),
         };
-        if let Some(ws) = state.workspace.clone() {
-            let source_roots = config.source_roots(root);
+        if state.project.workspace().is_some() {
+            let source_roots = state.project.config().source_roots(state.project.root());
             let state_bg = Arc::new(state.clone());
             tokio::spawn(async move {
-                Self::rebuild_message_ref_index(state_bg, ws, source_roots).await;
+                Self::rebuild_project_ref_indexes(state_bg, source_roots).await;
                 let _ = client.code_lens_refresh().await;
             });
         }
@@ -276,21 +256,19 @@ impl RotomServer {
         }
     }
 
-    /// Build the message-reference index in the background.
-    async fn rebuild_message_ref_index(
-        state: Arc<ProjectState>,
-        workspace: Arc<uxie::Workspace>,
-        source_roots: Vec<PathBuf>,
-    ) {
+    /// Build project-wide reverse-reference indexes in the background.
+    async fn rebuild_project_ref_indexes(state: Arc<ProjectState>, source_roots: Vec<PathBuf>) {
+        if state.project.workspace().is_none() {
+            return;
+        }
         for root in source_roots {
             let mut files = Vec::new();
             Self::collect_rotom_files(&root, &mut files);
             for path in files {
-                Self::reindex_message_ref_file(
-                    &state.message_refs,
-                    &state,
-                    &workspace,
-                    &state.db,
+                Self::reindex_message_ref_file(&state.message_refs, &state, &path);
+                Self::reindex_global_script_ref_file(
+                    &state.global_script_refs,
+                    &state.project,
                     &path,
                 );
                 tokio::task::yield_now().await;
@@ -305,12 +283,12 @@ impl RotomServer {
         source: &str,
     ) -> ConstantDb {
         if path.extension().and_then(|s| s.to_str()) != Some("rotom") {
-            return state.constants.clone();
+            return state.project.project_constants().clone();
         }
         if !source.contains("#include") && !source.contains("#define") {
-            return state.constants.clone();
+            return state.project.project_constants().clone();
         }
-        let mut file_constants = state.constants.clone();
+        let mut file_constants = state.project.project_constants().clone();
         let lexer = rotom::compiler::Lexer::new(source);
         let mut parser = rotom::compiler::Parser::new_fallible(lexer);
         if let Ok(file) = parser.parse_script_file() {
@@ -327,10 +305,11 @@ impl RotomServer {
     fn reindex_message_ref_file(
         refs: &MessageRefIndex,
         state: &ProjectState,
-        workspace: &uxie::Workspace,
-        db: &DatabaseV2,
         path: &std::path::Path,
     ) {
+        let Some(workspace) = state.project.workspace() else {
+            return;
+        };
         let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let guard = refs
             .reindex_locks
@@ -350,7 +329,13 @@ impl RotomServer {
             return;
         };
         let constants = Self::file_constants_for_index(state, &canonical_path, &source);
-        let found = collect_message_refs(&source, workspace, db, &canonical_path, Some(&constants));
+        let found = collect_message_refs(
+            &source,
+            workspace,
+            state.project.db(),
+            &canonical_path,
+            Some(&constants),
+        );
         if found.is_empty() {
             refs.by_file.insert(canonical_path, Vec::new());
             return;
@@ -363,48 +348,62 @@ impl RotomServer {
         refs.by_file.insert(canonical_path, pairs);
     }
 
-    /// Build file-local constants for a URI by cloning project-wide constants
-    /// and applying any `#include` / `#define` directives found in the source.
-    ///
-    /// Returns [`None`] when a directive-bearing `.rotom` file fails to parse (constants fall back
-    /// to project defaults elsewhere).
-    fn rotom_file_constants_prep(
-        state: &ProjectState,
+    /// Rebuild resolved global-script references contributed by one source file.
+    fn reindex_global_script_ref_file(
+        refs: &GlobalScriptRefIndex,
+        project: &rotom::ProjectContext,
+        path: &std::path::Path,
+    ) {
+        let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let guard = refs
+            .reindex_locks
+            .entry(canonical_path.clone())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())));
+        let lock = Arc::clone(&guard);
+        drop(guard);
+        let _reindex_guard = lock.lock().expect("reindex lock poisoned");
+        let Ok(uri) = Url::from_file_path(&canonical_path) else {
+            return;
+        };
+        if let Some((_, old_targets)) = refs.by_file.remove(&canonical_path) {
+            for target in old_targets {
+                if let Some(mut existing) = refs.by_target.get_mut(&target) {
+                    existing.retain(|reference| reference.uri != uri);
+                }
+            }
+        }
+        let Ok(source) = std::fs::read_to_string(&canonical_path) else {
+            return;
+        };
+        let found = collect_global_script_refs(&source, &uri, project);
+        let mut targets = Vec::with_capacity(found.len());
+        for reference in found {
+            let target_path =
+                std::fs::canonicalize(&reference.target_path).unwrap_or(reference.target_path);
+            let target = (target_path, reference.target_label);
+            targets.push(target.clone());
+            refs.by_target
+                .entry(target)
+                .or_default()
+                .push(reference.location);
+        }
+        refs.by_file.insert(canonical_path, targets);
+    }
+
+    /// Return cross-file references grouped by public label for one source URI.
+    fn global_script_refs_for_uri(
+        refs: &GlobalScriptRefIndex,
         uri: &Url,
-        source: &str,
-    ) -> Option<RotomFileConstantsPrep> {
-        let file_path = uri.to_file_path().ok()?;
-
-        // Only clone and process directives for .rotom files that actually
-        // have include/define statements.
-        if file_path.extension().and_then(|s| s.to_str()) != Some("rotom") {
-            return Some(RotomFileConstantsPrep {
-                constants: state.constants.clone(),
-                directive_parse_for_diagnostics: None,
-            });
-        }
-        if !source.contains("#include") && !source.contains("#define") {
-            return Some(RotomFileConstantsPrep {
-                constants: state.constants.clone(),
-                directive_parse_for_diagnostics: None,
-            });
-        }
-
-        let mut file_constants = state.constants.clone();
-
-        let lexer = rotom::compiler::Lexer::new(source);
-        let mut parser = rotom::compiler::Parser::new_fallible(lexer);
-        let file = parser.parse_script_file().ok()?;
-        let parse_errors = std::mem::take(&mut parser.errors);
-        let script_dir = file_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let _ = file_constants.apply_directives(script_dir, source, &file.items);
-
-        Some(RotomFileConstantsPrep {
-            constants: file_constants,
-            directive_parse_for_diagnostics: Some((Arc::new(file), parse_errors)),
-        })
+    ) -> HashMap<String, Vec<tower_lsp::lsp_types::Location>> {
+        let Some(path) = uri.to_file_path().ok() else {
+            return HashMap::new();
+        };
+        let target_path = std::fs::canonicalize(&path).unwrap_or(path);
+        refs.by_target
+            .iter()
+            .filter(|entry| entry.key().0 == target_path)
+            .map(|entry| (entry.key().1.clone(), entry.value().clone()))
+            .collect()
     }
 
     /// Schedule diagnostics to be published after a debounce delay.
@@ -427,12 +426,7 @@ impl RotomServer {
             .get(&uri_for_task)
             .map(|doc| doc.text.clone());
         let project_state = self.project_state_for_uri(&uri_for_task);
-
-        // Compute file-local constants synchronously before spawning.
-        let file_prep = project_state.as_ref().and_then(|state| {
-            text.as_ref()
-                .and_then(|src| Self::rotom_file_constants_prep(state, &uri_for_task, src))
-        });
+        let source_path = uri_for_task.to_file_path().ok();
 
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(DIAGNOSTIC_DEBOUNCE_MS)).await;
@@ -440,25 +434,10 @@ impl RotomServer {
             let Some(text) = text else {
                 return;
             };
-            let (db, constants, reuse_directive_parse) = if let Some(state) = project_state {
-                match file_prep {
-                    Some(prep) => (
-                        Some(state.db),
-                        prep.constants,
-                        prep.directive_parse_for_diagnostics,
-                    ),
-                    None => (Some(state.db), state.constants.clone(), None),
-                }
-            } else {
-                let empty = rotom::database::ConstantDb::new();
-                (None, empty, None)
-            };
-
             let diagnostics = compute_diagnostics(
                 &text,
-                db.as_deref(),
-                Some(&constants),
-                reuse_directive_parse,
+                project_state.as_ref().map(|state| state.project.as_ref()),
+                source_path.as_deref(),
             );
             client
                 .publish_diagnostics(uri_for_task, diagnostics, None)
@@ -586,10 +565,10 @@ impl LanguageServer for RotomServer {
         };
 
         let project_state = self.project_state_for_uri(uri);
-        let db = project_state.as_ref().map(|s| s.db.clone());
-        let constant_names = project_state
-            .as_ref()
-            .map(|state| Arc::new(state.constants.constant_names()) as Arc<Vec<String>>);
+        let db = project_state.as_ref().map(|state| state.project.db());
+        let constant_names = project_state.as_ref().map(|state| {
+            Arc::new(state.project.project_constants().constant_names()) as Arc<Vec<String>>
+        });
 
         let local_symbols = self
             .documents
@@ -599,7 +578,7 @@ impl LanguageServer for RotomServer {
         let items = compute_completions(
             &doc.text,
             position,
-            db.as_deref(),
+            db,
             constant_names,
             local_symbols.as_deref(),
         );
@@ -620,25 +599,10 @@ impl LanguageServer for RotomServer {
         };
 
         let project_state = self.project_state_for_uri(uri);
-        let db = project_state.as_ref().map(|s| s.db.clone());
-        let file_constants = project_state
-            .as_ref()
-            .and_then(|state| Self::rotom_file_constants_prep(state, uri, &doc.text))
-            .map(|prep| prep.constants);
-        let workspace = project_state.as_ref().and_then(|s| s.workspace.clone());
-        let script_file = uri
-            .to_file_path()
-            .ok()
-            .and_then(|p| p.file_stem()?.to_str().map(str::to_string));
+        let project = project_state.as_ref().map(|state| state.project.as_ref());
+        let source_path = uri.to_file_path().ok();
 
-        let hover = compute_hover(
-            &doc.text,
-            position,
-            db.as_deref(),
-            file_constants.as_ref(),
-            workspace.as_deref(),
-            script_file.as_deref(),
-        );
+        let hover = compute_hover(&doc.text, position, project, source_path.as_deref());
 
         Ok(hover)
     }
@@ -683,8 +647,7 @@ impl LanguageServer for RotomServer {
         };
 
         let project_state = self.project_state_for_uri(uri);
-        let ws = project_state.as_ref().and_then(|s| s.workspace.clone());
-        let db = project_state.as_ref().map(|s| s.db.clone());
+        let project = project_state.as_ref().map(|state| state.project.as_ref());
         let script_file = uri
             .to_file_path()
             .ok()
@@ -694,8 +657,7 @@ impl LanguageServer for RotomServer {
             &doc.text,
             position,
             uri,
-            ws.as_ref(),
-            db.as_deref(),
+            project,
             script_file.as_deref(),
         ))
     }
@@ -715,12 +677,10 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let db = match self.project_state_for_uri(uri) {
-            Some(state) => Some(state.db),
-            None => None,
-        };
+        let project_state = self.project_state_for_uri(uri);
+        let db = project_state.as_ref().map(|state| state.project.db());
 
-        Ok(compute_signature_help(&doc.text, position, db.as_deref()))
+        Ok(compute_signature_help(&doc.text, position, db))
     }
 
     async fn code_lens(
@@ -732,7 +692,7 @@ impl LanguageServer for RotomServer {
             let Some(state) = self.project_state_for_uri(uri) else {
                 return Ok(None);
             };
-            let Some(workspace) = state.workspace.as_ref() else {
+            let Some(workspace) = state.project.workspace() else {
                 return Ok(None);
             };
             let path = uri.to_file_path().ok();
@@ -788,8 +748,12 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let db = self.project_state_for_uri(uri).map(|state| state.db);
-        let lenses = compute_script_code_lens(&doc.text, uri, db.as_deref());
+        let project_state = self.project_state_for_uri(uri);
+        let project = project_state.as_ref().map(|state| state.project.as_ref());
+        let global_refs = project_state
+            .as_ref()
+            .map(|state| Self::global_script_refs_for_uri(&state.global_script_refs, uri));
+        let lenses = compute_script_code_lens(&doc.text, uri, project, global_refs.as_ref());
         Ok(if lenses.is_empty() {
             None
         } else {
@@ -818,8 +782,10 @@ impl LanguageServer for RotomServer {
         let Some(path) = uri.to_file_path().ok() else {
             return;
         };
-        if Self::should_invalidate_project_state(&path) {
-            self.invalidate_project_for_path(&path);
+        if Self::should_invalidate_project_state(&path)
+            && let Some(project_root) = self.invalidate_project_for_path(&path)
+        {
+            self.publish_project_diagnostics(&project_root);
         }
         if path.extension().and_then(|s| s.to_str()) != Some("rotom") {
             return;
@@ -827,15 +793,13 @@ impl LanguageServer for RotomServer {
         let Some(state) = self.project_state_for_uri(&uri) else {
             return;
         };
-        let Some(workspace) = state.workspace.as_ref() else {
-            return;
-        };
-        Self::reindex_message_ref_file(&state.message_refs, &state, workspace, &state.db, &path);
+        Self::reindex_message_ref_file(&state.message_refs, &state, &path);
+        Self::reindex_global_script_ref_file(&state.global_script_refs, &state.project, &path);
         let _ = self.client.code_lens_refresh().await;
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
-        let mut invalidated = false;
+        let mut invalidated_projects = HashSet::new();
         for change in params.changes {
             if change.typ == FileChangeType::CREATED
                 || change.typ == FileChangeType::CHANGED
@@ -844,13 +808,17 @@ impl LanguageServer for RotomServer {
                 let Ok(path) = change.uri.to_file_path() else {
                     continue;
                 };
-                if Self::should_invalidate_project_state(&path) {
-                    self.invalidate_project_for_path(&path);
-                    invalidated = true;
+                if Self::should_invalidate_project_state(&path)
+                    && let Some(project_root) = self.invalidate_project_for_path(&path)
+                {
+                    invalidated_projects.insert(project_root);
                 }
             }
         }
-        if invalidated {
+        for project_root in &invalidated_projects {
+            self.publish_project_diagnostics(project_root);
+        }
+        if !invalidated_projects.is_empty() {
             let _ = self.client.code_lens_refresh().await;
         }
     }
@@ -869,12 +837,10 @@ impl LanguageServer for RotomServer {
             return Ok(None);
         };
 
-        let db = match self.project_state_for_uri(uri) {
-            Some(state) => Some(state.db),
-            None => None,
-        };
+        let project_state = self.project_state_for_uri(uri);
+        let db = project_state.as_ref().map(|state| state.project.db());
 
-        let hints = compute_inlay_hints(&doc.text, db.as_deref());
+        let hints = compute_inlay_hints(&doc.text, db);
         if hints.is_empty() {
             Ok(None)
         } else {
@@ -898,10 +864,14 @@ impl LanguageServer for RotomServer {
 
 #[cfg(test)]
 mod tests {
-    use super::{MessageRefIndex, ProjectState, RotomServer};
-    use crate::code_lens::build_message_code_lens;
+    use super::{GlobalScriptRefIndex, MessageRefIndex, ProjectState, RotomServer};
+    use crate::code_lens::{build_message_code_lens, compute_script_code_lens};
     use rotom::database::ConstantDb;
     use rotom::database::DatabaseV2;
+    use rotom::project::config::{
+        DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
+        WorkspaceConfig,
+    };
     use std::path::Path;
     use std::sync::Arc;
     use tower_lsp::lsp_types::{
@@ -932,14 +902,41 @@ mod tests {
     }
 
     fn test_state(root: &std::path::Path) -> ProjectState {
-        ProjectState {
-            db: test_db(root),
-            constants: ConstantDb::new(),
-            workspace: Some(Arc::new(uxie::Workspace::new(
+        let config = RotomConfig {
+            format_version: 1,
+            project: ProjectMetadata {
+                name: "test".to_string(),
+            },
+            workspace: WorkspaceConfig {
+                project_type: ProjectTypeConfig::Dspre,
+                game_family: Some(rotom::GameFamily::Platinum),
+            },
+            paths: PathsConfig {
+                database_dir: ".rotom/command_database".to_string(),
+                cache_dir: ".rotom/cache".to_string(),
+                status_dir: ".rotom/status".to_string(),
+                source_roots: vec!["scripts".to_string()],
+                include_roots: Vec::new(),
+                binary_roots: Vec::new(),
+            },
+            database: Some(DatabaseConfig {
+                default_file: "commands.json".to_string(),
+            }),
+        };
+        let project = rotom::ProjectContext::from_parts(
+            root.to_path_buf(),
+            config,
+            test_db(root),
+            ConstantDb::new(),
+            Some(Arc::new(uxie::Workspace::new(
                 root.to_path_buf(),
                 Game::Platinum,
             ))),
+        );
+        ProjectState {
+            project: Arc::new(project),
             message_refs: Arc::new(MessageRefIndex::default()),
+            global_script_refs: Arc::new(GlobalScriptRefIndex::default()),
         }
     }
 
@@ -949,7 +946,7 @@ mod tests {
         archive_path: &std::path::Path,
         archive_id: u16,
     ) -> Vec<(usize, Vec<crate::message_refs::MessageRef>)> {
-        let workspace = state.workspace.as_ref().expect("workspace");
+        let workspace = state.project.workspace().expect("workspace");
         let _ = workspace.ensure_archive_loaded(archive_id);
         let mut indices = std::collections::BTreeSet::new();
         for (_, idx) in workspace.message_ids_for_archive(archive_id) {
@@ -994,21 +991,8 @@ mod tests {
         std::fs::write(&b_path, "script b # 0:\n    MessageFromBank 199, 1\n").expect("b");
 
         let state = test_state(root);
-        let workspace = state.workspace.as_ref().expect("ws").clone();
-        RotomServer::reindex_message_ref_file(
-            &state.message_refs,
-            &state,
-            &workspace,
-            &state.db,
-            &a_path,
-        );
-        RotomServer::reindex_message_ref_file(
-            &state.message_refs,
-            &state,
-            &workspace,
-            &state.db,
-            &b_path,
-        );
+        RotomServer::reindex_message_ref_file(&state.message_refs, &state, &a_path);
+        RotomServer::reindex_message_ref_file(&state.message_refs, &state, &b_path);
         assert_eq!(
             state
                 .message_refs
@@ -1019,13 +1003,7 @@ mod tests {
         );
 
         std::fs::write(&b_path, "script b # 0:\n    MessageFromBank 199, 0\n").expect("b update");
-        RotomServer::reindex_message_ref_file(
-            &state.message_refs,
-            &state,
-            &workspace,
-            &state.db,
-            &b_path,
-        );
+        RotomServer::reindex_message_ref_file(&state.message_refs, &state, &b_path);
 
         assert_eq!(
             state
@@ -1081,19 +1059,14 @@ mod tests {
         .expect("b");
 
         let state = test_state(root);
-        let workspace = state.workspace.as_ref().expect("ws").clone();
         RotomServer::reindex_message_ref_file(
             &state.message_refs,
             &state,
-            &workspace,
-            &state.db,
             &root.join("scripts/a.rotom"),
         );
         RotomServer::reindex_message_ref_file(
             &state.message_refs,
             &state,
-            &workspace,
-            &state.db,
             &root.join("scripts/b.rotom"),
         );
 
@@ -1120,6 +1093,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn script_code_lens_counts_global_references_across_files() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).expect("scripts");
+        let target_path = scripts.join("0003.rotom");
+        let caller_path = scripts.join("0004.rotom");
+        let target_source = "script script_7 #7:\n    End\n";
+        std::fs::write(&target_path, target_source).expect("target");
+        std::fs::write(
+            &caller_path,
+            "script Main #1:\n    CallStd CommonScripts::script_7\n    End\n",
+        )
+        .expect("caller");
+
+        let mut workspace = uxie::Workspace::new(root.to_path_buf(), Game::HeartGold);
+        workspace
+            .scripts
+            .load_dspre_script_dir(&scripts)
+            .expect("script table");
+        workspace.global_script_table = uxie::script_file::GlobalScriptTable::from_entries(vec![
+            uxie::script_file::GlobalScriptEntry::with_range(
+                2000,
+                3,
+                40,
+                uxie::script_file::GlobalScriptRange::CommonScripts,
+            ),
+        ]);
+        let config = RotomConfig {
+            format_version: 1,
+            project: ProjectMetadata {
+                name: "test".to_string(),
+            },
+            workspace: WorkspaceConfig {
+                project_type: ProjectTypeConfig::Dspre,
+                game_family: Some(rotom::GameFamily::HGSS),
+            },
+            paths: PathsConfig {
+                database_dir: ".rotom/command_database".to_string(),
+                cache_dir: ".rotom/cache".to_string(),
+                status_dir: ".rotom/status".to_string(),
+                source_roots: vec!["scripts".to_string()],
+                include_roots: Vec::new(),
+                binary_roots: Vec::new(),
+            },
+            database: Some(DatabaseConfig {
+                default_file: DatabaseV2::test_hgss_path().display().to_string(),
+            }),
+        };
+        let db = Arc::new(DatabaseV2::load(DatabaseV2::test_hgss_path()).expect("db"));
+        let state = Arc::new(ProjectState {
+            project: Arc::new(rotom::ProjectContext::from_parts(
+                root.to_path_buf(),
+                config,
+                db,
+                ConstantDb::new(),
+                Some(Arc::new(workspace)),
+            )),
+            message_refs: Arc::new(MessageRefIndex::default()),
+            global_script_refs: Arc::new(GlobalScriptRefIndex::default()),
+        });
+        RotomServer::rebuild_project_ref_indexes(Arc::clone(&state), vec![scripts]).await;
+
+        let target_uri =
+            tower_lsp::lsp_types::Url::from_file_path(&target_path).expect("target uri");
+        let global_refs =
+            RotomServer::global_script_refs_for_uri(&state.global_script_refs, &target_uri);
+        let lenses = compute_script_code_lens(
+            target_source,
+            &target_uri,
+            Some(state.project.as_ref()),
+            Some(&global_refs),
+        );
+        assert_eq!(
+            lenses[0]
+                .command
+                .as_ref()
+                .map(|command| command.title.as_str()),
+            Some("1 reference")
+        );
+
+        std::fs::write(&caller_path, "script Main #1:\n    End\n").expect("caller update");
+        RotomServer::reindex_global_script_ref_file(
+            &state.global_script_refs,
+            &state.project,
+            &caller_path,
+        );
+        let global_refs =
+            RotomServer::global_script_refs_for_uri(&state.global_script_refs, &target_uri);
+        let lenses = compute_script_code_lens(
+            target_source,
+            &target_uri,
+            Some(state.project.as_ref()),
+            Some(&global_refs),
+        );
+        assert_eq!(
+            lenses[0]
+                .command
+                .as_ref()
+                .map(|command| command.title.as_str()),
+            Some("0 references")
+        );
+    }
+
+    #[tokio::test]
     async fn code_lens_initial_population_background() {
         let dir = tempfile::tempdir().expect("tmp");
         let root = dir.path();
@@ -1138,13 +1216,12 @@ mod tests {
         .expect("script");
 
         let state = Arc::new(test_state(root));
-        let workspace = state.workspace.as_ref().expect("ws").clone();
         assert!(
             state.message_refs.by_message.is_empty(),
             "index starts empty before background walk"
         );
 
-        RotomServer::rebuild_message_ref_index(state.clone(), workspace, vec![scripts]).await;
+        RotomServer::rebuild_project_ref_indexes(state.clone(), vec![scripts]).await;
 
         assert_eq!(
             state
@@ -1167,8 +1244,23 @@ mod tests {
         assert!(RotomServer::should_invalidate_project_state(
             std::path::Path::new("/tmp/project/include/constants/vars.h")
         ));
-        assert!(!RotomServer::should_invalidate_project_state(
+        assert!(RotomServer::should_invalidate_project_state(
             std::path::Path::new("/tmp/project/res/field/scripts/script_001.rotom")
+        ));
+        assert!(RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/res/field/scripts/scripts.order")
+        ));
+        assert!(RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/src/script_manager.c")
+        ));
+        assert!(RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/arm9/arm9.bin")
+        ));
+        assert!(RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/res/field/scripts/script_002.s")
+        ));
+        assert!(RotomServer::should_invalidate_project_state(
+            std::path::Path::new("/tmp/project/scripts/0003.script")
         ));
     }
 
@@ -1228,9 +1320,13 @@ mod tests {
             patterns,
             vec![
                 "**/rotom.toml",
+                "**/scripts.order",
+                "**/src/{script_manager,fieldmap}.c",
+                "**/arm9.bin",
                 "**/.rotom/command_database/**/*.json",
                 "**/include/**/*.{h,inc,json}",
                 "**/generated/**/*.{h,inc,json}",
+                "**/*.{rotom,s,script}",
             ]
         );
     }
@@ -1275,23 +1371,10 @@ mod tests {
         std::fs::write(&file, "script s # 0:\n    MessageFromBank 199, 1\n").expect("write");
 
         let state = test_state(root);
-        let workspace = state.workspace.as_ref().expect("ws").clone();
 
         // Call reindex twice — the lock serializes so no duplicates appear.
-        RotomServer::reindex_message_ref_file(
-            &state.message_refs,
-            &state,
-            &workspace,
-            &state.db,
-            &file,
-        );
-        RotomServer::reindex_message_ref_file(
-            &state.message_refs,
-            &state,
-            &workspace,
-            &state.db,
-            &file,
-        );
+        RotomServer::reindex_message_ref_file(&state.message_refs, &state, &file);
+        RotomServer::reindex_message_ref_file(&state.message_refs, &state, &file);
 
         let refs = state
             .message_refs
@@ -1316,14 +1399,7 @@ mod tests {
         std::fs::write(&file, "script s # 0:\n    MessageFromBank 199, 1\n").expect("write");
 
         let state = test_state(root);
-        let workspace = state.workspace.as_ref().expect("ws").clone();
-        RotomServer::reindex_message_ref_file(
-            &state.message_refs,
-            &state,
-            &workspace,
-            &state.db,
-            &file,
-        );
+        RotomServer::reindex_message_ref_file(&state.message_refs, &state, &file);
 
         // The lock entry should exist for the canonical path after reindex.
         let canonical = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());

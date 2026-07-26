@@ -74,7 +74,9 @@ pub enum LevelScriptValidationError {
     /// variable ID as the frame-table terminator, so the entry (and any
     /// after it) would be discarded. `index` is the position in
     /// [`LevelScript::var_conditions`].
-    #[snafu(display("var-condition entry at index {index} has var == 0, which is the binary frame-table terminator and would be ignored by the game"))]
+    #[snafu(display(
+        "var-condition entry at index {index} has var == 0, which is the binary frame-table terminator and would be ignored by the game"
+    ))]
     ZeroVarInCondition { index: usize },
 
     /// More than one `OnVarCondition` header entry was found. The engine
@@ -85,7 +87,9 @@ pub enum LevelScriptValidationError {
 
     /// `var_conditions` is non-empty but no `OnVarCondition` header entry
     /// references them, so they would be silently dropped during serialization.
-    #[snafu(display("{condition_count} var-condition(s) present but no on_var_condition header entry to reference them"))]
+    #[snafu(display(
+        "{condition_count} var-condition(s) present but no on_var_condition header entry to reference them"
+    ))]
     ConditionsWithoutHeader { condition_count: usize },
 }
 
@@ -676,9 +680,7 @@ mod tests {
 
         assert_eq!(
             ls.validate(),
-            Err(LevelScriptValidationError::ConditionsWithoutHeader {
-                condition_count: 1
-            })
+            Err(LevelScriptValidationError::ConditionsWithoutHeader { condition_count: 1 })
         );
     }
 
@@ -800,8 +802,7 @@ mod tests {
             "found 2 on_var_condition header entries; at most one is allowed",
         );
         assert_eq!(
-            LevelScriptValidationError::ConditionsWithoutHeader { condition_count: 4 }
-                .to_string(),
+            LevelScriptValidationError::ConditionsWithoutHeader { condition_count: 4 }.to_string(),
             "4 var-condition(s) present but no on_var_condition header entry to reference them",
         );
     }

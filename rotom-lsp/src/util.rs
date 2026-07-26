@@ -38,3 +38,47 @@ pub fn byte_span_to_location(
         range: byte_span_to_range(map, span),
     }
 }
+
+#[cfg(test)]
+pub(crate) fn test_project_context(
+    workspace: uxie::Workspace,
+    db_path: &std::path::Path,
+    family: rotom::GameFamily,
+    constants: rotom::ConstantDb,
+) -> rotom::ProjectContext {
+    use std::sync::Arc;
+
+    use rotom::project::config::{
+        DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
+        WorkspaceConfig,
+    };
+
+    let config = RotomConfig {
+        format_version: 1,
+        project: ProjectMetadata {
+            name: "test".to_string(),
+        },
+        workspace: WorkspaceConfig {
+            project_type: ProjectTypeConfig::Dspre,
+            game_family: Some(family),
+        },
+        paths: PathsConfig {
+            database_dir: ".rotom/command_database".to_string(),
+            cache_dir: ".rotom/cache".to_string(),
+            status_dir: ".rotom/status".to_string(),
+            source_roots: Vec::new(),
+            include_roots: Vec::new(),
+            binary_roots: Vec::new(),
+        },
+        database: Some(DatabaseConfig {
+            default_file: db_path.display().to_string(),
+        }),
+    };
+    rotom::ProjectContext::from_parts(
+        workspace.project_path.clone(),
+        config,
+        Arc::new(rotom::DatabaseV2::load(db_path).expect("failed to load test database")),
+        constants,
+        Some(Arc::new(workspace)),
+    )
+}

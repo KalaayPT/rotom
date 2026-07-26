@@ -937,9 +937,34 @@ impl<'a> Parser<'a> {
                 ExpressionKind::Number(0)
             }
             TokenType::Identifier(name) => {
-                let kind = ExpressionKind::Identifier(name.clone());
+                let name = name.clone();
                 self.advance();
-                kind
+                // Cross-file script reference `file::label`: an identifier
+                // immediately followed by `::` and a second identifier.
+                if self.current_token_is(&TokenType::DoubleColon) {
+                    self.advance();
+                    match &self.current_token.kind {
+                        TokenType::Identifier(label) => {
+                            let label = label.clone();
+                            self.advance();
+                            ExpressionKind::ModuleRef {
+                                module: name,
+                                label,
+                            }
+                        }
+                        _ => {
+                            return Err(parse_error(
+                                self.current_token.span.clone(),
+                                format!(
+                                    "Expected a label after '::', found {}",
+                                    self.current_token.kind
+                                ),
+                            ));
+                        }
+                    }
+                } else {
+                    ExpressionKind::Identifier(name)
+                }
             }
             TokenType::String(s) => {
                 let kind = ExpressionKind::String(s.clone());
@@ -1843,6 +1868,54 @@ script Test #1:
             }
             _ => panic!("Expected function"),
         }
+    }
+
+    #[test]
+    fn test_parse_module_ref_command_argument() {
+        let source = r"
+script Test #1:
+    CallCommonScript scripts_common::NewGame
+    End
+";
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let file = parser.parse_script_file().unwrap();
+
+        let StatementKind::Function { body, .. } = &file.items[0].node else {
+            panic!("Expected function");
+        };
+        let StatementKind::ScriptCommand { command, args } = &body[0].node else {
+            panic!("Expected script command");
+        };
+        assert_eq!(command, "CallCommonScript");
+        assert!(matches!(
+            &args[0].node,
+            ExpressionKind::ModuleRef { module, label }
+                if module == "scripts_common" && label == "NewGame"
+        ));
+        assert_eq!(
+            args[0].to_macro_arg_source().unwrap(),
+            "scripts_common::NewGame"
+        );
+    }
+
+    #[test]
+    fn test_parse_numeric_module_ref_preserves_filename_stem() {
+        let source = "script Test #1:\n    CallCommonScript 0211::NewGame\n    End\n";
+        let mut parser = Parser::new(Lexer::new(source));
+        let file = parser.parse_script_file().unwrap();
+
+        let StatementKind::Function { body, .. } = &file.items[0].node else {
+            panic!("Expected function");
+        };
+        let StatementKind::ScriptCommand { args, .. } = &body[0].node else {
+            panic!("Expected script command");
+        };
+        assert!(matches!(
+            &args[0].node,
+            ExpressionKind::ModuleRef { module, label }
+                if module == "0211" && label == "NewGame"
+        ));
     }
 
     #[test]

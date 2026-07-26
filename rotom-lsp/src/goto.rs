@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
-use rotom::database::DatabaseV2;
 use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position as LspPosition, Range, Url};
 
 use rotom::compiler::{
-    ast::{Statement, StatementKind},
+    ast::{ExpressionKind, Statement, StatementKind},
     sourcemap::{Position as SourcePosition, SourceMap},
 };
 
@@ -14,15 +11,13 @@ use crate::util::{byte_span_to_location, parse_source};
 
 /// Produce an LSP go-to-definition response for the symbol under the cursor.
 ///
-/// First searches the source file for local definitions (labels, functions,
-/// aliases). If not found and a workspace is provided, tries to resolve the
-/// word as a message ID and jumps to its entry in the JSON archive.
+/// Resolves cross-file global script references first, then local definitions
+/// and message archive entries.
 pub fn compute_goto_definition(
     source: &str,
     position: tower_lsp::lsp_types::Position,
     uri: &Url,
-    workspace: Option<&Arc<uxie::Workspace>>,
-    db: Option<&DatabaseV2>,
+    project: Option<&rotom::ProjectContext>,
     script_file_name: Option<&str>,
 ) -> Option<GotoDefinitionResponse> {
     let map = SourceMap::new(source);
@@ -32,6 +27,24 @@ pub fn compute_goto_definition(
     });
 
     let ast = parse_source(source)?;
+
+    if let Some(project) = project
+        && let Some((command, args, 0)) = find_command_at_offset(&ast.items, byte_offset)
+        && project.db().is_global_script_call(command)
+        && let Some(ExpressionKind::ModuleRef { module, label }) = args.first().map(|arg| &arg.node)
+        && let Ok(resolved) = project.resolve_global_script_ref(module, label)
+        && let Ok(uri) = Url::from_file_path(&resolved.path)
+    {
+        let target_map = SourceMap::new(&resolved.source);
+        return Some(GotoDefinitionResponse::Scalar(byte_span_to_location(
+            &uri,
+            &resolved.symbol.span,
+            &target_map,
+        )));
+    }
+
+    let workspace = project.and_then(|project| project.workspace());
+    let db = project.map(rotom::ProjectContext::db);
 
     if let Some(word) = extract_word(source, byte_offset) {
         if let Some(stmt) = find_definition(&ast.items, &word) {
@@ -232,13 +245,14 @@ fn file_start_location(path: &std::path::Path) -> Location {
 #[cfg(test)]
 mod tests {
     use super::{compute_goto_definition, json_message_lines, json_message_location};
+    use crate::util::test_project_context;
     use rotom::compiler::sourcemap::SourceMap;
-    use rotom::database::DatabaseV2;
-    use std::sync::Arc;
-    use tower_lsp::lsp_types::Position;
+    use rotom::database::{ConstantDb, DatabaseV2};
+    use std::path::PathBuf;
+    use tower_lsp::lsp_types::{GotoDefinitionResponse, Position, Url};
     use uxie::game::Game;
 
-    fn test_db(path: &std::path::Path) -> DatabaseV2 {
+    fn test_db(path: &std::path::Path) -> PathBuf {
         let json = r#"{
   "meta": { "version": "test" },
   "commands": {
@@ -256,7 +270,7 @@ mod tests {
 }"#;
         let db_path = path.join("commands.json");
         std::fs::write(&db_path, json).expect("db write");
-        DatabaseV2::load(&db_path).expect("db load")
+        db_path
     }
 
     #[test]
@@ -270,9 +284,15 @@ mod tests {
         )
         .expect("archive");
 
-        let workspace = Arc::new(uxie::Workspace::new(root.to_path_buf(), Game::Platinum));
+        let workspace = uxie::Workspace::new(root.to_path_buf(), Game::Platinum);
         workspace.ensure_archive_loaded(199).expect("load archive");
-        let db = test_db(root);
+        let db_path = test_db(root);
+        let project = test_project_context(
+            workspace,
+            &db_path,
+            rotom::GameFamily::Platinum,
+            ConstantDb::new(),
+        );
 
         let source = "script Test # 0:\n    MessageFromBank 199, 1\n";
         let line_start = source.find("    MessageFromBank").expect("line start");
@@ -284,14 +304,8 @@ mod tests {
 
         let script_uri = tower_lsp::lsp_types::Url::from_file_path(root.join("scripts/test.rotom"))
             .expect("script uri");
-        let result = compute_goto_definition(
-            source,
-            position,
-            &script_uri,
-            Some(&workspace),
-            Some(&db),
-            Some("test"),
-        );
+        let result =
+            compute_goto_definition(source, position, &script_uri, Some(&project), Some("test"));
         let Some(tower_lsp::lsp_types::GotoDefinitionResponse::Scalar(location)) = result else {
             panic!("expected scalar goto location");
         };
@@ -309,11 +323,45 @@ mod tests {
         };
         let uri = tower_lsp::lsp_types::Url::parse("file:///tmp/main.rotom").expect("uri");
 
-        let result = compute_goto_definition(source, position, &uri, None, None, None);
+        let result = compute_goto_definition(source, position, &uri, None, None);
         let Some(tower_lsp::lsp_types::GotoDefinitionResponse::Scalar(location)) = result else {
             panic!("expected local label definition");
         };
         assert_eq!(location.range.start.line, 3);
+    }
+
+    #[test]
+    fn goto_global_module_ref_returns_target_script_location() {
+        let temp = tempfile::tempdir().expect("tmp");
+        let scripts = temp.path().join("scripts");
+        std::fs::create_dir(&scripts).unwrap();
+        let target = scripts.join("0211.rotom");
+        std::fs::write(&target, "script NewGame #1:\n    End\n").unwrap();
+        let mut workspace =
+            uxie::Workspace::new(temp.path().to_path_buf(), uxie::game::Game::Platinum);
+        workspace.scripts.load_dspre_script_dir(&scripts).unwrap();
+        workspace.global_script_table = uxie::script_file::GlobalScriptTable::from_entries(vec![
+            uxie::script_file::GlobalScriptEntry::new(2000, 211, 213, "Common Scripts"),
+        ]);
+        let project = test_project_context(
+            workspace,
+            &DatabaseV2::test_platinum_path(),
+            rotom::GameFamily::Platinum,
+            ConstantDb::new(),
+        );
+        let source = "script Main #1:\n    CallCommonScript CommonScripts::NewGame\n    End\n";
+        let offset = source.find("NewGame").unwrap();
+        let position = SourceMap::new(source).byte_to_position(offset);
+        let position = Position::new(position.line, position.character);
+        let uri = tower_lsp::lsp_types::Url::parse("file:///tmp/main.rotom").unwrap();
+
+        let result = compute_goto_definition(source, position, &uri, Some(&project), Some("main"));
+
+        let Some(GotoDefinitionResponse::Scalar(location)) = result else {
+            panic!("expected global script definition");
+        };
+        assert_eq!(location.uri, Url::from_file_path(target).unwrap());
+        assert_eq!(location.range.start.line, 0);
     }
 
     #[test]

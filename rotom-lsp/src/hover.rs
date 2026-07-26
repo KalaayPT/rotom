@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::path::Path;
 
 use tower_lsp::lsp_types::{
     Hover, HoverContents, MarkupContent, MarkupKind, Position as LspPosition,
@@ -17,10 +18,8 @@ use crate::util::parse_source;
 pub fn compute_hover(
     source: &str,
     position: LspPosition,
-    db: Option<&DatabaseV2>,
-    constants: Option<&ConstantDb>,
-    workspace: Option<&uxie::Workspace>,
-    script_file_name: Option<&str>,
+    project: Option<&rotom::ProjectContext>,
+    source_path: Option<&Path>,
 ) -> Option<Hover> {
     let map = SourceMap::new(source);
     let byte_offset = map.position_to_byte(SourcePosition {
@@ -32,6 +31,45 @@ pub fn compute_hover(
 
     // Parse the source once — shared by alias lookup and message text resolution.
     let ast = parse_source(source);
+
+    if let (Some(ast), Some(project)) = (ast.as_ref(), project)
+        && let Some((command, args, 0)) = find_command_at_offset(&ast.items, byte_offset)
+        && project.db().is_global_script_call(command)
+        && let Some(ExpressionKind::ModuleRef { module, label }) = args.first().map(|arg| &arg.node)
+        && let Ok(resolved) = project.resolve_global_script_ref(module, label)
+    {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!(
+                    "**{module}::{label}**\n\nGlobal script ID: `{}`\n\nCanonical module: `{}`\n\nFile: `{}`, script `#{}`",
+                    resolved.script_id,
+                    resolved.module,
+                    resolved.script_file_id,
+                    resolved.symbol.slot,
+                ),
+            }),
+            range: None,
+        });
+    }
+
+    let workspace = project.and_then(|project| project.workspace());
+    let db = project.map(rotom::ProjectContext::db);
+    let mut file_constants = None;
+    if let (Some(project), Some(ast), Some(script_dir)) =
+        (project, ast.as_ref(), source_path.and_then(Path::parent))
+        && (source.contains("#include") || source.contains("#define"))
+    {
+        let mut constants = project.project_constants().clone();
+        let _ = constants.apply_directives(script_dir, source, &ast.items);
+        file_constants = Some(constants);
+    }
+    let constants = file_constants
+        .as_ref()
+        .or_else(|| project.map(rotom::ProjectContext::project_constants));
+    let script_file_name = source_path
+        .and_then(Path::file_stem)
+        .and_then(|stem| stem.to_str());
 
     // `Menu` is also a legacy database command name. Call-style `Menu(...)`
     // is always the builder syntax and must win that name collision.
@@ -106,9 +144,10 @@ pub fn compute_hover(
     }
 
     // Try constants (may be augmented with message text below).
-    let constant_value = constants.as_ref().and_then(|c| c.get(&word));
+    let constant_value = constants.and_then(|constants| constants.get(&word));
     if let Some(value) = constant_value {
         let mut content = format!("**{word}**\n\nConstant value: `{value}` hex: `0x{value:x}`");
+        append_global_script_info(&mut content, byte_offset, value, ast.as_ref(), project);
         append_message_text(
             &mut content,
             byte_offset,
@@ -141,6 +180,7 @@ pub fn compute_hover(
                 .collect::<Vec<_>>()
                 .join(" "),
             ExpressionKind::Label(l) => format!(".{l}"),
+            ExpressionKind::ModuleRef { module, label } => format!("{module}::{label}"),
             ExpressionKind::Prefix { operator, id } => {
                 format!("{operator:?} {}", format_expr(id))
             }
@@ -191,6 +231,7 @@ pub fn compute_hover(
         } else {
             format!("**{word}**\n\nHex: `0x{num:x}`")
         };
+        append_global_script_info(&mut content, byte_offset, num, ast.as_ref(), project);
         append_message_text(
             &mut content,
             byte_offset,
@@ -211,6 +252,42 @@ pub fn compute_hover(
     }
 
     None
+}
+
+/// If the cursor is on a global-script-call argument (`CallCommonScript` et
+/// al.), append the resolved range/file/script-number from the workspace's
+/// global script table.
+fn append_global_script_info(
+    content: &mut String,
+    byte_offset: usize,
+    script_id: i32,
+    ast: Option<&ScriptFile>,
+    project: Option<&rotom::ProjectContext>,
+) {
+    let Some(ast) = ast else { return };
+    let Some(project) = project else { return };
+    let Some(workspace) = project.workspace() else {
+        return;
+    };
+    let Some((command, _args, _arg_index)) = find_command_at_offset(&ast.items, byte_offset) else {
+        return;
+    };
+    if !project.db().is_global_script_call(command) {
+        return;
+    }
+    let Some(id_u16) = u16::try_from(script_id).ok() else {
+        return;
+    };
+    let Some(entry) = workspace.global_script_table.lookup(id_u16) else {
+        return;
+    };
+    let script_number = id_u16 - entry.min_script_id + 1;
+    let _ = write!(
+        content,
+        "\n\nGlobal script: **{}** → file `{}`, script `#{script_number}`",
+        entry.range.display_name(),
+        entry.script_file_id,
+    );
 }
 
 /// If the cursor is inside a command with a `text_slot` parameter, append
@@ -290,6 +367,7 @@ fn format_expr(expr: &rotom::compiler::ast::Expression) -> String {
             .collect::<Vec<_>>()
             .join(" "),
         ExpressionKind::Label(l) => format!(".{l}"),
+        ExpressionKind::ModuleRef { module, label } => format!("{module}::{label}"),
         ExpressionKind::Prefix { operator, id } => format!("{operator:?} {}", format_expr(id)),
         ExpressionKind::Infix {
             left,
@@ -502,10 +580,23 @@ pub fn extract_word(source: &str, byte_offset: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::test_project_context;
     use rotom::database::ConstantDb;
 
-    fn test_db() -> &'static DatabaseV2 {
-        DatabaseV2::test_platinum()
+    fn test_project(workspace: uxie::Workspace, constants: ConstantDb) -> rotom::ProjectContext {
+        test_project_context(
+            workspace,
+            &DatabaseV2::test_platinum_path(),
+            rotom::GameFamily::Platinum,
+            constants,
+        )
+    }
+
+    fn empty_test_project() -> rotom::ProjectContext {
+        test_project(
+            uxie::Workspace::new(std::path::PathBuf::new(), uxie::game::Game::Platinum),
+            ConstantDb::new(),
+        )
     }
 
     fn position_at(source: &str, needle: &str) -> LspPosition {
@@ -626,16 +717,10 @@ mod tests {
     #[test]
     fn compute_hover_shows_command_docs() {
         let source = "script Test #1:\n    Message 0\n";
+        let project = empty_test_project();
 
-        let hover = compute_hover(
-            source,
-            position_at(source, "Message"),
-            Some(test_db()),
-            None,
-            None,
-            None,
-        )
-        .expect("expected hover");
+        let hover = compute_hover(source, position_at(source, "Message"), Some(&project), None)
+            .expect("expected hover");
 
         let markdown = hover_markdown(hover);
         assert!(markdown.starts_with("# Message"));
@@ -646,15 +731,8 @@ mod tests {
     fn compute_hover_shows_builtin_format_docs() {
         let source = "script Test #1:\n    Message format(\"hello\")\n";
 
-        let hover = compute_hover(
-            source,
-            position_at(source, "format"),
-            Some(test_db()),
-            None,
-            None,
-            None,
-        )
-        .expect("expected hover");
+        let hover = compute_hover(source, position_at(source, "format"), None, None)
+            .expect("expected hover");
 
         assert!(hover_markdown(hover).contains("Word-wraps a message string"));
     }
@@ -662,15 +740,8 @@ mod tests {
     #[test]
     fn compute_hover_shows_menu_builder_docs() {
         let source = "script Test #1:\n    Menu(10 -> Target)\n";
-        let hover = compute_hover(
-            source,
-            position_at(source, "Menu"),
-            Some(test_db()),
-            None,
-            None,
-            None,
-        )
-        .expect("expected menu builder hover");
+        let hover = compute_hover(source, position_at(source, "Menu"), None, None)
+            .expect("expected menu builder hover");
 
         assert!(hover_markdown(hover).contains("Builds a menu"));
     }
@@ -682,13 +753,15 @@ mod tests {
         symbols.insert_define("MSG_TEST".to_string(), 42);
         let mut constants = ConstantDb::new();
         constants.load_decomp_symbols(".", symbols);
+        let project = test_project(
+            uxie::Workspace::new(std::path::PathBuf::new(), uxie::game::Game::Platinum),
+            constants,
+        );
 
         let hover = compute_hover(
             source,
             position_at(source, "MSG_TEST"),
-            Some(test_db()),
-            Some(&constants),
-            None,
+            Some(&project),
             None,
         )
         .expect("expected hover");
@@ -699,30 +772,123 @@ mod tests {
     }
 
     #[test]
+    fn compute_hover_applies_file_directives_from_project_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("test.rotom");
+        let source = "#define MSG_TEST 42\nscript Test #1:\n    Message MSG_TEST\n    End\n";
+        let offset = source.rfind("MSG_TEST").unwrap();
+        let position = SourceMap::new(source).byte_to_position(offset);
+        let mut constants = ConstantDb::new();
+        constants.load_decomp_symbols(temp.path(), uxie::SymbolTable::new());
+        let project = test_project(
+            uxie::Workspace::new(temp.path().to_path_buf(), uxie::game::Game::Platinum),
+            constants,
+        );
+
+        let hover = compute_hover(
+            source,
+            LspPosition {
+                line: position.line,
+                character: position.character,
+            },
+            Some(&project),
+            Some(&source_path),
+        )
+        .expect("expected hover");
+
+        assert!(hover_markdown(hover).contains("Constant value: `42`"));
+    }
+
+    #[test]
     fn compute_hover_shows_alias_and_numeric_values() {
         let source =
             "alias 0x2A as MSG_ALIAS\nscript Test #1:\n    Message MSG_ALIAS\n    Message 43\n";
 
-        let alias_hover = compute_hover(
-            source,
-            position_at(source, "MSG_ALIAS"),
-            Some(test_db()),
-            None,
-            None,
-            None,
-        )
-        .expect("expected alias hover");
+        let alias_hover = compute_hover(source, position_at(source, "MSG_ALIAS"), None, None)
+            .expect("expected alias hover");
         assert!(hover_markdown(alias_hover).contains("Alias value: `42`"));
 
-        let number_hover = compute_hover(
-            source,
-            position_at(source, "43"),
-            Some(test_db()),
-            None,
-            None,
-            None,
-        )
-        .expect("expected number hover");
+        let number_hover = compute_hover(source, position_at(source, "43"), None, None)
+            .expect("expected number hover");
         assert!(hover_markdown(number_hover).contains("Hex: `0x2b`"));
+    }
+
+    fn ws_with_platinum_global_table() -> uxie::Workspace {
+        let mut ws = uxie::Workspace::new(std::path::PathBuf::new(), uxie::game::Game::Platinum);
+        ws.global_script_table = uxie::script_file::GlobalScriptTable::platinum_western_hardcoded();
+        ws
+    }
+
+    #[test]
+    fn compute_hover_shows_global_script_resolution() {
+        // CallCommonScript 2050 -> Common Scripts range (min 2000, file 211),
+        // i.e. the 51st script in file 211.
+        let source = "script Test #1:\n    CallCommonScript 2050\n";
+        let project = test_project(ws_with_platinum_global_table(), ConstantDb::new());
+
+        let hover = compute_hover(source, position_at(source, "2050"), Some(&project), None)
+            .expect("expected hover");
+
+        let markdown = hover_markdown(hover);
+        assert!(markdown.contains("Global script:"), "{markdown}");
+        assert!(markdown.contains("**Common Scripts**"), "{markdown}");
+        assert!(markdown.contains("file `211`"), "{markdown}");
+        assert!(markdown.contains("script `#51`"), "{markdown}");
+    }
+
+    #[test]
+    fn compute_hover_resolves_global_module_ref() {
+        let temp = tempfile::tempdir().unwrap();
+        let scripts = temp.path().join("scripts");
+        std::fs::create_dir(&scripts).unwrap();
+        std::fs::write(scripts.join("0211.rotom"), "script NewGame #2:\n    End\n").unwrap();
+        let mut workspace =
+            uxie::Workspace::new(temp.path().to_path_buf(), uxie::game::Game::Platinum);
+        workspace.scripts.load_dspre_script_dir(&scripts).unwrap();
+        workspace.global_script_table = uxie::script_file::GlobalScriptTable::from_entries(vec![
+            uxie::script_file::GlobalScriptEntry::new(2000, 211, 213, "Common Scripts"),
+        ]);
+        let project = test_project(workspace, ConstantDb::new());
+        let source = "script Test #1:\n    CallCommonScript CommonScripts::NewGame\n    End\n";
+
+        let hover = compute_hover(source, position_at(source, "NewGame"), Some(&project), None)
+            .expect("expected module hover");
+
+        let markdown = hover_markdown(hover);
+        assert!(markdown.contains("Global script ID: `2001`"), "{markdown}");
+        assert!(
+            markdown.contains("Canonical module: `CommonScripts`"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn compute_hover_no_global_script_info_without_workspace() {
+        // Without a workspace, the numeric hover must not gain a global-script
+        // annotation (the table is unavailable).
+        let source = "script Test #1:\n    CallCommonScript 2050\n";
+
+        let hover =
+            compute_hover(source, position_at(source, "2050"), None, None).expect("expected hover");
+
+        assert!(
+            !hover_markdown(hover).contains("Global script:"),
+            "no global-script info without workspace"
+        );
+    }
+
+    #[test]
+    fn compute_hover_no_global_script_info_for_local_script_id() {
+        // Local script IDs (< 2000) do not resolve in the global table.
+        let source = "script Test #1:\n    CallCommonScript 5\n";
+        let project = test_project(ws_with_platinum_global_table(), ConstantDb::new());
+
+        let hover = compute_hover(source, position_at(source, "5"), Some(&project), None)
+            .expect("expected hover");
+
+        assert!(
+            !hover_markdown(hover).contains("Global script:"),
+            "local script ID must not be annotated"
+        );
     }
 }

@@ -1,18 +1,19 @@
 use std::fmt::Write;
 
 use crate::compiler::ir::{Arg, IrOpcode, TopLevelItem};
-use crate::database::{ComparisonOperator, ConstantDb, DatabaseV2};
+use crate::database::{ComparisonOperator, ConstantDb};
 
+use super::DecompileContext;
 use super::disassembler::ScriptOutput;
 use super::levelscript::LevelScript;
 
-pub fn ir_to_source(
-    output: &ScriptOutput,
-    db: &DatabaseV2,
-    constants: Option<&ConstantDb>,
-) -> String {
+/// Render disassembled script IR as Rotoscript source.
+///
+/// When the context includes a project, global script IDs are emitted as
+/// canonical `module::label` references. Otherwise they remain numeric.
+pub fn ir_to_source(output: &ScriptOutput, context: DecompileContext<'_>) -> String {
     match output {
-        ScriptOutput::Normal { items, .. } => normal_script_to_source(items, db, constants),
+        ScriptOutput::Normal { items, .. } => normal_script_to_source(items, context),
         ScriptOutput::Levelscript(ls) => levelscript_to_source(ls),
     }
 }
@@ -20,7 +21,10 @@ pub fn ir_to_source(
 /// Map a parameter name from the command database to a Uxie constant family.
 /// Not perfect given how variable the naming used by the decomps is.
 /// Map a command parameter name to the constant family used for reverse lookup.
-fn param_semantic_family(param_name: &str) -> Option<uxie::ConstantFamily> {
+fn param_semantic_family(
+    param_name: &str,
+    game_family: Option<crate::database::GameFamily>,
+) -> Option<uxie::ConstantFamily> {
     match param_name.to_ascii_lowercase().as_str() {
         "item" | "itemid" | "item_id" => Some(uxie::ConstantFamily::Item),
         "species" | "pokemon" | "pokémon" | "pokémon_id" => Some(uxie::ConstantFamily::Species),
@@ -30,7 +34,11 @@ fn param_semantic_family(param_name: &str) -> Option<uxie::ConstantFamily> {
         "trainerclass" | "trainer_class" => Some(uxie::ConstantFamily::TrainerClass),
         "location" | "mapsec" => Some(uxie::ConstantFamily::Location),
         "event_id" | "eventid" | "localid" | "local_id" | "object_id" | "objectid" => {
-            Some(uxie::ConstantFamily::EventId)
+            Some(if game_family == Some(crate::database::GameFamily::HGSS) {
+                uxie::ConstantFamily::LocalObject
+            } else {
+                uxie::ConstantFamily::EventId
+            })
         }
         "flag" | "flagid" | "flag_id" | "shiny_flag" => Some(uxie::ConstantFamily::Flag),
         "var" | "variable" | "var_0" | "var_1" | "var_2" | "var_3" | "var_4" | "var_5"
@@ -43,7 +51,12 @@ fn param_semantic_family(param_name: &str) -> Option<uxie::ConstantFamily> {
     }
 }
 
-fn format_arg(arg: &Arg, param_name: Option<&str>, constants: Option<&ConstantDb>) -> String {
+fn format_arg(
+    arg: &Arg,
+    param_name: Option<&str>,
+    constants: Option<&ConstantDb>,
+    game_family: Option<crate::database::GameFamily>,
+) -> String {
     match arg {
         Arg::Value(v) => {
             if param_name == Some("condition")
@@ -52,7 +65,7 @@ fn format_arg(arg: &Arg, param_name: Option<&str>, constants: Option<&ConstantDb
                 return cond.as_str().to_string();
             }
             if let Some(name) = param_name
-                && let Some(family) = param_semantic_family(name)
+                && let Some(family) = param_semantic_family(name, game_family)
                 && let Some(constants) = constants
                 && let Some(resolved) = constants.resolve_value_to_name(i64::from(*v), family)
             {
@@ -74,18 +87,68 @@ fn format_arg(arg: &Arg, param_name: Option<&str>, constants: Option<&ConstantDb
 fn format_command_args(
     name: &str,
     args: &[Arg],
-    db: &DatabaseV2,
-    constants: Option<&ConstantDb>,
-) -> Vec<String> {
+    context: DecompileContext<'_>,
+) -> (Vec<String>, Option<String>) {
+    let db = context.db();
+    let constants = context.constants();
+    let project = context.project();
+    let workspace = project.and_then(|project| project.workspace());
     let params = db.get_command(name).ok().map(|cmd| &cmd.params);
+    let annotate_script_ids = db.is_global_script_call(name);
+    let mut formatted = Vec::with_capacity(args.len());
+    let mut annotations = Vec::new();
 
-    args.iter()
-        .enumerate()
-        .map(|(i, arg)| {
-            let param_name = params.and_then(|p| p.get(i)).map(|p| p.name.as_str());
-            format_arg(arg, param_name, constants)
-        })
-        .collect()
+    for (i, arg) in args.iter().enumerate() {
+        let param = params.and_then(|p| p.get(i));
+        let param_name = param.map(|p| p.name.as_str());
+        if annotate_script_ids
+            && i == 0
+            && let (Some(project), Arg::Value(value)) = (project, arg)
+            && let Ok(script_id) = u16::try_from(*value)
+            && let Some(resolved) = project.resolve_global_script_id(script_id)
+        {
+            formatted.push(format!("{}::{}", resolved.module, resolved.symbol.name));
+            continue;
+        }
+        formatted.push(format_arg(arg, param_name, constants, db.game_family()));
+
+        if annotate_script_ids
+            && let Some(ws) = workspace
+            && let Arg::Value(v) = arg
+            && let Some(note) = annotate_global_script_id(param_name, *v, ws)
+        {
+            annotations.push(note);
+        }
+    }
+
+    let comment = (!annotations.is_empty()).then(|| annotations.join("; "));
+    (formatted, comment)
+}
+
+/// Build a human-readable annotation for a global script ID.
+///
+/// Returns `None` when `id` is not a global script in the workspace's
+/// [`GlobalScriptTable`] (i.e. it is a local/map script ID, or the table is
+/// empty). Resolution mirrors the engine's `ScriptContext_LoadAndOffsetID`:
+/// the ID falls into the first range whose minimum it meets, giving a
+/// zero-based offset `id - range.min_script_id`. Script files number their
+/// entries 1-based, so the displayed script number is `offset + 1` (e.g.
+/// scriptID 2000 -> file 211, script #1).
+fn annotate_global_script_id(
+    param_name: Option<&str>,
+    id: i32,
+    workspace: &uxie::Workspace,
+) -> Option<String> {
+    let id_u16 = u16::try_from(id).ok()?;
+    let entry = workspace.global_script_table.lookup(id_u16)?;
+    let script_number = id_u16 - entry.min_script_id + 1;
+    let label = param_name.unwrap_or("script_id");
+    Some(format!(
+        "{}: {} -> file {} (script #{script_number})",
+        label,
+        entry.range.display_name(),
+        entry.script_file_id,
+    ))
 }
 
 /// Format a sorted list of 1-based slot IDs as a compact header specifier.
@@ -115,11 +178,7 @@ fn format_slot_list(ids: &[u32]) -> String {
     format!("#[{}]", parts.join(", "))
 }
 
-fn normal_script_to_source(
-    items: &[TopLevelItem],
-    db: &DatabaseV2,
-    constants: Option<&ConstantDb>,
-) -> String {
+fn normal_script_to_source(items: &[TopLevelItem], context: DecompileContext<'_>) -> String {
     let mut output = String::new();
 
     for (i, item) in items.iter().enumerate() {
@@ -159,8 +218,11 @@ fn normal_script_to_source(
                             let _ = write!(output, "    {}", name);
                             if !args.is_empty() {
                                 output.push(' ');
-                                let args_str = format_command_args(name, args, db, constants);
-                                output.push_str(&args_str.join(", "));
+                                let (args_vec, comment) = format_command_args(name, args, context);
+                                output.push_str(&args_vec.join(", "));
+                                if let Some(note) = comment {
+                                    let _ = write!(output, "  // {note}");
+                                }
                             }
                             output.push('\n');
                         }
@@ -206,13 +268,187 @@ fn levelscript_to_source(ls: &LevelScript) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProjectContext;
     use crate::compiler::ast::FunctionHeader;
     use crate::compiler::ir::IrFunction;
-    use crate::database::ConstantDb;
+    use crate::database::{ConstantDb, DatabaseV2};
     use crate::decompiler::LevelScriptHeaderEntry;
+    use crate::project::config::{
+        DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
+        WorkspaceConfig,
+    };
+    use std::sync::Arc;
 
     fn create_test_db() -> &'static DatabaseV2 {
         DatabaseV2::test_platinum()
+    }
+
+    fn ws_with_platinum_global_table() -> uxie::Workspace {
+        let mut ws = uxie::Workspace::new(std::path::PathBuf::new(), uxie::game::Game::Platinum);
+        ws.global_script_table = uxie::script_file::GlobalScriptTable::platinum_western_hardcoded();
+        ws
+    }
+
+    fn project_for_workspace(workspace: uxie::Workspace) -> ProjectContext {
+        let config = RotomConfig {
+            format_version: 1,
+            project: ProjectMetadata {
+                name: "test".to_string(),
+            },
+            workspace: WorkspaceConfig {
+                project_type: ProjectTypeConfig::Dspre,
+                game_family: Some(uxie::GameFamily::Platinum),
+            },
+            paths: PathsConfig {
+                database_dir: ".rotom/command_database".to_string(),
+                cache_dir: ".rotom/cache".to_string(),
+                status_dir: ".rotom/status".to_string(),
+                source_roots: Vec::new(),
+                include_roots: Vec::new(),
+                binary_roots: Vec::new(),
+            },
+            database: Some(DatabaseConfig {
+                default_file: DatabaseV2::test_platinum_path().display().to_string(),
+            }),
+        };
+        ProjectContext::from_parts(
+            workspace.project_path.clone(),
+            config,
+            Arc::new(
+                DatabaseV2::load(DatabaseV2::test_platinum_path())
+                    .expect("failed to load test database"),
+            ),
+            ConstantDb::new(),
+            Some(Arc::new(workspace)),
+        )
+    }
+
+    #[test]
+    fn test_global_script_id_annotated_in_decompiled_output() {
+        // Platinum western table: range 2000 = Common Scripts -> file 211.
+        // scriptID 2050 = offset 50, i.e. the 51st script in file 211.
+        let project = project_for_workspace(ws_with_platinum_global_table());
+
+        let func = IrFunction {
+            headers: vec![FunctionHeader {
+                name: "TestFunc".to_string(),
+                id: Some(1),
+                is_public: true,
+            }],
+            instructions: vec![IrOpcode::Command {
+                name: "CallCommonScript".to_string(),
+                args: vec![Arg::Value(2050)],
+            }],
+        };
+
+        let items = vec![TopLevelItem::Function(func)];
+        let output = ScriptOutput::Normal {
+            items,
+            jump_table_end_marker_count: 1,
+        };
+        let source = ir_to_source(&output, DecompileContext::for_project(&project));
+
+        assert!(
+            source.contains("// scriptID: Common Scripts -> file 211 (script #51)"),
+            "expected global-script annotation, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_global_script_id_emits_canonical_module_ref_when_source_is_indexed() {
+        let temp = tempfile::tempdir().unwrap();
+        let scripts = temp.path().join("scripts");
+        std::fs::create_dir(&scripts).unwrap();
+        std::fs::write(scripts.join("0211.rotom"), "script NewGame #51:\n    End\n").unwrap();
+        let mut workspace =
+            uxie::Workspace::new(temp.path().to_path_buf(), uxie::game::Game::Platinum);
+        workspace.scripts.load_dspre_script_dir(&scripts).unwrap();
+        workspace.global_script_table =
+            uxie::script_file::GlobalScriptTable::platinum_western_hardcoded();
+        let project = project_for_workspace(workspace);
+        let output = ScriptOutput::Normal {
+            items: vec![TopLevelItem::Function(IrFunction {
+                headers: vec![FunctionHeader {
+                    name: "TestFunc".to_string(),
+                    id: Some(1),
+                    is_public: true,
+                }],
+                instructions: vec![IrOpcode::Command {
+                    name: "CallCommonScript".to_string(),
+                    args: vec![Arg::Value(2050)],
+                }],
+            })],
+            jump_table_end_marker_count: 1,
+        };
+
+        let source = ir_to_source(&output, DecompileContext::for_project(&project));
+
+        assert!(
+            source.contains("CallCommonScript CommonScripts::NewGame"),
+            "{source}"
+        );
+        assert!(!source.contains("scriptID:"), "{source}");
+    }
+
+    #[test]
+    fn test_local_script_id_not_annotated() {
+        // Local script IDs (< 2000) do not resolve in the global table and must
+        // not receive an annotation.
+        let project = project_for_workspace(ws_with_platinum_global_table());
+
+        let func = IrFunction {
+            headers: vec![FunctionHeader {
+                name: "TestFunc".to_string(),
+                id: Some(1),
+                is_public: true,
+            }],
+            instructions: vec![IrOpcode::Command {
+                name: "CallCommonScript".to_string(),
+                args: vec![Arg::Value(5)],
+            }],
+        };
+
+        let items = vec![TopLevelItem::Function(func)];
+        let output = ScriptOutput::Normal {
+            items,
+            jump_table_end_marker_count: 1,
+        };
+        let source = ir_to_source(&output, DecompileContext::for_project(&project));
+
+        assert!(
+            !source.contains("//"),
+            "local script ID should not be annotated, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_no_annotation_without_workspace() {
+        // Without a workspace (standalone decompile), output is unchanged.
+        let db = create_test_db();
+
+        let func = IrFunction {
+            headers: vec![FunctionHeader {
+                name: "TestFunc".to_string(),
+                id: Some(1),
+                is_public: true,
+            }],
+            instructions: vec![IrOpcode::Command {
+                name: "CallCommonScript".to_string(),
+                args: vec![Arg::Value(2050)],
+            }],
+        };
+
+        let items = vec![TopLevelItem::Function(func)];
+        let output = ScriptOutput::Normal {
+            items,
+            jump_table_end_marker_count: 1,
+        };
+        let source = ir_to_source(&output, DecompileContext::standalone(db, None));
+
+        assert!(
+            !source.contains("//"),
+            "no annotation expected without workspace, got:\n{source}"
+        );
     }
 
     #[test]
@@ -242,7 +478,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, db, None);
+        let source = ir_to_source(&output, DecompileContext::standalone(db, None));
 
         assert!(
             source.contains("GoToIf EQUAL, some_label"),
@@ -294,7 +530,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, db, None);
+        let source = ir_to_source(&output, DecompileContext::standalone(db, None));
 
         assert!(source.contains("GoToIf LESS, label0"), "Missing LESS");
         assert!(source.contains("GoToIf EQUAL, label1"), "Missing EQUAL");
@@ -334,7 +570,7 @@ mod tests {
             items,
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, db, None);
+        let source = ir_to_source(&output, DecompileContext::standalone(db, None));
 
         assert!(
             source.contains("CallIf EQUAL, some_func"),
@@ -375,7 +611,7 @@ mod tests {
             items: vec![TopLevelItem::Function(func)],
             jump_table_end_marker_count: 1,
         };
-        let source = ir_to_source(&output, db, Some(&constants));
+        let source = ir_to_source(&output, DecompileContext::standalone(db, Some(&constants)));
 
         assert!(
             source.contains("SetVarFromValue VAR_TEMP_x4000, 1"),
@@ -393,8 +629,22 @@ mod tests {
         constants.load_decomp_symbols(".", uxie::SymbolTable::new());
 
         assert_eq!(
-            format_arg(&Arg::Value(0xFF), Some("event_id"), Some(&constants)),
+            format_arg(
+                &Arg::Value(0xFF),
+                Some("event_id"),
+                Some(&constants),
+                Some(crate::database::GameFamily::Platinum),
+            ),
             "LOCALID_PLAYER"
+        );
+        assert_eq!(
+            format_arg(
+                &Arg::Value(0xFF),
+                Some("object_id"),
+                Some(&constants),
+                Some(crate::database::GameFamily::HGSS),
+            ),
+            "obj_player"
         );
     }
 
@@ -444,7 +694,7 @@ mod tests {
             jump_table_end_marker_count: 1,
         };
 
-        let source = ir_to_source(&output, db, None);
+        let source = ir_to_source(&output, DecompileContext::standalone(db, None));
 
         assert!(source.contains("script script_1 #[1-2, 4]:"));
         assert!(source.contains("local_entry:"));
@@ -462,7 +712,10 @@ mod tests {
             .push(LevelScriptHeaderEntry::OnResume { script_id: 42 });
         let output = ScriptOutput::Levelscript(levelscript);
 
-        let source = ir_to_source(&output, create_test_db(), None);
+        let source = ir_to_source(
+            &output,
+            DecompileContext::standalone(create_test_db(), None),
+        );
 
         assert!(source.contains(r#""type": "on_resume""#));
         assert!(source.contains(r#""script_id": 42"#));

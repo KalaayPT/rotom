@@ -1,13 +1,12 @@
 use crate::{
     BatchCompileResult, BatchDecompileResult, CompileError, CompileFailure, CompiledFile,
-    ConstantDb, DatabaseV2, DecompileFailure, GameFamily, decompile_file_internal,
+    ConstantDb, DecompileFailure, GameFamily, decompile_file_internal,
 };
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use snafu::ResultExt;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use uxie::Workspace;
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::config::{ProjectTypeConfig, RotomConfig};
@@ -33,9 +32,7 @@ enum WorkerResult {
 }
 
 struct CompileSession {
-    db: DatabaseV2,
-    constants: ConstantDb,
-    db_hash: u64,
+    project: std::sync::Arc<crate::ProjectContext>,
     force_compile: bool,
     state: CompileState,
     status_path: PathBuf,
@@ -89,50 +86,30 @@ pub fn project_output_path(
     }
 }
 
+/// Compile all configured project sources and update incremental compile state.
+///
+/// # Errors
+/// Returns an error when project resources, source dependencies, output files,
+/// or compile-state data cannot be loaded or written.
 #[allow(clippy::too_many_lines)]
 pub fn compile_project(
     root: &Path,
     config: &RotomConfig,
     force: bool,
 ) -> Result<BatchCompileResult> {
-    let work = collect_project_compile_work(root, config)?;
     let mut session = load_compile_session(root, config, force)?;
 
-    // Workspace must be created before the immutable borrow so we can wire the
-    // shared message_ids Arc into constants before any per-file clone_for_script.
-    // NotFound is expected for new projects that haven't run `rotom init` yet.
-    // IsADirectory occurs when the project root exists but has no recognised
-    // DSPRE/decomp markers (e.g. a plain script directory); treat it the same way.
-    let workspace = std::sync::Arc::new(match Workspace::open(root) {
-        Ok(ws) => ws,
-        Err(e)
-            if e.kind() == std::io::ErrorKind::NotFound
-                || e.kind() == std::io::ErrorKind::IsADirectory =>
-        {
-            let game = config
-                .game_family()
-                .unwrap_or(GameFamily::Platinum)
-                .default_game();
-            Workspace::new(root.to_path_buf(), game)
-        }
-        Err(source) => {
-            return Err(ProjectError::Io {
-                action: "Failed to open workspace",
-                path: root.to_path_buf(),
-                source,
-            });
-        }
-    });
-    session
-        .constants
-        .set_message_ids(workspace.shared_message_ids());
-
+    let project = std::sync::Arc::clone(&session.project);
+    let root = project.root();
+    let config = project.config();
+    let work = collect_project_compile_work(root, config)?;
+    let workspace = project
+        .workspace()
+        .expect("strict project loading provides a workspace");
     // Borrow fields immutably so the parallel closure can use them.
-    let constants = &session.constants;
+    let constants = project.project_constants();
     let state = &session.state;
     let force_compile = session.force_compile;
-    let db = &session.db;
-
     let total_files = work.len();
     let progress = indicatif::ProgressBar::new(total_files as u64);
     progress.set_style(
@@ -199,8 +176,7 @@ pub fn compile_project(
                     .dependency_hashes
                     .iter()
                     .all(|(dep_path, &stored_hash)| {
-                        fs::read(root.join(dep_path))
-                            .is_ok_and(|bytes| xxh3_64(&bytes) == stored_hash)
+                        crate::project_dependency_hash(&root.join(dep_path)) == Some(stored_hash)
                     })
             {
                 progress.inc(1);
@@ -217,7 +193,7 @@ pub fn compile_project(
                 .to_string_lossy()
                 .to_string();
             progress.set_message(format!("Resolving {file_name}"));
-            let (dependency_hashes, loaded_constants) =
+            let (mut dependency_hashes, loaded_constants) =
                 match dependency_hashes_for_script(root, input, constants) {
                     Ok(result) => result,
                     Err(failure) => {
@@ -228,23 +204,6 @@ pub fn compile_project(
                         });
                     }
                 };
-
-            if !force_compile
-                && !state.file_is_stale(
-                    &relative_path,
-                    source_hash,
-                    output_hash,
-                    &dependency_hashes,
-                )
-            {
-                progress.inc(1);
-                return Ok(WorkerResult::Skip {
-                    relative_path,
-                    source_hash,
-                    dependency_hashes,
-                });
-            }
-
             progress.set_message(format!("Compiling {file_name}"));
             // Use the already-loaded per-file constants to avoid a second clone_for_script.
             let constants_for_compile = loaded_constants.as_ref().unwrap_or(constants);
@@ -256,21 +215,27 @@ pub fn compile_project(
             let compile_result = crate::compile_file_internal(
                 input,
                 output,
-                db,
-                constants_for_compile,
-                false,
+                crate::CompileContext::Project(&project),
+                Some(constants_for_compile),
                 binary_quirks,
-                &workspace,
             );
             progress.inc(1);
 
             match compile_result {
-                Ok(result) => Ok(WorkerResult::Success {
-                    relative_path,
-                    source_hash,
-                    dependency_hashes,
-                    result,
-                }),
+                Ok((result, global_script_dependencies, compiled_source_hash)) => {
+                    dependency_hashes.extend(global_script_dependencies.into_iter().filter_map(
+                        |(path, hash)| {
+                            let relative = relative_project_path(root, &path).ok()?;
+                            (relative != relative_path).then_some((relative, hash))
+                        },
+                    ));
+                    Ok(WorkerResult::Success {
+                        relative_path,
+                        source_hash: compiled_source_hash,
+                        dependency_hashes,
+                        result,
+                    })
+                }
                 Err(e) => Ok(WorkerResult::Failure {
                     relative_path,
                     failure: e,
@@ -427,7 +392,10 @@ fn dependency_hashes_for_script(
 /// generated sources in compile state so a follow-up project compile can skip
 /// unchanged outputs.
 pub fn decompile_project(root: &Path, config: &RotomConfig) -> Result<BatchDecompileResult> {
-    let (db, constants, db_hash, _) = load_project_database_and_constants(root, config)?;
+    let project = std::sync::Arc::new(crate::ProjectContext::load_for_decompile(root, config)?);
+    let db_hash = project.database_hash();
+    let root = project.root();
+    let config = project.config();
 
     let work = collect_project_decompile_work(root, config)?;
 
@@ -444,8 +412,12 @@ pub fn decompile_project(root: &Path, config: &RotomConfig) -> Result<BatchDecom
     let results: Vec<std::result::Result<crate::DecompileFileResult, DecompileFailure>> = work
         .par_iter()
         .map(|(input, output_dir)| {
-            let result =
-                decompile_file_internal(input, None, Some(output_dir), &db, Some(&constants));
+            let result = decompile_file_internal(
+                input,
+                None,
+                Some(output_dir),
+                crate::DecompileContext::for_project(&project),
+            );
             progress.inc(1);
             result
         })
@@ -475,8 +447,9 @@ pub fn decompile_project(root: &Path, config: &RotomConfig) -> Result<BatchDecom
 /// also decides whether the run must rebuild from scratch.
 fn load_compile_session(root: &Path, config: &RotomConfig, force: bool) -> Result<CompileSession> {
     let status_path = config.status_dir(root).join("compile-state.json");
-    let (db, constants, db_hash, constant_cache_rebuilt) =
-        load_project_database_and_constants(root, config)?;
+    let project = std::sync::Arc::new(crate::ProjectContext::load(root, config)?);
+    let db_hash = project.database_hash();
+    let constant_cache_rebuilt = project.constant_cache_rebuilt();
     let mut state = CompileState::load_or_default(&status_path).context(IoSnafu {
         action: "Failed to read compile state",
         path: status_path.clone(),
@@ -490,9 +463,7 @@ fn load_compile_session(root: &Path, config: &RotomConfig, force: bool) -> Resul
     }
 
     Ok(CompileSession {
-        db,
-        constants,
-        db_hash,
+        project,
         force_compile,
         state,
         status_path,
@@ -506,7 +477,7 @@ fn finish_compile_session(session: &mut CompileSession, current_paths: Vec<PathB
     session.state.retain_only(current_paths);
     session
         .state
-        .mark_metadata(session.db_hash, COMPILER_VERSION);
+        .mark_metadata(session.project.database_hash(), COMPILER_VERSION);
     session.state.save(&session.status_path).context(IoSnafu {
         action: "Failed to write compile state",
         path: session.status_path.clone(),
@@ -590,80 +561,6 @@ pub(crate) fn seed_convert_quirks(
         action: "Failed to write compile state",
         path: status_path,
     })
-}
-
-/// Load the project command database and all shared constants that apply to the
-/// whole run, including local database overrides and the uxie-managed cached
-/// decomp symbol set when the project type needs it.
-fn load_project_database_and_constants(
-    root: &Path,
-    config: &RotomConfig,
-) -> Result<(DatabaseV2, ConstantDb, u64, bool)> {
-    let db_path = config
-        .database_file(root)
-        .ok_or(ProjectError::MissingDefaultDatabase)?;
-    let db_hash = fs::read(&db_path)
-        .map(|bytes| xxh3_64(&bytes))
-        .context(IoSnafu {
-            action: "Failed to hash database file",
-            path: db_path.clone(),
-        })?;
-    let db = DatabaseV2::load(&db_path).map_err(ProjectError::from)?;
-
-    let mut constants = ConstantDb::new();
-    constants.load_from_db(&db);
-    let mut constant_cache_rebuilt = false;
-
-    let database_dir = config.database_dir(root);
-    if database_dir.exists() {
-        constants
-            .load_directory(&database_dir)
-            .map_err(ProjectError::from)?;
-    }
-
-    match config.workspace.project_type {
-        ProjectTypeConfig::Decomp => {
-            let game_family = config
-                .game_family()
-                .ok_or(ProjectError::MissingGameFamily)?;
-            let (symbols, rebuilt) = Workspace::load_cached_symbols(
-                &config.cache_dir(root),
-                root,
-                &config.include_roots(root),
-                game_family,
-            )
-            .context(IoSnafu {
-                action: "Failed to load constant cache",
-                path: config.cache_dir(root),
-            })?;
-            constants.load_decomp_symbols(root, (*symbols).clone());
-            constant_cache_rebuilt = rebuilt;
-        }
-        ProjectTypeConfig::Dspre => {
-            let language = if let Ok(ws) = Workspace::open(root) {
-                let language = ws.language;
-                constants.load_dspre_symbols((*ws.symbols).clone());
-                language
-            } else {
-                uxie::GameLanguage::English
-            };
-            constants.load_dspre_text_archives(root, language).ok();
-        }
-        ProjectTypeConfig::HgEngine => {
-            let mut ws = Workspace::open(root).context(IoSnafu {
-                action: "Failed to open HgEngine workspace",
-                path: root.to_path_buf(),
-            })?;
-            ws.load_hg_engine_constants().context(IoSnafu {
-                action: "Failed to load HgEngine constants",
-                path: root.to_path_buf(),
-            })?;
-            constants.load_decomp_symbols(root, (*ws.symbols).clone());
-        }
-        ProjectTypeConfig::Generic => {}
-    }
-
-    Ok((db, constants, db_hash, constant_cache_rebuilt))
 }
 
 /// Discover every project source file, map it to its target binary path, and
@@ -1296,6 +1193,90 @@ mod tests {
         assert_eq!(second.successes.len(), 0);
         assert_eq!(third.successes.len(), 1);
         assert!(third.failures.is_empty());
+    }
+
+    #[test]
+    fn compile_project_rebuilds_callers_when_global_script_resolution_changes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let global_root = root.join("res/field/scripts");
+        fs::create_dir_all(&global_root).unwrap();
+        fs::create_dir_all(root.join("include/constants")).unwrap();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        let mut order = (0..211)
+            .map(|id| format!("scripts_unk_{id:04}"))
+            .collect::<Vec<_>>();
+        order.push("scripts_common".to_string());
+        order.push("scripts_other".to_string());
+        fs::write(
+            global_root.join("scripts.order"),
+            format!("{}\n", order.join("\n")),
+        )
+        .unwrap();
+        let target = global_root.join("scripts_common.rotom");
+        fs::write(&target, "script NewGame #1:\n    End\n").unwrap();
+        let other = global_root.join("scripts_other.rotom");
+        fs::write(&other, "script NewGame #1:\n    End\n").unwrap();
+        let caller = root.join("scripts/caller.rotom");
+        fs::write(
+            &caller,
+            "script Main #1:\n    CallCommonScript CommonScripts::NewGame\n    End\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("scripts/unrelated.rotom"),
+            "script Main #1:\n    End\n",
+        )
+        .unwrap();
+        let mut config = decomp_project_config();
+        config.workspace.project_type = ProjectTypeConfig::Generic;
+        config.paths.source_roots = vec!["scripts".to_string()];
+        config.paths.binary_roots = vec!["build/scripts".to_string()];
+
+        let first = compile_project(root, &config, false).unwrap();
+        let second = compile_project(root, &config, false).unwrap();
+        let state = CompileState::load(&root.join(".rotom/status/compile-state.json")).unwrap();
+        let caller_dependencies = &state
+            .entries
+            .get(&PathBuf::from("scripts/caller.rotom"))
+            .unwrap()
+            .dependency_hashes;
+        assert!(
+            caller_dependencies.contains_key(Path::new("src/script_manager.c")),
+            "{caller_dependencies:?}"
+        );
+        fs::create_dir_all(root.join("src")).unwrap();
+        let mut ranges = (0..29)
+            .map(|index| format!("Entry({}, 0, 0)", 10_000 - index))
+            .collect::<Vec<_>>();
+        ranges.push("Entry(2000, 212, 213)".to_string());
+        fs::write(
+            root.join("src/script_manager.c"),
+            format!("#define SCRIPT_RANGE_TABLE(Entry) {}\n", ranges.join(" ")),
+        )
+        .unwrap();
+        let third = compile_project(root, &config, false).unwrap();
+        fs::write(&other, "script NewGame #2:\n    End\n").unwrap();
+        let fourth = compile_project(root, &config, false).unwrap();
+        order.swap(211, 212);
+        fs::write(
+            global_root.join("scripts.order"),
+            format!("{}\n", order.join("\n")),
+        )
+        .unwrap();
+        let fifth = compile_project(root, &config, false).unwrap();
+
+        assert_eq!(first.successes.len(), 2);
+        assert_eq!(second.successes.len(), 0);
+        assert!(third.failures.is_empty(), "{:?}", third.failures);
+        assert_eq!(third.successes.len(), 1);
+        assert_eq!(third.successes[0].input, caller);
+        assert_eq!(fourth.successes.len(), 1);
+        assert!(fourth.failures.is_empty());
+        assert_eq!(fourth.successes[0].input, caller);
+        assert_eq!(fifth.successes.len(), 1);
+        assert!(fifth.failures.is_empty());
+        assert_eq!(fifth.successes[0].input, caller);
     }
 
     #[test]

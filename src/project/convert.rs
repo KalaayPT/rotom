@@ -1,10 +1,11 @@
 use crate::compile_state::BinaryQuirk;
 use crate::{
-    ConstantDb, DatabaseV2, DecompileFileResult, ScriptOutput, decompile_to_ir,
+    ConstantDb, DatabaseV2, DecompileFileResult, ProjectContext, ScriptOutput, decompile_to_ir,
     is_levelscript_path, transpiler,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::Utc;
 use serde_json::Value;
@@ -69,8 +70,7 @@ fn convert_one_dspre_script_placeholder(
     script_placeholder: &Path,
     backup: &Path,
     dry_run: bool,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
+    project: &ProjectContext,
 ) -> Result<(ConversionPlan, Option<DecompileFileResult>)> {
     let binary_path = dspre_binary_path_for_script(root, config, script_placeholder)?;
     if !binary_path.exists() {
@@ -127,7 +127,7 @@ fn convert_one_dspre_script_placeholder(
             }),
         ));
     }
-    let script_output = decompile_to_ir(bytes, db).context(DspreDecompileSnafu {
+    let script_output = decompile_to_ir(bytes, project.db()).context(DspreDecompileSnafu {
         script: script_placeholder.to_path_buf(),
         binary: binary_path.clone(),
     })?;
@@ -166,8 +166,7 @@ fn convert_one_dspre_script_placeholder(
         &script_output,
         None,
         Some(&out_dir),
-        db,
-        Some(constants),
+        crate::DecompileContext::for_project(project),
     )
     .map_err(|failure| ProjectError::DspreDecompile {
         script: script_placeholder.to_path_buf(),
@@ -373,13 +372,13 @@ pub fn convert_project(
                 path: path.clone(),
             })?;
         let loaded_db = DatabaseV2::load(&path).map_err(ProjectError::from)?;
-        (Some(loaded_db), Some(db_hash))
+        (Some(Arc::new(loaded_db)), Some(db_hash))
     } else {
         let loaded = db_path_opt
             .map(|path| DatabaseV2::load(&path))
             .transpose()
             .map_err(ProjectError::from)?;
-        (loaded, None)
+        (loaded.map(Arc::new), None)
     };
 
     let mut constants = ConstantDb::new();
@@ -392,6 +391,7 @@ pub fn convert_project(
             .load_directory(&database_dir)
             .map_err(ProjectError::from)?;
     }
+    let mut dspre_workspace = None;
     match config.workspace.project_type {
         ProjectTypeConfig::Decomp => {
             if let Some(game_family) = config.game_family() {
@@ -407,12 +407,14 @@ pub fn convert_project(
             }
         }
         ProjectTypeConfig::Dspre => {
-            let language = if let Ok(ws) = Workspace::open(root) {
-                let language = ws.language;
-                let _ = constants.load_dspre_symbols((*ws.symbols).clone());
-                language
-            } else {
-                uxie::GameLanguage::English
+            let language = match Workspace::open(root) {
+                Ok(workspace) => {
+                    let language = workspace.language;
+                    let _ = constants.load_dspre_symbols((*workspace.symbols).clone());
+                    dspre_workspace = Some(Arc::new(workspace));
+                    language
+                }
+                Err(_) => uxie::GameLanguage::English,
             };
             let _ = constants
                 .load_dspre_text_archives(root, language)
@@ -420,6 +422,18 @@ pub fn convert_project(
         }
         ProjectTypeConfig::Generic | ProjectTypeConfig::HgEngine => {}
     }
+    let dspre_project = dspre_migration.then(|| {
+        ProjectContext::from_parts(
+            root.to_path_buf(),
+            config.clone(),
+            Arc::clone(
+                db.as_ref()
+                    .expect("DSPRE convert requires rotom.toml [database].default_file"),
+            ),
+            constants.clone(),
+            dspre_workspace,
+        )
+    });
 
     let mut dspre_from_binary_successes = Vec::new();
     let mut plans = Vec::with_capacity(files.len());
@@ -429,17 +443,16 @@ pub fn convert_project(
         let backup = backup_dir.join(relative);
 
         if dspre_migration {
-            let db_loaded = db
+            let project = dspre_project
                 .as_ref()
-                .expect("DSPRE convert requires rotom.toml [database].default_file");
+                .expect("DSPRE convert constructs project context above");
             let (plan, decompiled) = convert_one_dspre_script_placeholder(
                 root,
                 config,
                 &input,
                 &backup,
                 options.dry_run,
-                db_loaded,
-                &constants,
+                project,
             )?;
             plans.push(plan);
             if let Some(success) = decompiled {
@@ -483,7 +496,7 @@ pub fn convert_project(
             let output = input.with_extension("rotom");
             let transpile_result = match config.workspace.project_type {
                 ProjectTypeConfig::Decomp => {
-                    transpiler::transpile_decomp(&source, db.as_ref(), Some(root)).map_err(
+                    transpiler::transpile_decomp(&source, db.as_deref(), Some(root)).map_err(
                         |error| ProjectError::ConvertDecomp {
                             path: input.clone(),
                             line: error.line,
@@ -613,7 +626,10 @@ fn is_convertible_file(path: &Path, project_type: ProjectTypeConfig) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConvertOptions, convert_project, find_convertible_files};
+    use super::{
+        ConvertOptions, convert_one_dspre_script_placeholder, convert_project,
+        find_convertible_files,
+    };
     use crate::compile_file_internal;
     use crate::database::GameFamily;
     use crate::project::config::{
@@ -621,7 +637,7 @@ mod tests {
         WorkspaceConfig,
     };
     use crate::project::error::ProjectError;
-    use crate::{BinaryQuirk, ConstantDb, DatabaseV2};
+    use crate::{BinaryQuirk, CompileContext, ConstantDb, DatabaseV2, ProjectContext, compile};
     use std::fs;
     use std::path::Path;
     use std::sync::Arc;
@@ -653,18 +669,15 @@ mod tests {
         }
         fs::create_dir_all(&bin_dir).unwrap();
         let binary_path = bin_dir.join(stem);
-        let workspace = Arc::new(uxie::Workspace::new(
-            std::path::PathBuf::new(),
-            uxie::game::Game::Platinum,
-        ));
         compile_file_internal(
             &rotom_staging,
             &binary_path,
-            db,
-            &constants,
-            false,
+            CompileContext::Standalone {
+                db,
+                constants: &constants,
+            },
+            Some(&constants),
             BinaryQuirk::default(),
-            &workspace,
         )
         .unwrap();
         let _ = fs::remove_file(&rotom_staging);
@@ -771,6 +784,72 @@ mod tests {
 
         let backup_dir = report.backup_dir.expect("backup dir should be present");
         assert!(backup_dir.join("scripts/sub/test.script").exists());
+    }
+
+    #[test]
+    fn dspre_conversion_resolves_global_script_ids_from_project_sources() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let script_dir = root.join("scripts");
+        let binary_dir = root.join("unpacked/scripts");
+        fs::create_dir_all(&script_dir).unwrap();
+        fs::create_dir_all(&binary_dir).unwrap();
+        let placeholder = script_dir.join("0004.script");
+        fs::write(&placeholder, "Script 1:\n\tEnd\n").unwrap();
+        fs::write(script_dir.join("0003.script"), "Script 42:\n\tEnd\n").unwrap();
+
+        let db = Arc::new(DatabaseV2::load(DatabaseV2::test_hgss_path()).unwrap());
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(&db);
+        let binary = compile(
+            "script Main #1:\n    CallStd 2041\n    End\n",
+            &db,
+            &constants,
+            BinaryQuirk::default(),
+        )
+        .unwrap();
+        fs::write(binary_dir.join("0004"), binary.bytes).unwrap();
+
+        let mut workspace = uxie::Workspace::new(root.to_path_buf(), uxie::game::Game::HeartGold);
+        workspace
+            .scripts
+            .load_dspre_script_dir(&script_dir)
+            .unwrap();
+        workspace.global_script_table = uxie::script_file::GlobalScriptTable::from_entries(vec![
+            uxie::script_file::GlobalScriptEntry::with_range(
+                2000,
+                3,
+                40,
+                uxie::script_file::GlobalScriptRange::CommonScripts,
+            ),
+        ]);
+        let mut config = dspre_config();
+        config.workspace.game_family = Some(GameFamily::HGSS);
+        config.database.as_mut().unwrap().default_file =
+            DatabaseV2::test_hgss_path().display().to_string();
+        let project = ProjectContext::from_parts(
+            root.to_path_buf(),
+            config.clone(),
+            db,
+            constants,
+            Some(Arc::new(workspace)),
+        );
+
+        convert_one_dspre_script_placeholder(
+            root,
+            &config,
+            &placeholder,
+            &root.join("backup/0004.script"),
+            false,
+            &project,
+        )
+        .unwrap();
+
+        let converted = fs::read_to_string(script_dir.join("0004.rotom")).unwrap();
+        assert!(
+            converted.contains("CallStd CommonScripts::script_42"),
+            "{converted}"
+        );
     }
 
     #[test]

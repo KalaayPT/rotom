@@ -1,35 +1,30 @@
-use std::sync::Arc;
+use std::path::Path;
 
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
+use crate::message_refs::walk_commands;
+use crate::util::byte_span_to_range;
 use rotom::compiler::{
     Analyzer,
-    ast::ScriptFile,
+    ast::{ExpressionKind, StatementKind},
     diagnostic::{CompileError, CompileWarning},
     lexer::Lexer,
     parser::Parser,
     sourcemap::SourceMap,
 };
-use rotom::database::{ConstantDb, DatabaseV2};
-
-use crate::util::byte_span_to_range;
 
 /// Produce LSP diagnostics for a Rotom source document.
 ///
 /// Uses the error-tolerant parser so incomplete code still yields partial
-/// diagnostics rather than a single fatal error. When a database is provided,
-/// also runs semantic analysis for unknown commands, undefined symbols, etc.
-///
-/// When `reuse_directive_parse` is `Some`, uses that AST and recoverable parse errors from an
-/// earlier `.rotom` `#include` / `#define` pass instead of parsing again.
+/// diagnostics rather than a single fatal error. A project context enables
+/// semantic analysis, file-local directives, and cross-file global validation.
 pub fn compute_diagnostics(
     source: &str,
-    db: Option<&DatabaseV2>,
-    constants: Option<&ConstantDb>,
-    reuse_directive_parse: Option<(Arc<ScriptFile>, Vec<CompileError>)>,
+    project: Option<&rotom::ProjectContext>,
+    source_path: Option<&Path>,
 ) -> Vec<Diagnostic> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compute_diagnostics_inner(source, db, constants, reuse_directive_parse)
+        compute_diagnostics_inner(source, project, source_path)
     }));
 
     if let Ok(diagnostics) = result {
@@ -59,34 +54,50 @@ fn internal_error_diagnostic(reason: &str) -> Diagnostic {
 
 fn compute_diagnostics_inner(
     source: &str,
-    db: Option<&DatabaseV2>,
-    constants: Option<&ConstantDb>,
-    reuse_directive_parse: Option<(Arc<ScriptFile>, Vec<CompileError>)>,
+    project: Option<&rotom::ProjectContext>,
+    source_path: Option<&Path>,
 ) -> Vec<Diagnostic> {
-    let (ast_arc, mut errors) = if let Some((arc, errs)) = reuse_directive_parse {
-        (Some(arc), errs)
-    } else {
-        let lexer = Lexer::new(source);
-        let mut parser = Parser::new_fallible(lexer);
-        let script_opt = parser.parse_script_file().ok();
-        let errs = std::mem::take(&mut parser.errors);
-        (script_opt.map(Arc::new), errs)
-    };
+    let lexer = Lexer::new(source);
+    let mut parser = Parser::new_fallible(lexer);
+    let ast = parser.parse_script_file().ok();
+    let mut errors = std::mem::take(&mut parser.errors);
 
-    let ast = ast_arc.as_deref();
-
-    // Run semantic analysis if we have a parsed AST and a database.
     let mut warnings = Vec::new();
-    if let (Some(ast), Some(db)) = (ast, db) {
-        let mut analyzer = if let Some(constants) = constants {
-            Analyzer::with_database(constants, db)
-        } else {
-            Analyzer::new()
-        };
+    if let (Some(ast), Some(project)) = (ast.as_ref(), project) {
+        let mut file_constants = project.project_constants().clone();
+        if (source.contains("#include") || source.contains("#define"))
+            && let Some(script_dir) = source_path.and_then(Path::parent)
+        {
+            let _ = file_constants.apply_directives(script_dir, source, &ast.items);
+        }
+        let mut analyzer = Analyzer::with_database(&file_constants, project.db());
         if let Err(e) = analyzer.analyze(ast) {
             errors.push(e);
         }
         warnings.clone_from(&analyzer.warnings);
+    }
+
+    if let (Some(ast), Some(project)) = (ast.as_ref(), project) {
+        walk_commands(&ast.items, &mut |statement| {
+            let StatementKind::ScriptCommand { command, args } = &statement.node else {
+                return;
+            };
+            if !project.db().is_global_script_call(command) {
+                return;
+            }
+            let Some(argument) = args.first() else {
+                return;
+            };
+            let ExpressionKind::ModuleRef { module, label } = &argument.node else {
+                return;
+            };
+            if let Err(message) = project.resolve_global_script_ref(module, label) {
+                errors.push(CompileError::Analysis {
+                    span: argument.span.clone(),
+                    message,
+                });
+            }
+        });
     }
 
     let map = SourceMap::new(source);
@@ -145,11 +156,28 @@ fn compile_warning_to_diagnostic(warning: &CompileWarning, map: &SourceMap) -> D
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::test_project_context;
+    use rotom::{ConstantDb, DatabaseV2};
+
+    fn project_for(family: rotom::GameFamily) -> rotom::ProjectContext {
+        let (game, db_path) = match family {
+            rotom::GameFamily::HGSS => (uxie::game::Game::HeartGold, DatabaseV2::test_hgss_path()),
+            rotom::GameFamily::DP | rotom::GameFamily::Platinum => {
+                (uxie::game::Game::Platinum, DatabaseV2::test_platinum_path())
+            }
+        };
+        test_project_context(
+            uxie::Workspace::new(std::path::PathBuf::new(), game),
+            &db_path,
+            family,
+            ConstantDb::new(),
+        )
+    }
 
     #[test]
     fn test_single_parse_error() {
         let source = "script\n"; // missing name and colon
-        let diagnostics = compute_diagnostics(source, None, None, None);
+        let diagnostics = compute_diagnostics(source, None, None);
         assert!(
             !diagnostics.is_empty(),
             "expected at least one diagnostic for malformed script header"
@@ -167,7 +195,7 @@ mod tests {
         let source = r#"script Main #1:
     End
 "#;
-        let diagnostics = compute_diagnostics(source, None, None, None);
+        let diagnostics = compute_diagnostics(source, None, None);
         assert!(
             diagnostics.is_empty(),
             "valid source should have no diagnostics"
@@ -192,7 +220,7 @@ mod tests {
 script
     End
 "#;
-        let diagnostics = compute_diagnostics(source, None, None, None);
+        let diagnostics = compute_diagnostics(source, None, None);
         // Both malformed script headers should produce diagnostics
         assert!(
             diagnostics.len() >= 2,
@@ -203,13 +231,11 @@ script
 
     #[test]
     fn semantic_analysis_reports_errors_and_warnings() {
-        let db = DatabaseV2::test_platinum();
-        let constants = ConstantDb::new();
+        let project = project_for(rotom::GameFamily::Platinum);
 
         let warning_diagnostics = compute_diagnostics(
             "alias 1 as UNUSED\nscript Test #1:\n    Message 0\n    End\n",
-            Some(db),
-            Some(&constants),
+            Some(&project),
             None,
         );
         assert!(
@@ -220,8 +246,7 @@ script
 
         let error_diagnostics = compute_diagnostics(
             "script Test #1:\n    SetFlag\n    End\n",
-            Some(db),
-            Some(&constants),
+            Some(&project),
             None,
         );
         assert!(
@@ -245,12 +270,8 @@ Handle:
 Cancel:
     End
 "#;
-        let diagnostics = compute_diagnostics(
-            source,
-            Some(DatabaseV2::test_platinum()),
-            Some(&ConstantDb::new()),
-            None,
-        );
+        let project = project_for(rotom::GameFamily::Platinum);
+        let diagnostics = compute_diagnostics(source, Some(&project), None);
         assert!(
             diagnostics.is_empty(),
             "valid menu builder should not produce diagnostics: {diagnostics:?}"
@@ -277,12 +298,8 @@ Cancel:
 Handle:
     End
 "#;
-        let diagnostics = compute_diagnostics(
-            source,
-            Some(DatabaseV2::test_platinum()),
-            Some(&ConstantDb::new()),
-            None,
-        );
+        let project = project_for(rotom::GameFamily::Platinum);
+        let diagnostics = compute_diagnostics(source, Some(&project), None);
         let warnings: Vec<_> = diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::WARNING))
@@ -309,26 +326,59 @@ Handle:
 Handle:
     End
 "#;
-        let constants = ConstantDb::new();
-        let diagnostics = compute_diagnostics(
-            valid_hgss,
-            Some(DatabaseV2::test_hgss()),
-            Some(&constants),
-            None,
-        );
+        let project = project_for(rotom::GameFamily::HGSS);
+        let diagnostics = compute_diagnostics(valid_hgss, Some(&project), None);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
 
         let invalid_hgss = valid_hgss.replace(")\n    End", ").width(8)\n    End");
-        let diagnostics = compute_diagnostics(
-            &invalid_hgss,
-            Some(DatabaseV2::test_hgss()),
-            Some(&constants),
-            None,
-        );
+        let diagnostics = compute_diagnostics(&invalid_hgss, Some(&project), None);
         assert!(
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.message.contains("only supported on Platinum"))
+        );
+    }
+
+    #[test]
+    fn diagnostics_apply_file_directives_from_project_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("test.rotom");
+        let source = "#define LOCAL_FLAG 42\nscript Test #1:\n    SetFlag LOCAL_FLAG\n    End\n";
+        let mut constants = ConstantDb::new();
+        constants.load_decomp_symbols(temp.path(), uxie::SymbolTable::new());
+        let project = test_project_context(
+            uxie::Workspace::new(temp.path().to_path_buf(), uxie::game::Game::Platinum),
+            &DatabaseV2::test_platinum_path(),
+            rotom::GameFamily::Platinum,
+            constants,
+        );
+
+        let diagnostics = compute_diagnostics(source, Some(&project), Some(&source_path));
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn unresolved_global_module_ref_is_reported() {
+        let mut workspace =
+            uxie::Workspace::new(std::path::PathBuf::new(), uxie::game::Game::Platinum);
+        workspace.global_script_table =
+            uxie::script_file::GlobalScriptTable::platinum_western_hardcoded();
+        let project = test_project_context(
+            workspace,
+            &DatabaseV2::test_platinum_path(),
+            rotom::GameFamily::Platinum,
+            ConstantDb::new(),
+        );
+        let source = "script Test #1:\n    ParallelCommonScript MissingModule::NewGame\n    End\n";
+
+        let diagnostics = compute_diagnostics(source, Some(&project), None);
+
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("Unknown global script module")),
+            "{diagnostics:?}"
         );
     }
 }

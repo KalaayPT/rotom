@@ -171,7 +171,14 @@ impl<'a> Lexer<'a> {
                     TokenType::Dot
                 }
             }
-            Some(':') => TokenType::Colon,
+            Some(':') => {
+                if matches!(self.chars.peek(), Some(':')) {
+                    self.read_char();
+                    TokenType::DoubleColon
+                } else {
+                    TokenType::Colon
+                }
+            }
             Some('=') => {
                 if matches!(self.chars.peek(), Some('=')) {
                     self.read_char();
@@ -291,6 +298,12 @@ impl<'a> Lexer<'a> {
                 num_string.push(*c);
                 self.read_char();
             }
+            // DSPRE script filenames are numeric stems (e.g. `0211`). Preserve
+            // the original spelling when the digits form the module side of a
+            // `module::label` reference instead of collapsing them to a number.
+            if matches!(self.chars.peek(), Some(':')) && self.peek_next() == Some(':') {
+                return TokenType::Identifier(num_string);
+            }
             match num_string.parse() {
                 Ok(num) => TokenType::Num(num),
                 Err(e) => TokenType::Error(e.to_string()),
@@ -335,13 +348,14 @@ mod tests {
 
     #[test]
     fn test_lexer_basic_tokens() {
-        let source = "# , . : = == ( ) && || ! != < <= > >= + - * \n";
+        let source = "# , . : :: = == ( ) && || ! != < <= > >= + - * \n";
         let mut lexer = Lexer::new(source);
         let expected_tokens = vec![
             TokenType::Hash,
             TokenType::Comma,
             TokenType::Dot,
             TokenType::Colon,
+            TokenType::DoubleColon,
             TokenType::Assign,
             TokenType::Equal,
             TokenType::LParen,
@@ -365,6 +379,19 @@ mod tests {
         }
         let eof_token = lexer.next_token();
         assert_eq!(eof_token.kind, TokenType::EOF);
+    }
+
+    #[test]
+    fn test_numeric_module_stem_preserves_leading_zeroes() {
+        let tokens = Lexer::new("0211::NewGame").tokenize();
+        assert_eq!(
+            tokens.iter().map(|token| &token.kind).collect::<Vec<_>>(),
+            vec![
+                &TokenType::Identifier("0211".to_string()),
+                &TokenType::DoubleColon,
+                &TokenType::Identifier("NewGame".to_string()),
+            ]
+        );
     }
 
     #[test]

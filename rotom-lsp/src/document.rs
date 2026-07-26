@@ -37,6 +37,11 @@ impl DocumentCache {
         self.docs.get(uri)
     }
 
+    /// Return the URIs of all currently open documents.
+    pub fn uris(&self) -> Vec<Url> {
+        self.docs.iter().map(|entry| entry.key().clone()).collect()
+    }
+
     pub fn apply_changes(&self, uri: &Url, changes: Vec<TextDocumentContentChangeEvent>) {
         if let Some(mut doc) = self.docs.get_mut(uri) {
             for change in changes {

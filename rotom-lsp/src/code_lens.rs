@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tower_lsp::lsp_types::{CodeLens, Command, Location, Position, Range, Url};
 
+use rotom::ProjectContext;
 use rotom::compiler::{
     ast::{ExpressionKind, Statement, StatementKind},
     sourcemap::SourceMap,
@@ -47,7 +48,12 @@ pub fn is_rotom_script_uri(uri: &Url) -> bool {
 /// Produce `CodeLens` hints for a Rotom source file.
 ///
 /// Shows reference counts above scripts, labels, aliases, and actions.
-pub fn compute_script_code_lens(source: &str, uri: &Url, db: Option<&DatabaseV2>) -> Vec<CodeLens> {
+pub fn compute_script_code_lens(
+    source: &str,
+    uri: &Url,
+    project: Option<&ProjectContext>,
+    global_refs: Option<&HashMap<String, Vec<Location>>>,
+) -> Vec<CodeLens> {
     let Some(ast) = parse_source(source) else {
         return Vec::new();
     };
@@ -57,11 +63,90 @@ pub fn compute_script_code_lens(source: &str, uri: &Url, db: Option<&DatabaseV2>
     let mut aliases = HashSet::new();
 
     collect_alias_names(&ast.items, &mut aliases);
-    count_refs(&ast.items, uri, &map, &mut refs, db, &aliases);
+    count_refs(
+        &ast.items,
+        uri,
+        &map,
+        &mut refs,
+        project.map(ProjectContext::db),
+        &aliases,
+    );
 
     let mut lenses = Vec::new();
-    emit_lenses(&ast.items, uri, &map, &refs, &mut lenses);
+    emit_lenses(&ast.items, uri, &map, &refs, global_refs, &mut lenses);
     lenses
+}
+
+/// One resolved cross-file global script reference.
+pub struct GlobalScriptRef {
+    pub target_path: PathBuf,
+    pub target_label: String,
+    pub location: Location,
+}
+
+/// Collect resolved `Module::Label` references from one script source.
+pub fn collect_global_script_refs(
+    source: &str,
+    uri: &Url,
+    project: &ProjectContext,
+) -> Vec<GlobalScriptRef> {
+    let Some(ast) = parse_source(source) else {
+        return Vec::new();
+    };
+    let map = SourceMap::new(source);
+    let mut refs = Vec::new();
+    collect_global_script_refs_in_items(&ast.items, uri, &map, project, &mut refs);
+    refs
+}
+
+fn collect_global_script_refs_in_items(
+    items: &[Statement],
+    uri: &Url,
+    map: &SourceMap,
+    project: &ProjectContext,
+    refs: &mut Vec<GlobalScriptRef>,
+) {
+    for item in items {
+        match &item.node {
+            StatementKind::ScriptCommand { command, args }
+                if project.db().is_global_script_call(command) =>
+            {
+                if let Some(argument) = args.first()
+                    && let ExpressionKind::ModuleRef { module, label } = &argument.node
+                    && let Ok(resolved) = project.resolve_global_script_ref(module, label)
+                {
+                    refs.push(GlobalScriptRef {
+                        target_path: resolved.path,
+                        target_label: resolved.symbol.name,
+                        location: byte_span_to_location(uri, &argument.span, map),
+                    });
+                }
+            }
+            StatementKind::Function { body, .. } | StatementKind::Action { body, .. } => {
+                collect_global_script_refs_in_items(body, uri, map, project, refs);
+            }
+            StatementKind::WhileStatement { body, .. } => {
+                collect_global_script_refs_in_items(body, uri, map, project, refs);
+            }
+            StatementKind::IfStatement {
+                body, elseblock, ..
+            } => {
+                collect_global_script_refs_in_items(body, uri, map, project, refs);
+                if let Some(elseblock) = elseblock {
+                    collect_global_script_refs_in_items(elseblock, uri, map, project, refs);
+                }
+            }
+            StatementKind::MatchStatement { cases, default, .. } => {
+                for case in cases {
+                    collect_global_script_refs_in_items(&case.body, uri, map, project, refs);
+                }
+                if let Some(default) = default {
+                    collect_global_script_refs_in_items(default, uri, map, project, refs);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Build message-reference `CodeLens` entries for one archive JSON.
@@ -295,7 +380,10 @@ fn count_alias_refs_in_expr(
                 count_alias_refs_in_expr(arg, uri, map, refs, aliases);
             }
         }
-        ExpressionKind::Number(_) | ExpressionKind::String(_) | ExpressionKind::Error => {}
+        ExpressionKind::Number(_)
+        | ExpressionKind::String(_)
+        | ExpressionKind::ModuleRef { .. }
+        | ExpressionKind::Error => {}
     }
 }
 
@@ -311,6 +399,7 @@ fn emit_lenses(
     uri: &Url,
     map: &SourceMap,
     refs: &HashMap<String, Vec<Location>>,
+    global_refs: Option<&HashMap<String, Vec<Location>>>,
     lenses: &mut Vec<CodeLens>,
 ) {
     for item in items {
@@ -319,17 +408,22 @@ fn emit_lenses(
                 let mut seen = HashSet::new();
                 for header in headers {
                     if seen.insert(header.name.as_str()) {
-                        let locations =
-                            refs.get(&header.name).map_or(&[] as &[_], |v| v.as_slice());
-                        lenses.push(make_ref_lens(&item.span, map, uri, locations));
+                        let mut locations = refs.get(&header.name).cloned().unwrap_or_default();
+                        if header.is_public
+                            && let Some(external) =
+                                global_refs.and_then(|refs| refs.get(&header.name))
+                        {
+                            locations.extend(external.iter().cloned());
+                        }
+                        lenses.push(make_ref_lens(&item.span, map, uri, &locations));
                     }
                 }
-                emit_lenses(body, uri, map, refs, lenses);
+                emit_lenses(body, uri, map, refs, global_refs, lenses);
             }
             StatementKind::Action { name, body, .. } => {
                 let locations = refs.get(name).map_or(&[] as &[_], |v| v.as_slice());
                 lenses.push(make_ref_lens(&item.span, map, uri, locations));
-                emit_lenses(body, uri, map, refs, lenses);
+                emit_lenses(body, uri, map, refs, global_refs, lenses);
             }
             StatementKind::AliasStatement { name, .. } | StatementKind::Label(name) => {
                 let locations = refs.get(name).map_or(&[] as &[_], |v| v.as_slice());
@@ -338,20 +432,20 @@ fn emit_lenses(
             StatementKind::IfStatement {
                 body, elseblock, ..
             } => {
-                emit_lenses(body, uri, map, refs, lenses);
+                emit_lenses(body, uri, map, refs, global_refs, lenses);
                 if let Some(else_b) = elseblock {
-                    emit_lenses(else_b, uri, map, refs, lenses);
+                    emit_lenses(else_b, uri, map, refs, global_refs, lenses);
                 }
             }
             StatementKind::WhileStatement { body, .. } => {
-                emit_lenses(body, uri, map, refs, lenses);
+                emit_lenses(body, uri, map, refs, global_refs, lenses);
             }
             StatementKind::MatchStatement { cases, default, .. } => {
                 for case in cases {
-                    emit_lenses(&case.body, uri, map, refs, lenses);
+                    emit_lenses(&case.body, uri, map, refs, global_refs, lenses);
                 }
                 if let Some(default) = default {
-                    emit_lenses(default, uri, map, refs, lenses);
+                    emit_lenses(default, uri, map, refs, global_refs, lenses);
                 }
             }
             _ => {}
@@ -419,7 +513,7 @@ mod tests {
     fn script_code_lens_counts_label_references() {
         let uri = Url::from_file_path("/tmp/test.rotom").expect("uri");
         let source = "script Main # 0:\n    Jump Helper\nHelper:\n    End\n";
-        let lenses = compute_script_code_lens(source, &uri, None);
+        let lenses = compute_script_code_lens(source, &uri, None, None);
         assert!(!lenses.is_empty());
         assert!(lenses.iter().any(|l| {
             l.command
@@ -432,7 +526,7 @@ mod tests {
     fn script_code_lens_counts_alias_references_in_expressions() {
         let uri = Url::from_file_path("/tmp/test.rotom").expect("uri");
         let source = "script Main #1:\n    alias 0x8001 as VAR_COUNTER\n    while VAR_COUNTER < 10 do\n        AddVar VAR_COUNTER, 1\n    endwhile\n    End\n";
-        let lenses = compute_script_code_lens(source, &uri, None);
+        let lenses = compute_script_code_lens(source, &uri, None, None);
         let alias_lens = lenses
             .iter()
             .find(|lens| lens.range.start.line == 1)
@@ -445,7 +539,7 @@ mod tests {
     fn script_code_lens_does_not_count_non_label_args_as_label_refs() {
         let uri = Url::from_file_path("/tmp/test.rotom").expect("uri");
         let source = "script Main #1:\nHelper:\n    SetVar Helper, 1\n    End\n";
-        let lenses = compute_script_code_lens(source, &uri, None);
+        let lenses = compute_script_code_lens(source, &uri, None, None);
         let label_lens = lenses
             .iter()
             .find(|lens| lens.range.start.line == 1)
@@ -458,7 +552,7 @@ mod tests {
     fn script_code_lens_counts_menu_targets() {
         let uri = Url::from_file_path("/tmp/test.rotom").expect("uri");
         let source = "script Main #1:\n    Menu(10 -> Helper).cancel(11 -> Cancel)\nHelper:\n    End\nCancel:\n    End\n";
-        let lenses = compute_script_code_lens(source, &uri, None);
+        let lenses = compute_script_code_lens(source, &uri, None, None);
         let helper_lens = lenses
             .iter()
             .find(|lens| lens.range.start.line == 2)

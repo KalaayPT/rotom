@@ -7,9 +7,12 @@
 //! - Symbol resolution (aliases, constants, labels)
 //! - Autovar commands in conditions (commands with destVar that default to `VAR_RESULT`)
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::PathBuf;
+use xxhash_rust::xxh3::xxh3_64;
 
+use crate::ProjectContext;
 use crate::autovar::{VAR_RESULT, autovar_param_index};
 use crate::compiler::analysis::{SymbolTable, SymbolType};
 use crate::compiler::ast::{
@@ -40,23 +43,15 @@ pub struct Lowerer<'a> {
     db: &'a DatabaseV2,
     constants: Option<&'a crate::database::ConstantDb>,
     break_targets: Vec<String>,
-    workspace: Arc<uxie::Workspace>,
+    project: Option<&'a ProjectContext>,
+    global_script_dependencies: RefCell<HashMap<PathBuf, u64>>,
     /// File stem of the script being compiled, used to resolve the text archive
     /// for string literal arguments (e.g. `"0003"` for DSPRE, `"acuity_cavern"` for decomp).
     source_stem: String,
 }
 
 impl<'a> Lowerer<'a> {
-    fn empty_workspace() -> Arc<uxie::Workspace> {
-        static EMPTY: std::sync::OnceLock<Arc<uxie::Workspace>> = std::sync::OnceLock::new();
-        Arc::clone(EMPTY.get_or_init(|| {
-            Arc::new(uxie::Workspace::new(
-                std::path::PathBuf::new(),
-                uxie::game::Game::Platinum,
-            ))
-        }))
-    }
-
+    /// Construct a lowerer without project-backed resources.
     pub fn new(symbols: &'a SymbolTable, db: &'a DatabaseV2) -> Self {
         Self {
             label_counter: 0,
@@ -66,11 +61,13 @@ impl<'a> Lowerer<'a> {
             db,
             constants: None,
             break_targets: Vec::new(),
-            workspace: Self::empty_workspace(),
+            project: None,
+            global_script_dependencies: RefCell::new(HashMap::new()),
             source_stem: String::new(),
         }
     }
 
+    /// Construct a lowerer with constants but without project-backed resources.
     pub fn with_constants(
         symbols: &'a SymbolTable,
         db: &'a DatabaseV2,
@@ -84,21 +81,23 @@ impl<'a> Lowerer<'a> {
             db,
             constants: Some(constants),
             break_targets: Vec::new(),
-            workspace: Self::empty_workspace(),
+            project: None,
+            global_script_dependencies: RefCell::new(HashMap::new()),
             source_stem: String::new(),
         }
     }
 
     /// Construct a lowerer for a specific project file with full workspace context.
     ///
-    /// `source_stem` is the file stem of the script being compiled (e.g. `"0003"`
-    /// for DSPRE, `"acuity_cavern"` for decomp). It is used to resolve which text
-    /// archive string literal arguments should be written to.
+    /// `project` provides workspace messages and cross-file global script references.
+    /// `file_constants` is the project's constants with this file's directives applied.
+    /// `source_stem` is the file stem of the script being compiled (e.g.
+    /// `"0003"` for DSPRE, `"acuity_cavern"` for decomp) and selects the text
+    /// archive for string literal arguments.
     pub fn for_file(
         symbols: &'a SymbolTable,
-        db: &'a DatabaseV2,
-        constants: &'a crate::database::ConstantDb,
-        workspace: Arc<uxie::Workspace>,
+        project: &'a ProjectContext,
+        file_constants: &'a crate::database::ConstantDb,
         source_stem: String,
     ) -> Self {
         Self {
@@ -106,12 +105,18 @@ impl<'a> Lowerer<'a> {
             output: Vec::new(),
             global_symbols: symbols,
             active_aliases: HashMap::new(),
-            db,
-            constants: Some(constants),
+            db: project.db(),
+            constants: Some(file_constants),
             break_targets: Vec::new(),
-            workspace,
+            project: Some(project),
+            global_script_dependencies: RefCell::new(HashMap::new()),
             source_stem,
         }
+    }
+
+    /// Take source dependencies discovered while resolving cross-file scripts.
+    pub(crate) fn take_global_script_dependencies(&self) -> HashMap<PathBuf, u64> {
+        std::mem::take(&mut *self.global_script_dependencies.borrow_mut())
     }
 
     fn new_label(&mut self, prefix: &str) -> String {
@@ -442,11 +447,9 @@ impl<'a> Lowerer<'a> {
         config: &MenuConfig,
         macro_depth: usize,
     ) -> ParseResult<()> {
-        let is_platinum = self.workspace.family == uxie::GameFamily::Platinum;
-        let is_dp_or_pt = matches!(
-            self.workspace.family,
-            uxie::GameFamily::Platinum | uxie::GameFamily::DP
-        );
+        let family = self.db.game_family().unwrap_or(uxie::GameFamily::Platinum);
+        let is_platinum = family == uxie::GameFamily::Platinum;
+        let is_dp_or_pt = matches!(family, uxie::GameFamily::Platinum | uxie::GameFamily::DP);
 
         // Diamond/Pearl and Platinum have separate normal and list menu paths.
         // The HGSS builder always uses its touch/list menu path. Configuration
@@ -488,7 +491,7 @@ impl<'a> Lowerer<'a> {
         // 1. Prompt. Hover text needs an open message window, but an empty
         //    synthetic message would unnecessarily consume a local archive slot.
         if let Some(prompt) = &config.prompt {
-            let prompt_arg = self.resolve_arg_with_archive(prompt, None)?;
+            let prompt_arg = self.resolve_arg_with_archive(prompt, None, false)?;
             self.output.push(IrOpcode::Command {
                 name: "Message".to_string(),
                 args: vec![prompt_arg],
@@ -534,7 +537,7 @@ impl<'a> Lowerer<'a> {
 
         // 4. Entries.
         for (i, entry) in entries.iter().enumerate() {
-            let label_arg = self.resolve_arg_with_archive(&entry.label, entry_archive)?;
+            let label_arg = self.resolve_arg_with_archive(&entry.label, entry_archive, false)?;
             // D/P and Platinum narrow resolved list text IDs to u8. Values at
             // 0x4000 and above are runtime variable IDs, not literal text IDs.
             if is_dp_or_pt
@@ -549,7 +552,7 @@ impl<'a> Lowerer<'a> {
             if is_dp_or_pt && is_list {
                 let hover_arg = match &entry.hover {
                     Some(h) => {
-                        let arg = self.resolve_arg_with_archive(h, entry_archive)?;
+                        let arg = self.resolve_arg_with_archive(h, entry_archive, false)?;
                         if arg == Arg::Value(LIST_MENU_ENTRY_NO_ALT_TEXT) {
                             return Err(lowering_error_at(
                                 h.span.clone(),
@@ -580,7 +583,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 let hover_arg = match &entry.hover {
                     Some(h) => {
-                        let arg = self.resolve_arg_with_archive(h, entry_archive)?;
+                        let arg = self.resolve_arg_with_archive(h, entry_archive, false)?;
                         if arg == Arg::Value(LIST_MENU_ENTRY_NO_ALT_TEXT) {
                             return Err(lowering_error_at(
                                 h.span.clone(),
@@ -1440,7 +1443,11 @@ impl<'a> Lowerer<'a> {
                 } else {
                     None
                 };
-                self.resolve_arg_with_archive(arg, override_for_arg)
+                self.resolve_arg_with_archive(
+                    arg,
+                    override_for_arg,
+                    i == 0 && self.db.is_global_script_call(command),
+                )
             })
             .collect()
     }
@@ -1448,18 +1455,24 @@ impl<'a> Lowerer<'a> {
     /// Return the fixed text archive ID for a command, or `None` to use the
     /// script file's default archive.
     fn msg_archive_for_command(&self, command: &str) -> Option<u16> {
-        uxie::Workspace::menu_entry_id(command, self.workspace.family)
+        uxie::Workspace::menu_entry_id(
+            command,
+            self.db.game_family().unwrap_or(uxie::GameFamily::Platinum),
+        )
     }
 
+    /// Resolve an expression where cross-file script references are not valid.
     fn resolve_arg(&self, expr: &Expression) -> ParseResult<Arg> {
-        self.resolve_arg_with_archive(expr, None)
+        self.resolve_arg_with_archive(expr, None, false)
     }
 
+    /// Resolve an argument with command-specific text and global-script context.
     #[allow(clippy::too_many_lines)]
     fn resolve_arg_with_archive(
         &self,
         expr: &Expression,
         archive_override: Option<u16>,
+        allow_global_script_ref: bool,
     ) -> ParseResult<Arg> {
         match &expr.node {
             ExpressionKind::Identifier(name) => {
@@ -1497,17 +1510,50 @@ impl<'a> Lowerer<'a> {
             }
             ExpressionKind::Number(val) => Ok(Arg::Value(*val)),
             ExpressionKind::Label(name) => Ok(Arg::Pointer(name.clone())),
+            ExpressionKind::ModuleRef { module, label } => {
+                if !allow_global_script_ref {
+                    return Err(lowering_error_at(
+                        expr.span.clone(),
+                        "cross-file script references are only valid as the first argument to a global script call",
+                    ));
+                }
+                let resolved = self
+                    .project
+                    .as_ref()
+                    .ok_or_else(|| {
+                        lowering_error_at(
+                            expr.span.clone(),
+                            "cross-file script references require a loaded project",
+                        )
+                    })?
+                    .resolve_global_script_ref(module, label)
+                    .map_err(|message| lowering_error_at(expr.span.clone(), message))?;
+                self.global_script_dependencies
+                    .borrow_mut()
+                    .insert(resolved.path, xxh3_64(resolved.source.as_bytes()));
+                Ok(Arg::Value(i32::from(resolved.script_id)))
+            }
             ExpressionKind::String(segs) => {
                 let flat = segs
                     .iter()
                     .map(|(s, _)| s.as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
+                let workspace = self
+                    .project
+                    .as_ref()
+                    .and_then(|project| project.workspace())
+                    .ok_or_else(|| {
+                        lowering_error_at(
+                            expr.span.clone(),
+                            "string literals require a loaded project workspace",
+                        )
+                    })?;
                 let archive_id =
                     if let Some(id) = archive_override {
                         id
                     } else {
-                        self.workspace
+                        workspace
                         .text_archive_for_script_file(&self.source_stem)
                         .ok_or_else(|| {
                             lowering_error_at(expr.span.clone(), format!(
@@ -1517,8 +1563,7 @@ impl<'a> Lowerer<'a> {
                             ))
                         })?
                     };
-                let index = self
-                    .workspace
+                let index = workspace
                     .find_or_add_message(archive_id, &flat)
                     .map_err(|e| {
                         lowering_error_at(
@@ -1588,10 +1633,20 @@ impl<'a> Lowerer<'a> {
                 .map_err(|e| {
                     lowering_error_at(expr.span.clone(), format!("failed to format message: {e}"))
                 })?;
+                let workspace = self
+                    .project
+                    .as_ref()
+                    .and_then(|project| project.workspace())
+                    .ok_or_else(|| {
+                        lowering_error_at(
+                            expr.span.clone(),
+                            "format() requires a loaded project workspace",
+                        )
+                    })?;
                 let archive_id = if let Some(id) = archive_override {
                     id
                 } else {
-                    self.workspace
+                    workspace
                         .text_archive_for_script_file(&self.source_stem)
                         .ok_or_else(|| {
                             lowering_error_at(
@@ -1604,8 +1659,7 @@ impl<'a> Lowerer<'a> {
                             )
                         })?
                 };
-                let index = self
-                    .workspace
+                let index = workspace
                     .find_or_add_message(archive_id, &wrapped)
                     .map_err(|e| {
                         lowering_error_at(
@@ -1745,10 +1799,50 @@ mod tests {
     use crate::compiler::lexer::Lexer;
     use crate::compiler::parser::Parser;
     use crate::database::{CommandType, ConstantDb, DatabaseMeta, DatabaseV2, ParamType, Variant};
+    use crate::project::config::{
+        DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
+        WorkspaceConfig,
+    };
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn create_test_db() -> &'static DatabaseV2 {
         DatabaseV2::test_platinum()
+    }
+
+    fn project_for_workspace(workspace: Arc<uxie::Workspace>) -> Arc<ProjectContext> {
+        let database_path = match workspace.family {
+            uxie::GameFamily::HGSS => DatabaseV2::test_hgss_path(),
+            uxie::GameFamily::DP | uxie::GameFamily::Platinum => DatabaseV2::test_platinum_path(),
+        };
+        let config = RotomConfig {
+            format_version: 1,
+            project: ProjectMetadata {
+                name: "test".to_string(),
+            },
+            workspace: WorkspaceConfig {
+                project_type: ProjectTypeConfig::Dspre,
+                game_family: Some(workspace.family),
+            },
+            paths: PathsConfig {
+                database_dir: ".rotom/command_database".to_string(),
+                cache_dir: ".rotom/cache".to_string(),
+                status_dir: ".rotom/status".to_string(),
+                source_roots: Vec::new(),
+                include_roots: Vec::new(),
+                binary_roots: Vec::new(),
+            },
+            database: Some(DatabaseConfig {
+                default_file: database_path.display().to_string(),
+            }),
+        };
+        Arc::new(ProjectContext::from_parts(
+            workspace.project_path.clone(),
+            config,
+            Arc::new(DatabaseV2::load(database_path).expect("failed to load test database")),
+            ConstantDb::new(),
+            Some(workspace),
+        ))
     }
 
     fn create_view_rankings_shape_db() -> DatabaseV2 {
@@ -1908,6 +2002,40 @@ script TestFunc #1:
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
         }
+    }
+
+    #[test]
+    fn test_lower_global_script_module_ref() {
+        let source = "script Caller #1:\n    CallCommonScript CommonScripts::NewGame\n    End\n";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let constants = ConstantDb::new();
+        let temp = tempfile::tempdir().unwrap();
+        let scripts_dir = temp.path().join("scripts");
+        std::fs::create_dir(&scripts_dir).unwrap();
+        std::fs::write(
+            scripts_dir.join("0211.rotom"),
+            "script NewGame #3:\n    End\n",
+        )
+        .unwrap();
+        let mut workspace =
+            uxie::Workspace::new(temp.path().to_path_buf(), uxie::game::Game::Platinum);
+        workspace
+            .scripts
+            .load_dspre_script_dir(&scripts_dir)
+            .unwrap();
+        workspace.global_script_table = uxie::script_file::GlobalScriptTable::from_entries(vec![
+            uxie::script_file::GlobalScriptEntry::new(2000, 211, 213, "Common Scripts"),
+        ]);
+        let workspace = Arc::new(workspace);
+        let project = project_for_workspace(workspace);
+        let mut lowerer = Lowerer::for_file(&symbols, &project, &constants, "0001".to_string());
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(
+            find_cmd(&items, "CallCommonScript").unwrap(),
+            [Arg::Value(2002)]
+        );
     }
 
     #[test]
@@ -2656,16 +2784,10 @@ B:
     End
 "#;
         let (script_file, symbols) = parse_and_analyze(source);
-        let db = create_test_db();
         let constants = ConstantDb::new();
         let (_temp, workspace) = workspace_with_archives(uxie::game::Game::Platinum, &[1, 361]);
-        let mut lowerer = Lowerer::for_file(
-            &symbols,
-            db,
-            &constants,
-            workspace.clone(),
-            "0001".to_string(),
-        );
+        let project = project_for_workspace(workspace.clone());
+        let mut lowerer = Lowerer::for_file(&symbols, &project, &constants, "0001".to_string());
         let items = lowerer.lower_script_file(&script_file).unwrap();
 
         // Open the hover window, then init/entries/show, then the VAR_RESULT dispatch.
@@ -2810,16 +2932,10 @@ B:
     End
 "#;
         let (script_file, symbols) = parse_and_analyze(source);
-        let db = create_test_db();
         let constants = ConstantDb::new();
         let (_temp, workspace) = workspace_with_archives(uxie::game::Game::Platinum, &[1]);
-        let mut lowerer = Lowerer::for_file(
-            &symbols,
-            db,
-            &constants,
-            workspace.clone(),
-            "0001".to_string(),
-        );
+        let project = project_for_workspace(workspace.clone());
+        let mut lowerer = Lowerer::for_file(&symbols, &project, &constants, "0001".to_string());
         let items = lowerer.lower_script_file(&script_file).unwrap();
 
         let names = cmd_names(&items);
@@ -2909,13 +3025,8 @@ B:
         let (script_file, symbols) = parse_and_analyze_with_db(source, db);
         let constants = ConstantDb::new();
         let (_temp, workspace) = workspace_with_archives(uxie::game::Game::HeartGold, &[191]);
-        let mut lowerer = Lowerer::for_file(
-            &symbols,
-            db,
-            &constants,
-            workspace.clone(),
-            "0001".to_string(),
-        );
+        let project = project_for_workspace(workspace.clone());
+        let mut lowerer = Lowerer::for_file(&symbols, &project, &constants, "0001".to_string());
         let items = lowerer.lower_script_file(&script_file).unwrap();
 
         assert_eq!(
@@ -2973,13 +3084,8 @@ A:
             std::path::PathBuf::new(),
             uxie::game::Game::HeartGold,
         ));
-        let mut lowerer = Lowerer::for_file(
-            &symbols,
-            DatabaseV2::test_hgss(),
-            &constants,
-            workspace,
-            "t".to_string(),
-        );
+        let project = project_for_workspace(workspace);
+        let mut lowerer = Lowerer::for_file(&symbols, &project, &constants, "t".to_string());
         let items = lowerer.lower_script_file(&script_file).unwrap();
 
         assert!(!cmd_names(&items).contains(&"OpenMessage"));
@@ -4161,11 +4267,11 @@ script Test #1:
         let mut analyzer = crate::compiler::Analyzer::with_database(&constants, db);
         analyzer.analyze(&script_file).unwrap();
 
+        let project = project_for_workspace(workspace.clone());
         let mut lowerer = Lowerer::for_file(
             &analyzer.symbols,
-            db,
+            &project,
             &constants,
-            workspace.clone(),
             "test_script".to_string(),
         );
 

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-pub const COMPILE_STATE_VERSION: u32 = 2;
+pub const COMPILE_STATE_VERSION: u32 = 4;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -256,12 +256,14 @@ mod tests {
 
     #[test]
     fn needs_rebuild_detects_hash_version_and_cache_changes() {
-        let state = sample_state();
+        let mut state = sample_state();
 
         assert!(!state.needs_rebuild(99, COMPILER_VERSION, false));
         assert!(state.needs_rebuild(100, COMPILER_VERSION, false));
         assert!(state.needs_rebuild(99, "future-version", false));
         assert!(state.needs_rebuild(99, COMPILER_VERSION, true));
+        state.version = super::COMPILE_STATE_VERSION - 1;
+        assert!(state.needs_rebuild(99, COMPILER_VERSION, false));
     }
 
     #[test]

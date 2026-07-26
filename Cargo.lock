@@ -1839,9 +1839,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uxie"
-version = "0.8.6"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abc94e1f7142120f49f3f44fa8c5579387a3196380ccf98e36c7c4d212446a2f"
+checksum = "a7369cae27dc15af4279e9d51c255d10498287003c3a14642290453554fc6e5f"
 dependencies = [
  "binrw",
  "bitcode",

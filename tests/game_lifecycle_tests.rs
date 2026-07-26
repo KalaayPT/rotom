@@ -447,6 +447,12 @@ fn test_lifecycle_heartgold_dspre() {
 
     run_rotom(&["init", "--non-interactive"], &project).expect("rotom init failed");
     run_rotom(&["convert", "--non-interactive"], &project).expect("rotom convert failed");
+    let converted = std::fs::read_to_string(project.join("expanded/scripts/0004.rotom"))
+        .expect("converted HeartGold script should exist");
+    assert!(
+        converted.contains("CallStd CommonScripts::script_42"),
+        "HeartGold DSPRE conversion did not resolve common script 2041"
+    );
     run_rotom(&["compile"], &project).expect("rotom compile failed");
 
     verify_compiled_binaries(&binary_root, &expected, None);

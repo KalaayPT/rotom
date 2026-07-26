@@ -306,6 +306,16 @@ impl DatabaseV2 {
         game_family_from_hint(&self.meta.version)
     }
 
+    /// Return whether a command resolves to a global-script launch opcode.
+    ///
+    /// Opcodes 19 and 20 launch a script through the global range table in
+    /// `DPPt` and `HGSS`. Resolving first covers canonical, legacy, and `ScrCmd_*`
+    /// names without hard-coding each database's spelling.
+    pub fn is_global_script_call(&self, name: &str) -> bool {
+        self.get_script_cmd(name)
+            .is_ok_and(|command| matches!(command.id, Some(19 | 20)))
+    }
+
     /// Resolves a legacy (DSPRE) command name to its canonical command.
     fn get_by_legacy_name(&self, name: &str) -> Option<&Command> {
         let canonical = self.id_index().legacy.get(name)?;
@@ -1590,6 +1600,35 @@ mod tests {
             .expect("legacy lookup failed");
         assert_eq!(cmd.id, Some(1));
         assert_eq!(cmd.cmd_type, CommandType::ScriptCmd);
+    }
+
+    #[test]
+    fn global_script_calls_resolve_canonical_legacy_and_opcode_names() {
+        let platinum = DatabaseV2::test_platinum();
+        for name in [
+            "ScrCmd_Unused_013",
+            "ParallelCommonScript",
+            "ScrCmd_0013",
+            "CallCommonScript",
+            "CommonScript",
+            "ScrCmd_0014",
+        ] {
+            assert!(platinum.is_global_script_call(name), "{name}");
+        }
+        assert!(!platinum.is_global_script_call("ReturnCommonScript"));
+
+        let hgss = DatabaseV2::test_hgss();
+        for name in [
+            "RunScript",
+            "ParallelCommonScript",
+            "ScrCmd_19",
+            "CallStd",
+            "CommonScript",
+            "ScrCmd_20",
+        ] {
+            assert!(hgss.is_global_script_call(name), "{name}");
+        }
+        assert!(!hgss.is_global_script_call("End"));
     }
 
     #[test]

@@ -46,6 +46,7 @@ pub enum TokenType {
     Comma,        // ','
     Dot,          // '.'
     Colon,        // ':'
+    DoubleColon,  // '::'
     Equal,        // "=="
     Assign,       // '='
     LParen,       // '('
@@ -153,6 +154,7 @@ impl fmt::Display for TokenType {
             TokenType::Comma => write!(f, "','"),
             TokenType::Dot => write!(f, "'.'"),
             TokenType::Colon => write!(f, "':'"),
+            TokenType::DoubleColon => write!(f, "'::'"),
             TokenType::Assign => write!(f, "'='"),
             TokenType::LParen => write!(f, "'('"),
             TokenType::RParen => write!(f, "')'"),

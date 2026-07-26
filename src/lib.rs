@@ -19,8 +19,9 @@ pub mod project;
 pub mod transpiler;
 
 pub use project::{
-    compile as project_compile, config as project_config, convert as project_convert,
-    error as project_error, init as project_init,
+    GlobalScriptSymbol, ProjectContext, ResolvedGlobalScript, compile as project_compile,
+    config as project_config, convert as project_convert, error as project_error,
+    init as project_init,
 };
 
 pub use compile_state::{BinaryQuirk, CompileState};
@@ -34,16 +35,31 @@ pub use compiler::{
 };
 pub use database::{ConstantDb, DatabaseV2, GameFamily, GameFamilyExt, game_family_from_hint};
 pub use decompiler::{
-    DecompileError, DecompileResult, Disassembler, LevelScript, LevelScriptHeaderEntry,
-    LevelScriptValidationError, LevelScriptVarConditionEntry, ScriptOutput, ScriptType,
-    disassemble_bytes, ir_to_source,
+    DecompileContext, DecompileError, DecompileResult, Disassembler, LevelScript,
+    LevelScriptHeaderEntry, LevelScriptValidationError, LevelScriptVarConditionEntry, ScriptOutput,
+    ScriptType, disassemble_bytes, ir_to_source,
 };
 pub use progress::CompileProgress;
 
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+use xxhash_rust::xxh3::xxh3_64;
+
+const MISSING_PROJECT_DEPENDENCY_HASH: u64 = u64::MAX;
+
+/// Hash a project dependency while preserving whether the path is absent.
+pub(crate) fn project_dependency_hash(path: &Path) -> Option<u64> {
+    match std::fs::read(path) {
+        Ok(bytes) => Some(xxh3_64(&bytes)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            Some(MISSING_PROJECT_DEPENDENCY_HASH)
+        }
+        Err(_) => None,
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct CompiledFile {
@@ -151,6 +167,27 @@ pub struct CompiledBytes {
     pub warnings: Vec<CompileWarning>,
 }
 
+/// Resources used when compiling standalone source or a loaded project.
+#[derive(Clone, Copy)]
+pub enum CompileContext<'a> {
+    /// Compile without project-backed resolution.
+    Standalone {
+        db: &'a DatabaseV2,
+        constants: &'a ConstantDb,
+    },
+    /// Derive all shared resources from one project snapshot.
+    Project(&'a ProjectContext),
+}
+
+impl<'a> CompileContext<'a> {
+    fn resources(self) -> (&'a DatabaseV2, &'a ConstantDb, Option<&'a ProjectContext>) {
+        match self {
+            Self::Standalone { db, constants } => (db, constants, None),
+            Self::Project(project) => (project.db(), project.project_constants(), Some(project)),
+        }
+    }
+}
+
 /// Compile Rotom source to bytes.
 ///
 /// Parses the source, runs semantic analysis, lowers to IR, and emits binary.
@@ -160,47 +197,70 @@ pub fn compile(
     constants: &ConstantDb,
     binary_quirks: BinaryQuirk,
 ) -> Result<CompiledBytes, CompileError> {
-    static EMPTY: OnceLock<Arc<uxie::Workspace>> = OnceLock::new();
-    // No file context — family is irrelevant since project_path is empty and
-    // find_text_archive_path returns None for any archive ID.
-    let workspace = EMPTY.get_or_init(|| {
-        Arc::new(uxie::Workspace::new(
-            std::path::PathBuf::new(),
-            uxie::game::Game::Platinum,
-        ))
-    });
     let lexer = Lexer::new(source);
     let mut parser = Parser::new(lexer);
     let file = parser.parse_script_file()?;
-    emit_script_file(&file, db, constants, binary_quirks, workspace, "")
+    emit_script_file(
+        &file,
+        CompileContext::Standalone { db, constants },
+        constants,
+        binary_quirks,
+        "",
+    )
+    .map(|(compiled, _)| compiled)
 }
 
 /// Runs semantic analysis, lowers to IR, and emits binary bytes for a parsed script.
 fn emit_script_file(
     file: &compiler::ast::ScriptFile,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
+    context: CompileContext<'_>,
+    file_constants: &ConstantDb,
     binary_quirks: BinaryQuirk,
-    workspace: &Arc<uxie::Workspace>,
     source_stem: &str,
-) -> Result<CompiledBytes, CompileError> {
-    let mut analyzer = Analyzer::with_database(constants, db);
+) -> Result<(CompiledBytes, HashMap<PathBuf, u64>), CompileError> {
+    let (db, _, project) = context.resources();
+    let mut analyzer = Analyzer::with_database(file_constants, db);
     analyzer.analyze(file)?;
-    let mut lowerer = Lowerer::for_file(
-        &analyzer.symbols,
-        db,
-        constants,
-        workspace.clone(),
-        source_stem.to_string(),
-    );
+    let mut lowerer = if let Some(project) = project {
+        Lowerer::for_file(
+            &analyzer.symbols,
+            project,
+            file_constants,
+            source_stem.to_string(),
+        )
+    } else {
+        Lowerer::with_constants(&analyzer.symbols, db, file_constants)
+    };
     let items = lowerer.lower_script_file(file)?;
+    let mut global_script_dependencies = lowerer.take_global_script_dependencies();
     let mut emitter = Emitter::new(db);
     let jump_table_end_marker_count = binary_quirks.jump_table_end_marker_count.unwrap_or(1);
     let bytes = emitter.emit_script_file(&items, jump_table_end_marker_count)?;
-    Ok(CompiledBytes {
-        bytes,
-        warnings: analyzer.warnings,
-    })
+    if let Some(project) = project
+        && !global_script_dependencies.is_empty()
+    {
+        if let Some(path) = project
+            .workspace()
+            .and_then(|workspace| workspace.scripts.order_path())
+            && let Some(hash) = project_dependency_hash(path)
+        {
+            global_script_dependencies.insert(path.to_path_buf(), hash);
+        }
+        if let Some(path) = project
+            .workspace()
+            .and_then(uxie::Workspace::global_script_table_source_path)
+            && let Some(hash) = project_dependency_hash(&path)
+        {
+            global_script_dependencies.insert(path, hash);
+        }
+    }
+    Ok((
+        CompiledBytes {
+            bytes,
+            warnings: analyzer.warnings,
+        },
+        global_script_dependencies,
+    ))
 }
 
 /// Compile a levelscript decomp source string to binary bytes.
@@ -237,9 +297,11 @@ pub fn compile_levelscript_json_to_bytes(
         message: format!("Failed to parse levelscript JSON: {}", e),
     })?;
 
-    levelscript.validate().map_err(|e| CompileError::Transpile {
-        message: e.to_string(),
-    })?;
+    levelscript
+        .validate()
+        .map_err(|e| CompileError::Transpile {
+            message: e.to_string(),
+        })?;
 
     let mut bytes = levelscript.to_bytes();
     if let Some(padding) = binary_quirks.levelscript_padding {
@@ -293,25 +355,103 @@ fn count_jump_table_lines(source: &str) -> usize {
     n
 }
 
+/// Source text translated and parsed for compilation and global-script lookup.
+#[derive(Debug)]
+pub(crate) struct PreparedScript {
+    pub(crate) source: Arc<str>,
+    pub(crate) rotom_source: Arc<str>,
+    pub(crate) ast: Arc<compiler::ast::ScriptFile>,
+    pub(crate) binary_quirks: BinaryQuirk,
+}
+
+/// Translate and parse one non-levelscript source through the shared frontend.
+fn prepare_script_source(
+    input: &Path,
+    source: Arc<str>,
+    workspace: Option<&uxie::Workspace>,
+    db: &DatabaseV2,
+) -> Result<PreparedScript, CompileFailure> {
+    let extension = input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let (rotom_source, binary_quirks) = match extension.as_str() {
+        "rotom" => (Arc::clone(&source), BinaryQuirk::default()),
+        "script" => (
+            Arc::from(transpiler::transpile_dspre(&source, Some(db))),
+            BinaryQuirk::default(),
+        ),
+        "s" if !is_levelscript_path(input) => {
+            let output = transpiler::transpile_decomp(
+                &source,
+                Some(db),
+                workspace.map(|workspace| workspace.project_path.as_path()),
+            )
+            .map_err(|error| {
+                CompileFailure::with_source(
+                    input,
+                    &source,
+                    CompileError::Transpile {
+                        message: format!(
+                            "Decomp transpile error at line {}: {}",
+                            error.line, error
+                        ),
+                    },
+                )
+            })?;
+            (Arc::from(output.source), output.binary_quirks)
+        }
+        _ => {
+            return Err(CompileFailure::io_error(
+                input,
+                format!("Unsupported file extension: .{extension}"),
+            ));
+        }
+    };
+
+    let mut parser = Parser::new(Lexer::new(&rotom_source));
+    let ast = parser
+        .parse_script_file()
+        .map_err(|error| CompileFailure::with_source(input, &rotom_source, error))?;
+
+    Ok(PreparedScript {
+        source,
+        rotom_source,
+        ast: Arc::new(ast),
+        binary_quirks,
+    })
+}
+
 /// Reads a file from disk and compiles it, handling translation and preprocessor directives.
 ///
 /// Supports `.rotom`, `.script`, `.s`, and `.json` inputs.
+/// When `file_constants` is absent, directives are loaded over the context's
+/// base constants. Callers that already prepared that overlay may pass it directly.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn compile_file_internal(
     input: &Path,
     output: &Path,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-    load_file_constants: bool,
+    context: CompileContext<'_>,
+    file_constants: Option<&ConstantDb>,
     binary_quirks: BinaryQuirk,
-    workspace: &std::sync::Arc<uxie::Workspace>,
-) -> Result<CompiledFile, CompileFailure> {
-    let source = std::fs::read_to_string(input).map_err(|e| {
-        CompileFailure::io_error(
-            input,
-            format!("Failed to read input file '{}': {}", input.display(), e),
-        )
-    })?;
+) -> Result<(CompiledFile, HashMap<PathBuf, u64>, u64), CompileFailure> {
+    let (db, base_constants, project) = context.resources();
+    let load_file_constants = file_constants.is_none();
+    let constants = file_constants.unwrap_or(base_constants);
+    let prepared_script = project.and_then(|project| project.prepared_global_script(input));
+    let workspace = project.and_then(|project| project.workspace());
+    let source = if let Some(prepared) = prepared_script {
+        Arc::clone(&prepared.source)
+    } else {
+        Arc::from(std::fs::read_to_string(input).map_err(|e| {
+            CompileFailure::io_error(
+                input,
+                format!("Failed to read input file '{}': {}", input.display(), e),
+            )
+        })?)
+    };
+    let compiled_source_hash = xxh3_64(source.as_bytes());
     let extension = input
         .extension()
         .and_then(|e| e.to_str())
@@ -321,12 +461,13 @@ pub(crate) fn compile_file_internal(
     let is_levelscript = is_levelscript_path(input)
         || (extension == "s" && transpiler::is_levelscript_source(&source));
 
-    let (bytes, warnings, warning_source) = if extension == "json" {
+    let (bytes, warnings, warning_source, global_script_dependencies) = if extension == "json" {
         (
             compile_levelscript_json_to_bytes(&source, binary_quirks)
                 .map_err(|e| CompileFailure::with_source(input, &source, e))?,
             Vec::new(),
-            source.clone(),
+            source.to_string(),
+            HashMap::new(),
         )
     } else if is_levelscript && extension == "s" {
         let file_constants = if load_file_constants {
@@ -343,39 +484,24 @@ pub(crate) fn compile_file_internal(
             compile_levelscript_assembly_to_bytes(&source, constants)
                 .map_err(|e| CompileFailure::with_source(input, &source, e))?,
             Vec::new(),
-            source.clone(),
+            source.to_string(),
+            HashMap::new(),
         )
     } else {
-        let (rotom_source, binary_quirks) = match extension.as_str() {
-            "rotom" => (source.clone(), binary_quirks),
-            "script" => (
-                transpiler::transpile_dspre(&source, Some(db)),
-                BinaryQuirk::default(),
-            ),
-            "s" => {
-                let result =
-                    transpiler::transpile_decomp(&source, Some(db), Some(&workspace.project_path))
-                        .map_err(|e| {
-                            CompileFailure::with_source(
-                                input,
-                                &source,
-                                CompileError::Transpile {
-                                    message: format!(
-                                        "Decomp transpile error at line {}: {}",
-                                        e.line, e
-                                    ),
-                                },
-                            )
-                        })?;
-                (result.source, result.binary_quirks)
-            }
-            _ => {
-                return Err(CompileFailure::io_error(
-                    input,
-                    format!("Unsupported file extension: .{}", extension),
-                ));
-            }
+        let prepared_storage;
+        let prepared = if let Some(prepared) = prepared_script {
+            prepared
+        } else {
+            prepared_storage = prepare_script_source(input, Arc::clone(&source), workspace, db)?;
+            &prepared_storage
         };
+        let rotom_source = Arc::clone(&prepared.rotom_source);
+        let binary_quirks = if extension == "rotom" {
+            binary_quirks
+        } else {
+            prepared.binary_quirks
+        };
+        let file = Arc::clone(&prepared.ast);
 
         let source_stem = input
             .file_stem()
@@ -385,7 +511,10 @@ pub(crate) fn compile_file_internal(
 
         // Warm step: pre-load text archive so message_ids is populated before
         // ConstantDb::get is called during analysis/lowering.
-        if let Some(archive_id) = workspace.text_archive_for_script_file(&source_stem) {
+        if let Some(archive_id) =
+            workspace.and_then(|workspace| workspace.text_archive_for_script_file(&source_stem))
+        {
+            let workspace = workspace.expect("archive ID requires a workspace");
             workspace.ensure_archive_loaded(archive_id).map_err(|e| {
                 CompileFailure::with_source(
                     input,
@@ -398,22 +527,21 @@ pub(crate) fn compile_file_internal(
         }
 
         if extension == "rotom" && load_file_constants {
-            let lexer = compiler::Lexer::new(&rotom_source);
-            let mut parser = compiler::Parser::new(lexer);
-            let file = parser
-                .parse_script_file()
-                .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?;
-
             let mut cloned = constants.clone();
             let script_dir = input.parent().unwrap_or_else(|| Path::new("."));
             cloned
                 .apply_directives(script_dir, &rotom_source, &file.items)
                 .map_err(|e| CompileFailure::with_path(input, e))?;
 
-            let output =
-                emit_script_file(&file, db, &cloned, binary_quirks, workspace, &source_stem)
+            let (output, global_script_dependencies) =
+                emit_script_file(&file, context, &cloned, binary_quirks, &source_stem)
                     .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?;
-            (output.bytes, output.warnings, rotom_source)
+            (
+                output.bytes,
+                output.warnings,
+                rotom_source.to_string(),
+                global_script_dependencies,
+            )
         } else {
             let file_constants = if load_file_constants {
                 let mut cloned = constants.clone();
@@ -426,16 +554,9 @@ pub(crate) fn compile_file_internal(
             };
             let constants = file_constants.as_ref().unwrap_or(constants);
 
-            let file = {
-                let lexer = compiler::Lexer::new(&rotom_source);
-                let mut parser = compiler::Parser::new(lexer);
-                parser
-                    .parse_script_file()
-                    .map_err(|e| CompileFailure::with_source(input, &rotom_source, e))?
-            };
-            let output =
-                emit_script_file(&file, db, constants, binary_quirks, workspace, &source_stem)
-                    .map_err(|e| {
+            let (output, global_script_dependencies) =
+                emit_script_file(&file, context, constants, binary_quirks, &source_stem).map_err(
+                    |e| {
                         if extension.as_str() == "s" {
                             let n = count_jump_table_lines(&source);
                             if n > 0 {
@@ -472,21 +593,31 @@ pub(crate) fn compile_file_internal(
                             }
                         }
                         CompileFailure::with_source(input, &rotom_source, e)
-                    })?;
-            (output.bytes, output.warnings, rotom_source)
+                    },
+                )?;
+            (
+                output.bytes,
+                output.warnings,
+                rotom_source.to_string(),
+                global_script_dependencies,
+            )
         }
     };
     let size = bytes.len();
 
     write_compiled_bytes(input, output, &bytes)?;
 
-    Ok(CompiledFile {
-        input: input.to_path_buf(),
-        output: output.to_path_buf(),
-        size,
-        source: warning_source,
-        warnings,
-    })
+    Ok((
+        CompiledFile {
+            input: input.to_path_buf(),
+            output: output.to_path_buf(),
+            size,
+            source: warning_source,
+            warnings,
+        },
+        global_script_dependencies,
+        compiled_source_hash,
+    ))
 }
 
 fn write_compiled_bytes(input: &Path, output: &Path, bytes: &[u8]) -> Result<(), CompileFailure> {
@@ -573,8 +704,7 @@ fn detect_compile_output_collisions(
 /// # Arguments
 /// * `input` - Path to a single file or a directory of source files
 /// * `output` - Output file path (for single file) or output directory
-/// * `db` - The command database
-/// * `constants` - The constant database
+/// * `context` - Either standalone resources or one loaded project
 ///
 /// # Errors
 /// Returns an error when the input path does not exist, when the output is
@@ -584,10 +714,9 @@ fn detect_compile_output_collisions(
 pub fn compile_path(
     input: &Path,
     output: &Path,
-    db: &DatabaseV2,
-    constants: &ConstantDb,
-    workspace: &Arc<uxie::Workspace>,
+    context: CompileContext<'_>,
 ) -> Result<BatchCompileResult, CompileError> {
+    let (_, _, project) = context.resources();
     if input.is_file() {
         let output_path = if output.is_dir() {
             generate_output_path_compile(input, output)
@@ -595,22 +724,17 @@ pub fn compile_path(
             output.to_path_buf()
         };
 
-        let result = compile_file_internal(
-            input,
-            &output_path,
-            db,
-            constants,
-            true,
-            BinaryQuirk::default(),
-            workspace,
-        );
-        workspace
-            .flush_pending_messages()
-            .map_err(|e| CompileError::Io {
-                message: format!("Failed to flush text archives: {e}"),
-            })?;
+        let result =
+            compile_file_internal(input, &output_path, context, None, BinaryQuirk::default());
+        if let Some(workspace) = project.and_then(|project| project.workspace()) {
+            workspace
+                .flush_pending_messages()
+                .map_err(|e| CompileError::Io {
+                    message: format!("Failed to flush text archives: {e}"),
+                })?;
+        }
         Ok(match result {
-            Ok(success) => BatchCompileResult {
+            Ok((success, _, _)) => BatchCompileResult {
                 successes: vec![success],
                 failures: vec![],
             },
@@ -705,12 +829,14 @@ pub fn compile_path(
             })
             .collect();
 
-        let result = compile_batch(&work, db, constants, true, None, workspace);
-        workspace
-            .flush_pending_messages()
-            .map_err(|e| CompileError::Io {
-                message: format!("Failed to flush text archives: {e}"),
-            })?;
+        let result = compile_batch(&work, context, true, None);
+        if let Some(workspace) = project.and_then(|project| project.workspace()) {
+            workspace
+                .flush_pending_messages()
+                .map_err(|e| CompileError::Io {
+                    message: format!("Failed to flush text archives: {e}"),
+                })?;
+        }
         Ok(result)
     } else {
         Err(CompileError::Io {
@@ -723,13 +849,14 @@ pub fn compile_path(
 /// [`ir_to_source`], output path stem, disk write—all aligned with [`decompile_file_internal`]).
 ///
 /// `input` is the binary path used for diagnostics and for [`DecompileFileResult::input`].
+/// The global script index enables canonical cross-file references when available.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decompile_file_from_ir(
     input: &Path,
     script_output: &ScriptOutput,
     output_file: Option<&Path>,
     output_dir: Option<&Path>,
-    db: &DatabaseV2,
-    constants: Option<&ConstantDb>,
+    context: DecompileContext<'_>,
 ) -> Result<DecompileFileResult, DecompileFailure> {
     let mut quirks = BinaryQuirk::default();
     match &script_output {
@@ -749,7 +876,7 @@ pub(crate) fn decompile_file_from_ir(
 
     let output_path = resolve_decompile_output_path(input, output_file, output_dir, is_levelscript);
 
-    let source_text = ir_to_source(script_output, db, constants);
+    let source_text = ir_to_source(script_output, context);
     let size = source_text.len();
 
     if let Some(parent) = output_path.parent() {
@@ -788,8 +915,7 @@ fn decompile_file_internal(
     input: &Path,
     output_file: Option<&Path>,
     output_dir: Option<&Path>,
-    db: &DatabaseV2,
-    constants: Option<&ConstantDb>,
+    context: DecompileContext<'_>,
 ) -> Result<DecompileFileResult, DecompileFailure> {
     let bytes = std::fs::read(input).map_err(|e| DecompileFailure {
         path: input.to_path_buf(),
@@ -798,19 +924,12 @@ fn decompile_file_internal(
         },
     })?;
 
-    let script_output = decompile_to_ir(bytes, db).map_err(|e| DecompileFailure {
+    let script_output = decompile_to_ir(bytes, context.db()).map_err(|e| DecompileFailure {
         path: input.to_path_buf(),
         error: e,
     })?;
 
-    decompile_file_from_ir(
-        input,
-        &script_output,
-        output_file,
-        output_dir,
-        db,
-        constants,
-    )
+    decompile_file_from_ir(input, &script_output, output_file, output_dir, context)
 }
 
 /// Decompile a file or directory of binary scripts to Rotoscript source.
@@ -842,7 +961,8 @@ pub fn decompile_path(
             (Some(output), None)
         };
 
-        match decompile_file_internal(input, output_file, output_dir, db, constants) {
+        let context = DecompileContext::standalone(db, constants);
+        match decompile_file_internal(input, output_file, output_dir, context) {
             Ok(result) => Ok(BatchDecompileResult {
                 successes: vec![result],
                 failures: vec![],
@@ -895,7 +1015,12 @@ pub fn decompile_path(
         let results: Vec<Result<DecompileFileResult, DecompileFailure>> = files
             .par_iter()
             .map(|input_file| {
-                let result = decompile_file_internal(input_file, None, Some(output), db, constants);
+                let result = decompile_file_internal(
+                    input_file,
+                    None,
+                    Some(output),
+                    DecompileContext::standalone(db, constants),
+                );
                 match &result {
                     Ok(_) => {
                         if let Some(p) = progress {
@@ -965,7 +1090,11 @@ mod warning_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::BinaryQuirk;
+    use crate::project::config::{
+        DatabaseConfig, PathsConfig, ProjectMetadata, ProjectTypeConfig, RotomConfig,
+        WorkspaceConfig,
+    };
+    use crate::{BinaryQuirk, CompileContext};
 
     use super::{
         ConstantDb, DatabaseV2, compile, compile_path, decompile_path,
@@ -986,6 +1115,44 @@ mod tests {
 
     fn load_test_db() -> &'static DatabaseV2 {
         DatabaseV2::test_platinum()
+    }
+
+    fn project_for_workspace(
+        root: &Path,
+        workspace: uxie::Workspace,
+        constants: ConstantDb,
+    ) -> Arc<crate::ProjectContext> {
+        let config = RotomConfig {
+            format_version: 1,
+            project: ProjectMetadata {
+                name: "test".to_string(),
+            },
+            workspace: WorkspaceConfig {
+                project_type: ProjectTypeConfig::Decomp,
+                game_family: Some(crate::GameFamily::Platinum),
+            },
+            paths: PathsConfig {
+                database_dir: ".rotom/command_database".to_string(),
+                cache_dir: ".rotom/cache".to_string(),
+                status_dir: ".rotom/status".to_string(),
+                source_roots: Vec::new(),
+                include_roots: Vec::new(),
+                binary_roots: Vec::new(),
+            },
+            database: Some(DatabaseConfig {
+                default_file: DatabaseV2::test_platinum_path().display().to_string(),
+            }),
+        };
+        Arc::new(crate::ProjectContext::from_parts(
+            root.to_path_buf(),
+            config,
+            Arc::new(
+                DatabaseV2::load(DatabaseV2::test_platinum_path())
+                    .expect("failed to load test database"),
+            ),
+            constants,
+            Some(Arc::new(workspace)),
+        ))
     }
 
     fn minimal_script_source() -> &'static str {
@@ -1090,12 +1257,10 @@ mod tests {
         let result = compile_path(
             &input_path,
             &output_path,
-            db,
-            &constants,
-            &Arc::new(uxie::Workspace::new(
-                std::path::PathBuf::new(),
-                uxie::game::Game::Platinum,
-            )),
+            CompileContext::Standalone {
+                db,
+                constants: &constants,
+            },
         )
         .expect("compile_path should return a batch result");
         assert!(result.is_success(), "compile_path should succeed");
@@ -1120,12 +1285,10 @@ mod tests {
         let result = compile_path(
             &input_dir,
             &output_file,
-            db,
-            &constants,
-            &Arc::new(uxie::Workspace::new(
-                std::path::PathBuf::new(),
-                uxie::game::Game::Platinum,
-            )),
+            CompileContext::Standalone {
+                db,
+                constants: &constants,
+            },
         );
         fs::remove_dir_all(&temp_dir).ok();
 
@@ -1232,12 +1395,10 @@ script Main #1:
         let result = compile_path(
             &input_path,
             &output_path,
-            db,
-            &constants,
-            &Arc::new(uxie::Workspace::new(
-                std::path::PathBuf::new(),
-                uxie::game::Game::Platinum,
-            )),
+            CompileContext::Standalone {
+                db,
+                constants: &constants,
+            },
         )
         .expect("compile_path should return a batch result");
         assert!(result.is_success(), "compile_path should succeed");
@@ -1434,12 +1595,10 @@ script Main #1:
         let result = compile_path(
             &input_path,
             &output_path,
-            db,
-            &constants,
-            &Arc::new(uxie::Workspace::new(
-                std::path::PathBuf::new(),
-                uxie::game::Game::Platinum,
-            )),
+            CompileContext::Standalone {
+                db,
+                constants: &constants,
+            },
         )
         .expect("compile_path should return a batch result");
         assert!(result.is_success(), "compile_path should succeed");
@@ -1459,6 +1618,88 @@ script Main #1:
     }
 
     #[test]
+    fn compile_path_resolves_global_module_ref_from_workspace_source() {
+        let temp_dir = unique_temp_dir("compile_path_resolves_global_module_ref");
+        write_test_decomp_project(&temp_dir);
+        let mut order = (0..211)
+            .map(|id| format!("scripts_unk_{id:04}"))
+            .collect::<Vec<_>>();
+        order.push("scripts_common".to_string());
+        fs::write(
+            temp_dir.join("res/field/scripts/scripts.order"),
+            format!("{}\n", order.join("\n")),
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.join("res/field/scripts/scripts_common.rotom"),
+            "script NewGame #2:\n    End\n",
+        )
+        .unwrap();
+        let caller = temp_dir.join("res/field/scripts/caller.rotom");
+        fs::write(
+            &caller,
+            "script Main #1:\n    CallCommonScript CommonScripts::NewGame\n    End\n",
+        )
+        .unwrap();
+        let output = temp_dir.join("caller.bin");
+        let db = load_test_db();
+        let workspace = uxie::Workspace::open_decomp(&temp_dir).unwrap();
+        let project = project_for_workspace(&temp_dir, workspace, ConstantDb::new());
+
+        let result = compile_path(&caller, &output, CompileContext::Project(&project)).unwrap();
+
+        assert!(result.is_success(), "{:?}", result.failures);
+        let expected = compile(
+            "script Main #1:\n    CallCommonScript 2001\n    End\n",
+            db,
+            &ConstantDb::new(),
+            BinaryQuirk::default(),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&output).unwrap(), expected.bytes);
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn compile_file_internal_hashes_the_cached_source_snapshot() {
+        let temp_dir = unique_temp_dir("compile_file_hashes_cached_source");
+        let script_dir = temp_dir.join("expanded/scripts");
+        let archive_dir = temp_dir.join("expanded/textArchives");
+        fs::create_dir_all(&script_dir).unwrap();
+        fs::create_dir_all(&archive_dir).unwrap();
+        fs::write(archive_dir.join("0213.json"), r#"{"messages": []}"#).unwrap();
+        let input = script_dir.join("0211.rotom");
+        let original = "script Original #1:\n    End\n";
+        let updated = "script Updated #1:\n    End\n";
+        fs::write(&input, original).unwrap();
+
+        let mut workspace = uxie::Workspace::new(temp_dir.clone(), uxie::game::Game::Platinum);
+        workspace
+            .scripts
+            .load_dspre_script_dir(&script_dir)
+            .unwrap();
+        workspace.global_script_table = uxie::script_file::GlobalScriptTable::from_entries(vec![
+            uxie::script_file::GlobalScriptEntry::new(2000, 211, 213, "Common Scripts"),
+        ]);
+        let project = project_for_workspace(&temp_dir, workspace, ConstantDb::new());
+
+        fs::write(&input, updated).unwrap();
+        let output = temp_dir.join("0211.bin");
+        let (_, _, source_hash) = super::compile_file_internal(
+            &input,
+            &output,
+            CompileContext::Project(&project),
+            Some(project.project_constants()),
+            BinaryQuirk::default(),
+        )
+        .unwrap();
+
+        assert_eq!(source_hash, xxhash_rust::xxh3::xxh3_64(original.as_bytes()));
+        assert_ne!(source_hash, xxhash_rust::xxh3::xxh3_64(updated.as_bytes()));
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
     fn compile_path_rotom_reports_text_archive_preload_errors() {
         let temp_dir = unique_temp_dir("compile_path_reports_text_archive_preload_errors");
         write_test_decomp_project(&temp_dir);
@@ -1470,14 +1711,11 @@ script Main #1:
         let output_path = temp_dir.join("1.bin");
         fs::write(&input_path, minimal_script_source()).expect("failed to write input script");
 
-        let db = load_test_db();
-        let mut constants = ConstantDb::new();
-        let workspace = Arc::new(
-            uxie::Workspace::open_decomp(&temp_dir).expect("failed to open decomp workspace"),
-        );
-        constants.set_message_ids(workspace.shared_message_ids());
+        let workspace =
+            uxie::Workspace::open_decomp(&temp_dir).expect("failed to open decomp workspace");
+        let project = project_for_workspace(&temp_dir, workspace, ConstantDb::new());
 
-        let result = compile_path(&input_path, &output_path, db, &constants, &workspace)
+        let result = compile_path(&input_path, &output_path, CompileContext::Project(&project))
             .expect("compile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();
 
@@ -1518,12 +1756,10 @@ script Main #1:
         let result = compile_path(
             &input_path,
             &output_path,
-            db,
-            &constants,
-            &Arc::new(uxie::Workspace::new(
-                std::path::PathBuf::new(),
-                uxie::game::Game::Platinum,
-            )),
+            CompileContext::Standalone {
+                db,
+                constants: &constants,
+            },
         )
         .expect("compile_path should return a batch result");
         fs::remove_dir_all(&temp_dir).ok();

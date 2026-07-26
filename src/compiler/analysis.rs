@@ -147,6 +147,7 @@ impl Default for Analyzer<'_> {
 }
 
 impl<'a> Analyzer<'a> {
+    /// Create an analyzer without project constants or a command database.
     pub fn new() -> Analyzer<'a> {
         Analyzer {
             symbols: SymbolTable::new(),
@@ -182,6 +183,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    /// Analyze one parsed script and collect its symbols and diagnostics.
     pub fn analyze(&mut self, file: &ScriptFile) -> ParseResult<()> {
         self.warnings.clear();
         self.alias_definitions.clear();
@@ -402,7 +404,10 @@ impl<'a> Analyzer<'a> {
                     self.collect_alias_references_in_expression(arg);
                 }
             }
-            ExpressionKind::Number(_) | ExpressionKind::Error | ExpressionKind::String(_) => {}
+            ExpressionKind::Number(_)
+            | ExpressionKind::Error
+            | ExpressionKind::String(_)
+            | ExpressionKind::ModuleRef { .. } => {}
         }
     }
 
@@ -529,6 +534,7 @@ impl<'a> Analyzer<'a> {
         }
         Ok(())
     }
+    /// Validate one statement and recursively validate any nested blocks.
     fn validate_statement(&mut self, stmt: &Statement) -> ParseResult<()> {
         match &stmt.node {
             StatementKind::Jump(target_expr) => {
@@ -578,7 +584,15 @@ impl<'a> Analyzer<'a> {
             }
             StatementKind::ScriptCommand { command, args } => {
                 self.validate_command(command, args, &stmt.span)?;
-                for arg in args {
+                for (index, arg) in args.iter().enumerate() {
+                    if index == 0
+                        && self
+                            .database
+                            .is_some_and(|db| db.is_global_script_call(command))
+                        && matches!(arg.node, ExpressionKind::ModuleRef { .. })
+                    {
+                        continue;
+                    }
                     self.validate_expression(arg)?;
                 }
             }
@@ -941,15 +955,16 @@ impl<'a> Analyzer<'a> {
                     format!("Could not resolve '{}' as a constant expression", expr_text),
                 ))
             }
-            ExpressionKind::Label(_) | ExpressionKind::Error | ExpressionKind::String(_) => {
-                Err(analysis_error(
-                    expr.span.clone(),
-                    format!(
-                        "Unsupported expression {:?} in integer expression",
-                        expr.node
-                    ),
-                ))
-            }
+            ExpressionKind::Label(_)
+            | ExpressionKind::ModuleRef { .. }
+            | ExpressionKind::Error
+            | ExpressionKind::String(_) => Err(analysis_error(
+                expr.span.clone(),
+                format!(
+                    "Unsupported expression {:?} in integer expression",
+                    expr.node
+                ),
+            )),
         }
     }
 
@@ -1041,9 +1056,17 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
+    /// Validate an expression outside context-specific command argument handling.
     pub fn validate_expression(&mut self, expr: &Expression) -> ParseResult<()> {
         match &expr.node {
             ExpressionKind::Number(_) | ExpressionKind::Label(_) | ExpressionKind::Error => {}
+            ExpressionKind::ModuleRef { .. } => {
+                return Err(analysis_error(
+                    expr.span.clone(),
+                    "Cross-file script references are only valid as the first argument to a global script call"
+                        .to_string(),
+                ));
+            }
             ExpressionKind::Identifier(name) => {
                 if self.resolve_symbol(name).is_none() {
                     return Err(analysis_error(
@@ -1457,6 +1480,103 @@ script Test #1:
             Some(SymbolType::Variable(id)) => assert_eq!(*id, 1),
             _ => panic!("Chained alias not found in symbol table"),
         }
+    }
+
+    #[test]
+    fn test_module_ref_is_allowed_for_global_script_call() {
+        let source = "script Test #1:\n    CallCommonScript scripts_common::NewGame\n    End\n";
+        let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(source));
+        let script_file = parser.parse_script_file().unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, DatabaseV2::test_platinum());
+
+        analyzer.analyze(&script_file).unwrap();
+    }
+
+    #[test]
+    fn test_module_ref_is_allowed_for_async_global_script_alias() {
+        let source = "script Test #1:\n    ParallelCommonScript scripts_common::NewGame\n    End\n";
+        let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(source));
+        let script_file = parser.parse_script_file().unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, DatabaseV2::test_hgss());
+
+        analyzer.analyze(&script_file).unwrap();
+    }
+
+    #[test]
+    fn test_module_ref_is_rejected_for_other_commands() {
+        let source = "script Test #1:\n    Message scripts_common::NewGame\n    End\n";
+        let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(source));
+        let script_file = parser.parse_script_file().unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, DatabaseV2::test_platinum());
+
+        let error = analyzer.analyze(&script_file).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only valid as the first argument to a global script call")
+        );
+    }
+
+    #[test]
+    fn test_module_ref_is_rejected_inside_other_expressions() {
+        let sources = [
+            "script Test #1:\n    Message (scripts_common::NewGame + 1)\n    End\n",
+            "script Test #1:\n    if scripts_common::NewGame == 1 then\n        End\n    endif\n",
+            "script Test #1:\n    match 0x4000 with\n    case scripts_common::NewGame:\n        End\n    endmatch\n",
+        ];
+        let constants = ConstantDb::new();
+
+        for source in sources {
+            let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(source));
+            let script_file = parser.parse_script_file().unwrap();
+            let mut analyzer = Analyzer::with_database(&constants, DatabaseV2::test_platinum());
+
+            let error = analyzer.analyze(&script_file).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("only valid as the first argument to a global script call"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_module_ref_is_rejected_as_macro_argument() {
+        let mut db = view_rankings_shape_db();
+        db.commands.insert(
+            "Forward".to_string(),
+            Command {
+                cmd_type: CommandType::Macro,
+                id: None,
+                legacy_name: None,
+                description: None,
+                params: vec![ParamDef {
+                    name: "value".to_string(),
+                    param_type: ParamType::U16,
+                    const_value: None,
+                    default: None,
+                    optional: false,
+                }],
+                variants: None,
+                expansion: Some(vec!["Message $value".to_string()]),
+            },
+        );
+        let source = "script Test #1:\n    Forward scripts_common::NewGame\n    End\n";
+        let mut parser = crate::compiler::Parser::new(crate::compiler::Lexer::new(source));
+        let script_file = parser.parse_script_file().unwrap();
+        let constants = ConstantDb::new();
+        let mut analyzer = Analyzer::with_database(&constants, &db);
+
+        let error = analyzer.analyze(&script_file).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only valid as the first argument to a global script call")
+        );
     }
 
     #[test]

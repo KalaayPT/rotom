@@ -139,6 +139,15 @@ pub enum ExpressionKind {
         right: Box<Expression>,
     },
     Label(String),
+    /// A cross-file script reference `module::label` (e.g.
+    /// `CommonScripts::NewGame`). `module` is a canonical global-range name or
+    /// a project filename-stem alias; `label` is the script entry within it.
+    /// Only valid where a global script ID is expected (`CallCommonScript` et
+    /// al.).
+    ModuleRef {
+        module: String,
+        label: String,
+    },
     Call {
         function: Box<Expression>,
         args: Vec<Expression>,
@@ -188,6 +197,7 @@ impl Spanned<ExpressionKind> {
         match &self.node {
             ExpressionKind::Number(n) => Ok(n.to_string()),
             ExpressionKind::Identifier(s) | ExpressionKind::Label(s) => Ok(s.clone()),
+            ExpressionKind::ModuleRef { module, label } => Ok(format!("{module}::{label}")),
             ExpressionKind::String(segs) => Ok(segs
                 .iter()
                 .map(|(s, _)| s.as_str())

@@ -4,7 +4,6 @@ use std::sync::Arc;
 use clap::{Parser as ClapParser, Subcommand};
 
 // Use the library crate
-use rotom::compile_path;
 use rotom::compiler::diagnostic::{CompileError, print_error, print_warning};
 use rotom::database::{ConstantDb, DatabaseV2, GameFamilyExt, game_family_from_hint};
 use rotom::decompile_path;
@@ -12,9 +11,10 @@ use rotom::project::command::{
     compile_mode as compile_project_mode, convert_mode, decompile_mode as decompile_project_mode,
     init_mode,
 };
-use rotom::project::config::find_project_root;
+use rotom::project::config::{find_project_root, load_config};
 use rotom::project::convert::ConvertOptions;
 use rotom::project::error::ProjectError;
+use rotom::{CompileContext, compile_path};
 
 #[derive(Debug, ClapParser)]
 #[command(name = "rotom")]
@@ -309,7 +309,7 @@ fn compile(
     if !json {
         println!("Loading database from: {}", db_path.display());
     }
-    let db = DatabaseV2::load(db_path)?;
+    let db = Arc::new(DatabaseV2::load(db_path)?);
     if !json {
         println!(
             "Loaded {} commands for {}",
@@ -374,19 +374,25 @@ fn compile(
         println!("Output to: {}", output_path.display());
     }
 
-    let workspace = Arc::new(
-        find_project_root(input)
-            .and_then(|root| uxie::Workspace::open(&root).ok())
-            .unwrap_or_else(|| {
-                let game = db
-                    .game_family()
-                    .unwrap_or(uxie::GameFamily::Platinum)
-                    .default_game();
-                uxie::Workspace::new(PathBuf::new(), game)
-            }),
+    let project = find_project_root(input).and_then(|root| {
+        let config = load_config(&root).ok()?;
+        let workspace = uxie::Workspace::open(&root).ok().map(Arc::new);
+        Some(Arc::new(rotom::ProjectContext::from_parts(
+            root,
+            config,
+            Arc::clone(&db),
+            constants.clone(),
+            workspace,
+        )))
+    });
+    let context = project.as_deref().map_or(
+        CompileContext::Standalone {
+            db: &db,
+            constants: &constants,
+        },
+        CompileContext::Project,
     );
-    constants.set_message_ids(workspace.shared_message_ids());
-    let result = compile_path(input, &output_path, &db, &constants, &workspace)?;
+    let result = compile_path(input, &output_path, context)?;
 
     report_compile_result(&result, json, false, Some(start_total.elapsed()))?;
 

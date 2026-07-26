@@ -5,11 +5,9 @@
 //! path mapping (directory extension-swap, project config, etc.).
 
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use std::sync::Arc;
 
-use crate::database::ConstantDb;
 use crate::progress::CompileProgress;
-use crate::{BinaryQuirk, CompileFailure, CompiledFile, DatabaseV2};
+use crate::{BinaryQuirk, CompileContext, CompileFailure, CompiledFile};
 
 /// A single unit of work for [`compile_batch`].
 pub struct CompileWorkItem {
@@ -20,29 +18,31 @@ pub struct CompileWorkItem {
 
 /// Compile a list of [`CompileWorkItem`]s in parallel.
 ///
-/// `load_file_constants` is forwarded to each worker; when `true` the worker
-/// clones the shared `ConstantDb` internally for its own script and drops it
-/// after compilation.  No clones are kept at the batch level.
+/// In standalone mode, `load_file_constants` controls whether each worker
+/// augments the shared constants with directives from its script.
 pub fn compile_batch(
     work: &[CompileWorkItem],
-    db: &DatabaseV2,
-    constants: &ConstantDb,
+    context: CompileContext<'_>,
     load_file_constants: bool,
     progress: Option<&CompileProgress>,
-    workspace: &Arc<uxie::Workspace>,
 ) -> crate::BatchCompileResult {
     let results: Vec<std::result::Result<CompiledFile, CompileFailure>> = work
         .par_iter()
         .map(|item| {
+            let file_constants = match context {
+                CompileContext::Standalone { constants, .. } if !load_file_constants => {
+                    Some(constants)
+                }
+                CompileContext::Standalone { .. } | CompileContext::Project(_) => None,
+            };
             let result = crate::compile_file_internal(
                 &item.input,
                 &item.output,
-                db,
-                constants,
-                load_file_constants,
+                context,
+                file_constants,
                 item.quirks,
-                workspace,
-            );
+            )
+            .map(|(compiled, _, _)| compiled);
             match &result {
                 Ok(_) => {
                     if let Some(p) = progress {
@@ -99,18 +99,15 @@ mod tests {
             },
         ];
         let progress = CompileProgress::new(work.len());
-        let workspace = Arc::new(uxie::Workspace::new(
-            std::path::PathBuf::new(),
-            uxie::game::Game::Platinum,
-        ));
-
+        let constants = ConstantDb::new();
         let result = compile_batch(
             &work,
-            DatabaseV2::test_platinum(),
-            &ConstantDb::new(),
+            CompileContext::Standalone {
+                db: DatabaseV2::test_platinum(),
+                constants: &constants,
+            },
             false,
             Some(&progress),
-            &workspace,
         );
 
         assert_eq!(result.successes.len(), 1);
