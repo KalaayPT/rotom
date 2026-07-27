@@ -1151,6 +1151,9 @@ impl<'a> Lowerer<'a> {
         self.lower_condition_inner(expr, target_label, false)
     }
 
+    /// Lower a condition into a jump to `target_label`.
+    ///
+    /// When `invert` is true, jump when the condition is false; otherwise, jump when it is true.
     #[allow(clippy::too_many_lines)]
     fn lower_condition_inner(
         &mut self,
@@ -1158,16 +1161,24 @@ impl<'a> Lowerer<'a> {
         target_label: &str,
         invert: bool,
     ) -> ParseResult<()> {
+        if let ExpressionKind::Prefix {
+            operator: TokenType::Not,
+            id,
+        } = &expr.node
+        {
+            return self.lower_condition_inner(id, target_label, !invert);
+        }
+
         if let Some((function, args)) = self.command_call_parts(expr) {
             self.lower_autovar_call(function, args, &expr.span)?;
             self.output.push(IrOpcode::Command {
                 name: "CompareVarValue".to_string(),
-                args: vec![Arg::Value(VAR_RESULT), Arg::Value(1)],
+                args: vec![Arg::Value(VAR_RESULT), Arg::Value(0)],
             });
             let cond = if invert {
-                ComparisonOperator::Different
-            } else {
                 ComparisonOperator::Equal
+            } else {
+                ComparisonOperator::Different
             };
             self.output.push(IrOpcode::Command {
                 name: "JumpIf".to_string(),
@@ -3236,15 +3247,91 @@ script TestFunc #1:
                         if name == "CompareVarValue"
                         && args.len() == 2
                         && matches!(&args[0], Arg::Value(0x800C))
-                        && matches!(&args[1], Arg::Value(1)))
+                        && matches!(&args[1], Arg::Value(0)))
                 });
                 assert!(
                     has_compare,
-                    "Should emit CompareVarValue with VAR_RESULT and 1"
+                    "Should emit CompareVarValue with VAR_RESULT and 0"
                 );
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
         }
+    }
+
+    #[test]
+    fn test_lower_negated_autovar_truthiness() {
+        let source = r"
+script TestFunc #1:
+    if !CheckBattleIsLost() then
+        Message 1
+    endif
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(
+            find_cmd(&items, "CompareVarValue").unwrap(),
+            [Arg::Value(VAR_RESULT), Arg::Value(0)]
+        );
+        assert_eq!(
+            find_cmd(&items, "JumpIf").unwrap()[0],
+            Arg::Value(ComparisonOperator::Different as i32)
+        );
+    }
+
+    #[test]
+    fn test_lower_negated_variable_truthiness_after_explicit_command() {
+        let source = r"
+script TestFunc #1:
+    CheckBattleIsLost 0x800C
+    if !0x800C then
+        Message 1
+    endif
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(
+            find_cmd(&items, "CompareVarValue").unwrap(),
+            [Arg::Value(VAR_RESULT), Arg::Value(0)]
+        );
+        assert_eq!(
+            find_cmd(&items, "JumpIf").unwrap()[0],
+            Arg::Value(ComparisonOperator::Different as i32)
+        );
+    }
+
+    #[test]
+    fn test_lower_negated_comparison() {
+        let source = r"
+script TestFunc #1:
+    if !(0x800C == 0) then
+        Message 1
+    endif
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(
+            find_cmd(&items, "CompareVarValue").unwrap(),
+            [Arg::Value(VAR_RESULT), Arg::Value(0)]
+        );
+        assert_eq!(
+            find_cmd(&items, "JumpIf").unwrap()[0],
+            Arg::Value(ComparisonOperator::Equal as i32)
+        );
     }
 
     #[test]
@@ -3302,6 +3389,40 @@ script TestFunc #1:
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
         }
+    }
+
+    #[test]
+    fn test_lower_negated_flag_truthiness() {
+        let source = r"
+script TestFunc #1:
+    if !FLAG_EXAMPLE then
+        Message 1
+    endif
+    End
+";
+
+        let db = create_test_db();
+        let mut symbols = uxie::SymbolTable::new();
+        symbols.load_header_str("#define FLAG_EXAMPLE 123").unwrap();
+        let mut constants = ConstantDb::new();
+        constants.load_from_db(db);
+        constants.load_decomp_symbols(std::path::Path::new(""), symbols);
+
+        let lexer = Lexer::new(source);
+        let mut parser = Parser::new(lexer);
+        let script_file = parser.parse_script_file().unwrap();
+
+        let mut analyzer = Analyzer::with_database(&constants, db);
+        analyzer.analyze(&script_file).unwrap();
+
+        let mut lowerer = Lowerer::with_constants(&analyzer.symbols, db, &constants);
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(find_cmd(&items, "CheckFlag").unwrap(), [Arg::Value(123)]);
+        assert_eq!(
+            find_cmd(&items, "JumpIf").unwrap()[0],
+            Arg::Value(ComparisonOperator::Equal as i32)
+        );
     }
 
     #[test]
@@ -3466,11 +3587,11 @@ script TestFunc #1:
                     matches!(op, IrOpcode::Command { name, args }
                         if name == "CompareVarValue"
                         && matches!(&args[0], Arg::Value(0x800C))
-                        && matches!(&args[1], Arg::Value(1)))
+                        && matches!(&args[1], Arg::Value(0)))
                 });
                 assert!(
                     has_compare,
-                    "Should emit CompareVarValue with VAR_RESULT and 1"
+                    "Should emit CompareVarValue with VAR_RESULT and 0"
                 );
             }
             TopLevelItem::Action(_) => panic!("Expected script"),
