@@ -44,6 +44,11 @@ pub struct ResolvedGlobalScript {
     pub module: String,
     /// Resolved public source symbol.
     pub symbol: GlobalScriptSymbol,
+    /// How this reference must be spelled after `module::` to name
+    /// [`Self::script_id`] again. Usually [`GlobalScriptSymbol::name`], but a
+    /// label shared by several jump-table slots cannot single one out, so the
+    /// slot number is used instead.
+    pub reference_label: String,
     /// Source file containing the symbol.
     pub path: PathBuf,
     /// Original source text used by editor navigation.
@@ -315,26 +320,9 @@ impl ProjectContext {
 
         let file =
             self.indexed_global_script_file(&entry.range.module_name(), entry.script_file_id)?;
-        let matches: Vec<_> = file
-            .symbols
-            .iter()
-            .filter(|symbol| symbol.name == label)
-            .collect();
-        let symbol = match matches.as_slice() {
-            [] => {
-                return Err(format!(
-                    "Script label '{label}' was not found in module '{}'",
-                    entry.range.module_name()
-                ));
-            }
-            [symbol] => (*symbol).clone(),
-            _ => {
-                return Err(format!(
-                    "Script label '{label}' has multiple public slots in module '{}'",
-                    entry.range.module_name()
-                ));
-            }
-        };
+        let symbol = select_symbol(&file.symbols, label)
+            .map_err(|reason| format!("{reason} in module '{}'", entry.range.module_name()))?
+            .clone();
 
         let slot_offset = symbol.slot.checked_sub(1).ok_or_else(|| {
             format!(
@@ -369,12 +357,16 @@ impl ProjectContext {
             script_file_id: entry.script_file_id,
             module: entry.range.module_name(),
             symbol,
+            reference_label: label.to_string(),
             path: file.path.clone(),
             source: Arc::clone(&file.prepared.source),
         })
     }
 
     /// Resolve a numeric global script ID back to its canonical source symbol.
+    ///
+    /// Never fails: an ID outside every known range, or one whose archive has
+    /// no indexed source, simply has no source symbol to name.
     pub fn resolve_global_script_id(&self, script_id: u16) -> Option<ResolvedGlobalScript> {
         let workspace = self.workspace.as_deref()?;
         let entry = workspace.global_script_table.lookup(script_id)?;
@@ -385,20 +377,30 @@ impl ProjectContext {
         if matches.next().is_some() {
             return None;
         }
-        if file
+
+        // The label alone only names this slot when no other slot answers to
+        // it; a function spanning `#[42, 44, 50, 57]` carries one label for
+        // four slots. Fall back to the slot number, which `module::44` accepts
+        // and no source label can collide with.
+        let names_this_slot = file
             .symbols
             .iter()
             .filter(|candidate| candidate.name == symbol.name)
             .count()
-            != 1
-        {
-            return None;
-        }
+            == 1
+            || slot_label(&symbol.name) == Some(slot);
+        let reference_label = if names_this_slot {
+            symbol.name.clone()
+        } else {
+            slot.to_string()
+        };
+
         Some(ResolvedGlobalScript {
             script_id,
             script_file_id: entry.script_file_id,
             module: entry.range.module_name(),
             symbol,
+            reference_label,
             path: file.path.clone(),
             source: Arc::clone(&file.prepared.source),
         })
@@ -498,6 +500,48 @@ fn index_global_scripts(
     }
 
     (files, errors, paths)
+}
+
+/// Pick the public symbol that `label` names.
+///
+/// One function can occupy several jump-table slots
+/// (`script script_42 #[42, 44, 50, 57]:`), so a label may name four symbols
+/// while a sibling slot names none. A label that matches exactly one symbol
+/// wins; otherwise the slot it encodes decides.
+fn select_symbol<'a>(
+    symbols: &'a [GlobalScriptSymbol],
+    label: &str,
+) -> std::result::Result<&'a GlobalScriptSymbol, String> {
+    let by_name: Vec<_> = symbols
+        .iter()
+        .filter(|symbol| symbol.name == label)
+        .collect();
+    let by_slot: Vec<_> = slot_label(label)
+        .map(|slot| symbols.iter().filter(|s| s.slot == slot).collect())
+        .unwrap_or_default();
+
+    match (by_name.as_slice(), by_slot.as_slice()) {
+        ([symbol], _) | (_, [symbol]) => Ok(symbol),
+        ([], []) => Err(format!("Script label '{label}' was not found")),
+        _ => Err(format!("Script label '{label}' has multiple public slots")),
+    }
+}
+
+/// The jump-table slot a `module::label` reference names, when the label is a
+/// slot rather than a source symbol.
+///
+/// The decompiler renders a global script reference from the target's script
+/// ID. It writes the target's own label when that label names exactly this
+/// slot, and the bare slot number (`CommonScripts::44`) when the label is
+/// shared by several slots. `script_<slot>` is the older spelling of the same
+/// thing and stays accepted so already-converted sources keep compiling.
+/// Returns `None` for hand-written labels.
+fn slot_label(label: &str) -> Option<u32> {
+    let digits = label.strip_prefix("script_").unwrap_or(label);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// Prepare one global source and collect its public script labels and slots.
@@ -708,6 +752,95 @@ mod tests {
     }
 
     #[test]
+    fn resolves_every_slot_of_a_multi_slot_script() {
+        // One function, three entry points. Only slot 42 carries the label, so
+        // the other two can only be named by slot.
+        let (temp, workspace) = workspace_with_source("script script_42 #[42, 44, 50]:\n    End\n");
+        let project = context_for_workspace(&temp, workspace);
+
+        for (label, expected_id) in [("script_42", 2041), ("44", 2043), ("50", 2049)] {
+            let resolved = project
+                .resolve_global_script_ref("CommonScripts", label)
+                .unwrap_or_else(|error| panic!("{label} did not resolve: {error}"));
+            assert_eq!(resolved.script_id, expected_id, "{label}");
+        }
+
+        assert!(
+            project
+                .resolve_global_script_ref("CommonScripts", "43")
+                .is_err(),
+            "slot 43 is not an entry point of this script"
+        );
+    }
+
+    #[test]
+    fn still_resolves_the_legacy_script_slot_spelling() {
+        // Sources converted before `module::<slot>` existed spell a slot as
+        // `script_<slot>`, a label the decompiler invented and that matches no
+        // definition. Those projects must keep compiling.
+        let (temp, workspace) = workspace_with_source("script script_42 #[42, 44, 50]:\n    End\n");
+        let project = context_for_workspace(&temp, workspace);
+
+        for (label, expected_id) in [("script_44", 2043), ("script_50", 2049)] {
+            let resolved = project
+                .resolve_global_script_ref("CommonScripts", label)
+                .unwrap_or_else(|error| panic!("{label} did not resolve: {error}"));
+            assert_eq!(resolved.script_id, expected_id, "{label}");
+        }
+
+        // A real label still wins over the slot it happens to encode.
+        let (temp, workspace) =
+            workspace_with_source("script script_44 #7:\n    End\n\nscript Other #44:\n    End\n");
+        let project = context_for_workspace(&temp, workspace);
+        assert_eq!(
+            project
+                .resolve_global_script_ref("CommonScripts", "script_44")
+                .unwrap()
+                .script_id,
+            2006,
+            "a defined label must not be reinterpreted as a slot"
+        );
+    }
+
+    #[test]
+    fn names_a_multi_slot_script_by_slot_when_its_label_cannot() {
+        let (temp, workspace) = workspace_with_source("script script_42 #[42, 44, 50]:\n    End\n");
+        let project = context_for_workspace(&temp, workspace);
+
+        // Slot 42 owns the label, so the label names it unambiguously.
+        let owning = project.resolve_global_script_id(2041).unwrap();
+        assert_eq!(owning.reference_label, "script_42");
+
+        // Slots 44 and 50 answer to the same label, so it cannot single them
+        // out; the slot number can, and no source label can collide with it.
+        for (script_id, expected) in [(2043u16, "44"), (2049, "50")] {
+            let resolved = project.resolve_global_script_id(script_id).unwrap();
+            assert_eq!(resolved.reference_label, expected);
+            assert_eq!(resolved.symbol.name, "script_42");
+        }
+
+        // Whatever spelling is emitted must name the same script again.
+        for script_id in [2041u16, 2043, 2049] {
+            let emitted = project.resolve_global_script_id(script_id).unwrap();
+            let reparsed = project
+                .resolve_global_script_ref(&emitted.module, &emitted.reference_label)
+                .unwrap_or_else(|error| panic!("{} did not round-trip: {error}", emitted.reference_label));
+            assert_eq!(reparsed.script_id, script_id);
+        }
+    }
+
+    #[test]
+    fn unknown_global_script_ids_resolve_to_nothing_rather_than_failing() {
+        let (temp, workspace) = workspace_with_source("script script_42 #[42, 44, 50]:\n    End\n");
+        let project = context_for_workspace(&temp, workspace);
+
+        // Outside every configured range, and inside the range but backed by no
+        // slot: both leave the decompiler to emit the raw literal.
+        assert!(project.resolve_global_script_id(1).is_none());
+        assert!(project.resolve_global_script_id(2042).is_none());
+    }
+
+    #[test]
     fn resolves_global_id_to_canonical_module_and_label() {
         let (temp, workspace) = workspace_with_source("script NewGame #2:\n    End\n");
         let project = context_for_workspace(&temp, workspace);
@@ -737,12 +870,23 @@ mod tests {
     }
 
     #[test]
-    fn reverse_resolution_rejects_labels_with_multiple_public_slots() {
+    fn reverse_resolution_names_shared_labels_by_slot() {
         let (temp, workspace) = workspace_with_source("script Shared #[1, 2]:\n    End\n");
         let project = context_for_workspace(&temp, workspace);
 
-        assert!(project.resolve_global_script_id(2000).is_none());
-        assert!(project.resolve_global_script_id(2001).is_none());
+        // `Shared` covers both slots, so neither can be spelled with it.
+        for (script_id, expected) in [(2000u16, "1"), (2001, "2")] {
+            let resolved = project.resolve_global_script_id(script_id).unwrap();
+            assert_eq!(resolved.reference_label, expected);
+            assert_eq!(resolved.symbol.name, "Shared");
+            assert_eq!(
+                project
+                    .resolve_global_script_ref(&resolved.module, &resolved.reference_label)
+                    .unwrap()
+                    .script_id,
+                script_id
+            );
+        }
     }
 
     #[test]

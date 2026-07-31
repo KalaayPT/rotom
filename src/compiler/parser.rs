@@ -940,7 +940,8 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.advance();
                 // Cross-file script reference `file::label`: an identifier
-                // immediately followed by `::` and a second identifier.
+                // immediately followed by `::` and either a second identifier
+                // or a jump-table slot number.
                 if self.current_token_is(&TokenType::DoubleColon) {
                     self.advance();
                     match &self.current_token.kind {
@@ -952,11 +953,22 @@ impl<'a> Parser<'a> {
                                 label,
                             }
                         }
+                        // `CommonScripts::44` names a jump-table slot directly.
+                        // The decompiler emits this when one label covers
+                        // several slots and so cannot single one out.
+                        TokenType::Num(slot) => {
+                            let label = slot.to_string();
+                            self.advance();
+                            ExpressionKind::ModuleRef {
+                                module: name,
+                                label,
+                            }
+                        }
                         _ => {
                             return Err(parse_error(
                                 self.current_token.span.clone(),
                                 format!(
-                                    "Expected a label after '::', found {}",
+                                    "Expected a label or slot number after '::', found {}",
                                     self.current_token.kind
                                 ),
                             ));
@@ -1916,6 +1928,29 @@ script Test #1:
             ExpressionKind::ModuleRef { module, label }
                 if module == "0211" && label == "NewGame"
         ));
+    }
+
+    #[test]
+    fn test_parse_slot_module_ref() {
+        let source = "script Test #1:\n    CallCommonScript CommonScripts::44\n    End\n";
+        let mut parser = Parser::new(Lexer::new(source));
+        let file = parser.parse_script_file().unwrap();
+
+        let StatementKind::Function { body, .. } = &file.items[0].node else {
+            panic!("Expected function");
+        };
+        let StatementKind::ScriptCommand { args, .. } = &body[0].node else {
+            panic!("Expected script command");
+        };
+        assert!(matches!(
+            &args[0].node,
+            ExpressionKind::ModuleRef { module, label }
+                if module == "CommonScripts" && label == "44"
+        ));
+        assert_eq!(
+            args[0].to_macro_arg_source().unwrap(),
+            "CommonScripts::44"
+        );
     }
 
     #[test]

@@ -107,7 +107,7 @@ fn format_command_args(
             && let Ok(script_id) = u16::try_from(*value)
             && let Some(resolved) = project.resolve_global_script_id(script_id)
         {
-            formatted.push(format!("{}::{}", resolved.module, resolved.symbol.name));
+            formatted.push(format!("{}::{}", resolved.module, resolved.reference_label));
             continue;
         }
         formatted.push(format_arg(arg, param_name, constants, db.game_family()));

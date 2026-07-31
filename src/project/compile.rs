@@ -450,17 +450,17 @@ fn load_compile_session(root: &Path, config: &RotomConfig, force: bool) -> Resul
     let project = std::sync::Arc::new(crate::ProjectContext::load(root, config)?);
     let db_hash = project.database_hash();
     let constant_cache_rebuilt = project.constant_cache_rebuilt();
-    let mut state = CompileState::load_or_default(&status_path).context(IoSnafu {
+    let state = CompileState::load_or_default(&status_path).context(IoSnafu {
         action: "Failed to read compile state",
         path: status_path.clone(),
     })?;
     let force_compile =
         force || state.needs_rebuild(db_hash, COMPILER_VERSION, constant_cache_rebuilt);
-    if force_compile {
-        // Retain Dirty entries so binary_quirks seeded by seed_convert_quirks survive
-        // the force-rebuild (force_compile already prevents skipping any file).
-        state.entries.retain(|_, v| v.status == FileStatus::Dirty);
-    }
+    // Entries are kept even when forcing: `force_compile` already prevents the
+    // skip fast path from reading their staleness, and each one carries the
+    // `BinaryQuirk`s recovered from the original binary by `rotom convert`.
+    // Dropping them makes a forced rebuild re-emit the file with default
+    // framing (e.g. a jump-table end marker the original does not have).
 
     Ok(CompileSession {
         project,

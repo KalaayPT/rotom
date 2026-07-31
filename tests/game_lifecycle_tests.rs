@@ -65,6 +65,30 @@ fn run_rotom(args: &[&str], cwd: &Path) -> Result<String, String> {
     Ok(stdout)
 }
 
+/// Assert that a `rotom compile` run actually rebuilt at least `minimum` files.
+///
+/// `rotom convert` records DSPRE sources it generated from binaries as already
+/// up to date, so a plain `rotom compile` afterwards skips every file and the
+/// hash verification then checks binaries nothing ever rewrote. The lifecycle
+/// tests force a rebuild; this guards against that guarantee silently lapsing.
+fn assert_rebuilt(stdout: &str, minimum: usize) {
+    let summary = stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("Done: "))
+        .unwrap_or_else(|| panic!("no compile summary in rotom output:\n{stdout}"));
+    let compiled: usize = summary
+        .split('/')
+        .next()
+        .and_then(|count| count.trim().parse().ok())
+        .unwrap_or_else(|| panic!("unparsable compile summary 'Done: {summary}'"));
+    assert!(
+        compiled >= minimum,
+        "compile rebuilt only {compiled} file(s), expected at least {minimum}; \
+         the round-trip check would be vacuous\n{stdout}"
+    );
+}
+
 fn copy_fixture(src: &Path, dst: &Path) {
     let status = Command::new("cp")
         .arg("-r")
@@ -422,7 +446,8 @@ fn test_lifecycle_platinum_dspre() {
 
     run_rotom(&["init", "--non-interactive"], &project).expect("rotom init failed");
     run_rotom(&["convert", "--non-interactive"], &project).expect("rotom convert failed");
-    run_rotom(&["compile"], &project).expect("rotom compile failed");
+    let stdout = run_rotom(&["compile", "--force"], &project).expect("rotom compile failed");
+    assert_rebuilt(&stdout, expected.len());
 
     verify_compiled_binaries(&binary_root, &expected, None);
 }
@@ -453,7 +478,8 @@ fn test_lifecycle_heartgold_dspre() {
         converted.contains("CallStd CommonScripts::script_42"),
         "HeartGold DSPRE conversion did not resolve common script 2041"
     );
-    run_rotom(&["compile"], &project).expect("rotom compile failed");
+    let stdout = run_rotom(&["compile", "--force"], &project).expect("rotom compile failed");
+    assert_rebuilt(&stdout, expected.len());
 
     verify_compiled_binaries(&binary_root, &expected, None);
 }
@@ -543,7 +569,8 @@ fn test_lifecycle_platinum_dspre_verbose() {
     run_rotom(&["init", "--non-interactive"], &project).expect("rotom init failed");
     run_rotom(&["convert", "--non-interactive"], &project).expect("rotom convert failed");
 
-    let (compile_ok, json_stdout, compile_stderr) = run_rotom_raw(&["compile", "--json"], &project);
+    let (compile_ok, json_stdout, compile_stderr) =
+        run_rotom_raw(&["compile", "--force", "--json"], &project);
     let (compiled, total) = print_compile_report(&json_stdout, "Platinum DSPRE");
     if !compile_stderr.is_empty() {
         println!("\nCompile stderr:\n{compile_stderr}");
@@ -576,7 +603,8 @@ fn test_lifecycle_heartgold_dspre_verbose() {
     run_rotom(&["init", "--non-interactive"], &project).expect("rotom init failed");
     run_rotom(&["convert", "--non-interactive"], &project).expect("rotom convert failed");
 
-    let (compile_ok, json_stdout, compile_stderr) = run_rotom_raw(&["compile", "--json"], &project);
+    let (compile_ok, json_stdout, compile_stderr) =
+        run_rotom_raw(&["compile", "--force", "--json"], &project);
     let (compiled, total) = print_compile_report(&json_stdout, "HeartGold DSPRE");
     if !compile_stderr.is_empty() {
         println!("\nCompile stderr:\n{compile_stderr}");

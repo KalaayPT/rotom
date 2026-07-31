@@ -595,14 +595,16 @@ impl Variant {
 /// Central repository for all named constants (built-in, DSPRE, and Decomp)
 #[derive(Clone)]
 pub struct ConstantDb {
-    /// Manual and built-in constants: name -> value
-    constants: HashMap<String, i32>,
+    /// Manual and built-in constants: name -> value.
+    /// Shared between per-file clones; written through `Arc::make_mut` while loading.
+    constants: Arc<HashMap<String, i32>>,
     /// Decomp project root for include resolution
     uxie_project_root: Option<PathBuf>,
     /// Base Uxie symbol table loaded for the whole decomp project
     uxie_base_symbols: Option<Arc<SymbolTable>>,
-    /// Active Uxie symbol table, optionally extended with file-local constants
-    uxie_symbols: Option<SymbolTable>,
+    /// Active Uxie symbol table, optionally extended with file-local constants.
+    /// Shared with clones until one of them replaces or extends it.
+    uxie_symbols: Option<Arc<SymbolTable>>,
     /// Shared Arc to workspace's `message_ids`. Wired at compile session setup.
     /// Inserts from `load_archive_into_cache` are visible across all clones.
     message_ids: Arc<DashMap<String, (u16, u16)>>,
@@ -640,7 +642,7 @@ impl Default for ConstantDb {
 impl ConstantDb {
     pub fn new() -> Self {
         ConstantDb {
-            constants: HashMap::new(),
+            constants: Arc::new(HashMap::new()),
             uxie_project_root: None,
             uxie_base_symbols: None,
             uxie_symbols: None,
@@ -658,38 +660,39 @@ impl ConstantDb {
 
     pub fn load_from_db(&mut self, db: &DatabaseV2) -> usize {
         let mut count = 0;
+        let constants = Arc::make_mut(&mut self.constants);
 
-        self.constants.insert("TRUE".to_string(), 1);
-        self.constants.insert("FALSE".to_string(), 0);
+        constants.insert("TRUE".to_string(), 1);
+        constants.insert("FALSE".to_string(), 0);
         count += 2;
 
-        self.constants.insert("VARS_START".to_string(), 0x4000);
+        constants.insert("VARS_START".to_string(), 0x4000);
         count += 1;
 
         for i in 0..=5 {
             if let Some(op) = ComparisonOperator::from_id(i) {
-                self.constants.insert(op.as_str().to_string(), i32::from(i));
+                constants.insert(op.as_str().to_string(), i32::from(i));
                 count += 1;
             }
         }
 
         for (id_str, name) in &db.overworld_directions {
             if let Ok(id) = id_str.parse::<i32>() {
-                self.constants.insert(name.clone(), id);
+                constants.insert(name.clone(), id);
                 count += 1;
             }
         }
 
         for (id_str, name) in &db.special_overworlds {
             if let Ok(id) = id_str.parse::<i32>() {
-                self.constants.insert(name.clone(), id);
+                constants.insert(name.clone(), id);
                 count += 1;
             }
         }
 
         for (id_str, sound) in &db.sounds {
             if let Ok(id) = id_str.parse::<i32>() {
-                self.constants.insert(sound.name.clone(), id);
+                constants.insert(sound.name.clone(), id);
                 count += 1;
             }
         }
@@ -709,9 +712,10 @@ impl ConstantDb {
             })?;
 
         let mut count = 0;
+        let constants = Arc::make_mut(&mut self.constants);
         for (id_str, name) in raw {
             if let Ok(id) = id_str.parse::<i32>() {
-                self.constants.insert(name, id);
+                constants.insert(name, id);
                 count += 1;
             }
         }
@@ -804,9 +808,10 @@ impl ConstantDb {
     ) -> usize {
         symbols.add_dspre_aliases();
         let count = symbols.get_all_defines().len();
+        let shared = Arc::new(symbols);
         self.uxie_project_root = Some(root.as_ref().to_path_buf());
-        self.uxie_base_symbols = Some(Arc::new(symbols.clone()));
-        self.uxie_symbols = Some(symbols);
+        self.uxie_base_symbols = Some(Arc::clone(&shared));
+        self.uxie_symbols = Some(shared);
         count
     }
 
@@ -819,9 +824,9 @@ impl ConstantDb {
         symbols.add_dspre_aliases();
         let count = symbols.get_all_defines().len();
         if let Some(existing) = &mut self.uxie_symbols {
-            existing.extend(symbols);
+            Arc::make_mut(existing).extend(symbols);
         } else {
-            self.uxie_symbols = Some(symbols);
+            self.uxie_symbols = Some(Arc::new(symbols));
         }
         count
     }
@@ -929,9 +934,9 @@ impl ConstantDb {
         symbols.add_dspre_aliases();
 
         if let Some(existing) = &mut self.uxie_symbols {
-            existing.extend(symbols);
+            Arc::make_mut(existing).extend(symbols);
         } else {
-            self.uxie_symbols = Some(symbols);
+            self.uxie_symbols = Some(Arc::new(symbols));
         }
 
         Ok(total)
@@ -945,17 +950,17 @@ impl ConstantDb {
     pub fn load_script_constants<Q: AsRef<Path>>(
         &mut self,
         script_path: Q,
-    ) -> Result<usize, CompileError> {
+    ) -> Result<(), CompileError> {
         let script_path = script_path.as_ref();
         if !script_path.is_file() {
-            return Ok(0);
+            return Ok(());
         }
 
         let Some(project_root) = &self.uxie_project_root else {
-            return Ok(0);
+            return Ok(());
         };
         let Some(base_symbols) = &self.uxie_base_symbols else {
-            return Ok(0);
+            return Ok(());
         };
 
         let include_dirs = Self::decomp_include_dirs(project_root);
@@ -982,10 +987,8 @@ impl ConstantDb {
                 ),
             })?;
 
-        let base_count = base_symbols.get_all_defines().len();
-        let collected_count = collected.get_all_defines().len();
-        self.uxie_symbols = Some(collected);
-        Ok(collected_count.saturating_sub(base_count))
+        self.uxie_symbols = Some(Arc::new(collected));
+        Ok(())
     }
 
     /// Apply `#include` and `#define` directives from a parsed Rotom AST directly.
@@ -998,12 +1001,12 @@ impl ConstantDb {
         script_dir: &Path,
         source: &str,
         items: &[crate::compiler::ast::Statement],
-    ) -> Result<usize, CompileError> {
+    ) -> Result<(), CompileError> {
         let Some(project_root) = &self.uxie_project_root else {
-            return Ok(0);
+            return Ok(());
         };
         let Some(base_symbols) = &self.uxie_base_symbols else {
-            return Ok(0);
+            return Ok(());
         };
 
         let include_dirs = Self::decomp_include_dirs(project_root);
@@ -1061,10 +1064,8 @@ impl ConstantDb {
                 ),
             })?;
 
-        let base_count = base_symbols.get_all_defines().len();
-        let collected_count = collected.get_all_defines().len();
-        self.uxie_symbols = Some(collected);
-        Ok(collected_count.saturating_sub(base_count))
+        self.uxie_symbols = Some(Arc::new(collected));
+        Ok(())
     }
 
     fn handle_unresolved_decomp_include(
@@ -1133,7 +1134,7 @@ impl ConstantDb {
     pub fn loaded_script_file_paths(&self) -> Vec<PathBuf> {
         self.uxie_symbols
             .as_ref()
-            .map(SymbolTable::loaded_file_paths)
+            .map(|symbols| symbols.loaded_file_paths())
             .unwrap_or_default()
     }
 
@@ -1141,17 +1142,17 @@ impl ConstantDb {
         &mut self,
         decomp_root: P,
         script_path: Q,
-    ) -> Result<usize, CompileError> {
+    ) -> Result<(), CompileError> {
         if self.uxie_project_root.is_some() {
             return self.load_script_constants(script_path);
         }
 
         let Some(script_name) = script_path.as_ref().file_stem().and_then(|s| s.to_str()) else {
-            return Ok(0);
+            return Ok(());
         };
 
         let Some(map_name) = script_name.strip_prefix("scripts_") else {
-            return Ok(0);
+            return Ok(());
         };
 
         let events_json = decomp_root
@@ -1162,20 +1163,17 @@ impl ConstantDb {
             .join(format!("events_{}.json", map_name));
 
         if !events_json.exists() {
-            return Ok(0);
+            return Ok(());
         }
 
         if let Some(symbols) = &mut self.uxie_symbols {
-            let start_count = symbols.get_all_defines().len();
-            symbols
+            Arc::make_mut(symbols)
                 .load_events_json(&events_json)
                 .map_err(|e| CompileError::Database {
                     message: format!("Failed to load map events JSON: {}", e),
                 })?;
-            Ok(symbols.get_all_defines().len() - start_count)
-        } else {
-            Ok(0)
         }
+        Ok(())
     }
 
     fn decomp_include_dirs(project_root: &Path) -> Vec<PathBuf> {
@@ -1813,13 +1811,16 @@ mod tests {
         let mut constants = ConstantDb::new();
         constants.load_decomp_symbols(&temp_dir, SymbolTable::new());
 
-        let loaded = constants
+        constants
             .load_script_constants(&temp_dir)
             .expect("directory inputs should be ignored");
 
         fs::remove_dir_all(&temp_dir).ok();
 
-        assert_eq!(loaded, 0);
+        assert!(
+            constants.loaded_script_file_paths().is_empty(),
+            "a directory must not be recorded as a loaded include"
+        );
     }
 
     #[test]
