@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "rotom"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "rotom-lsp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dashmap 6.1.0",
  "rotom",

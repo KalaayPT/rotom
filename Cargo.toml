@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "rotom"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "scripting language and toolchain for pokemon gen 4 game scripts"
 authors = ["Kalaay"]
