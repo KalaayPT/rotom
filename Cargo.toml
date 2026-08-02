@@ -35,7 +35,7 @@ sha2 = "0.10"
 minreq = { version = "2.14.1", features = ["https-rustls"] }
 snafu = "0.8"
 toml = "0.8.19"
-uxie = "0.9.1"
+uxie = "0.9.3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 indicatif = { version = "0.18.4", features = ["rayon"] }
@@ -64,8 +64,3 @@ use_self = "allow"
 uninlined_format_args = "allow"
 option_if_let_else = "allow"
 missing_const_for_fn = "allow"
-
-# TEMPORARY: local uxie checkout while the fixes are unpublished.
-# Remove before release so the crates.io version is used again.
-[patch.crates-io]
-uxie = { path = "../uxie" }
