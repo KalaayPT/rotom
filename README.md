@@ -58,27 +58,19 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, `match/endmatch`, `break`
 - **Menu builders**: Easily define list menus with `Menu(...)` and `MenuGlobal(...)` builders
 - **Autovar**: Commands that return results can be used directly in conditions (e.g., `if CheckPlayerOnBike() then`), inspired by the feature of the same name from PoryScript
+  - **truthiness** for variables and flags: `if x` is equivalent to `if x != 0` as an extension of this
 - **String literals**: Write message text directly in your script without needing to touch text archives. Use `format()` to let the compiler handle word wrapping
 - **Preprocessor**: `#include` / `#define` for decomp header integration
+- **GlobalScript Resolution**: Symbolic cross-file global script references keyed by module, e.g.: `CallCommonScript CommonScripts::NewGame`
 
 ---
 
-## Project Status
-
-### Completed
-- Full byte-matching compiler/decompiler pipeline from source to binary and back
-- Transpiler for all DSPRE and decomps formats
-- LSP, syntax highlighting, editor extensions, error reporting
-- Constant loading from database, text banks (DSPRE) and decomp projects' JSON and header files
-- Full test infrastructure with DSPRE and decomp fixtures
-- Internal variable aliases e.g. `VAR_0x8008`, `VAR_RESULT` (yoinked from decomps)
-- implicit truthiness for variables and flags, e.g. `if x` is equivalent to `if x != 0`
-- Symbolic cross-file global script references in compilation, decompilation, and editor tooling
-
-### To Do
+## To Do
 - Vendor JSON DBs for CI purposes
-- Load `scripts.order` in DSPRE if present to allow for semantic file naming
+- using autovar as variable params like `PlayCry GetPlayerStarterSpecies()`
 - Format string argument support, e.g. `format("Hello, {}!", BufferPlayerName)` for easy string formatting
+- runtime arithmetic via `IncrementVar`/`DecrementVar`, like `UseVar 0x40F0+312`. needs liveness analysis but could be implemented with before-and-after increment/decrement
+- Load `scripts.order` in DSPRE if present to allow for semantic file naming
 - Graph colouring for variable liveness analysis, which will allow for:
   - Variable allocation for automatic assignment
   - Fully-featured for loops, will need graph colouring for counting

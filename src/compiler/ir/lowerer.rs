@@ -436,9 +436,10 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a `Menu(...)` / `MenuGlobal(...)` builder to the family-specific
-    /// init/add/show command sequence, then synthesize a `match VAR_RESULT`
-    /// dispatch (with an `else: Jump <cancel>` when `.cancel(target)` is set)
-    /// and lower it via the normal match path.
+    /// init/add/show command sequence, close any message window owned by the
+    /// builder, then synthesize a `match VAR_RESULT` dispatch (with an
+    /// `else: Jump <cancel>` when `.cancel(target)` is set) and lower it via the
+    /// normal match path.
     #[allow(clippy::too_many_lines)]
     fn lower_menu_builder(
         &mut self,
@@ -641,7 +642,17 @@ impl<'a> Lowerer<'a> {
             });
         }
 
-        // 6. Dispatch: synthesize `match VAR_RESULT with case i: Jump target_i
+        // 6. The prompt/hover window belongs to the builder. Close it before a
+        //    handler can launch an application that tears down the field map;
+        //    otherwise the script manager keeps a stale "window open" flag.
+        if config.prompt.is_some() || has_hover {
+            self.output.push(IrOpcode::Command {
+                name: "CloseMessage".to_string(),
+                args: vec![],
+            });
+        }
+
+        // 7. Dispatch: synthesize `match VAR_RESULT with case i: Jump target_i
         //    else: Jump cancel`. The match optimizer emits the per-family
         //    `CompareVarValue` + `JumpIf EQUAL` chain; the `else` catches the
         //    B-press sentinel (MENU_CANCEL = -2 / 0xFFFE). With no `.cancel`,
@@ -2774,6 +2785,41 @@ Fallback:
     }
 
     #[test]
+    fn test_lower_menu_builder_closes_prompt_before_dispatch() {
+        let source = r"
+script Test #1:
+    Menu(
+        10 -> OptionA,
+    ).prompt(20)
+    End
+
+OptionA:
+    End
+";
+        let (script_file, symbols) = parse_and_analyze(source);
+        let db = create_test_db();
+        let mut lowerer = Lowerer::new(&symbols, db);
+        let items = lowerer.lower_script_file(&script_file).unwrap();
+
+        assert_eq!(
+            cmd_names(&items),
+            vec![
+                "Message",
+                "InitLocalTextMenu",
+                "AddMenuEntryImm",
+                "ShowMenu",
+                "CloseMessage",
+                "CompareVarValue",
+                "JumpIf",
+                "End",
+            ]
+        );
+
+        let mut emitter = crate::compiler::codegen::Emitter::new(db);
+        emitter.emit_script_file(&items, 1).unwrap();
+    }
+
+    #[test]
     fn test_lower_menu_builder_list() {
         // Hover tuples + .width force list mode on Platinum. Hover text requires
         // an open message window, but does not require a synthetic local message.
@@ -2801,7 +2847,7 @@ B:
         let mut lowerer = Lowerer::for_file(&symbols, &project, &constants, "0001".to_string());
         let items = lowerer.lower_script_file(&script_file).unwrap();
 
-        // Open the hover window, then init/entries/show, then the VAR_RESULT dispatch.
+        // Open the hover window, then init/entries/show, close it, and dispatch.
         assert_eq!(
             cmd_names(&items),
             vec![
@@ -2810,6 +2856,7 @@ B:
                 "AddListMenuEntry",
                 "AddListMenuEntry",
                 "ShowListMenuSetWidth",
+                "CloseMessage",
                 "CompareVarValue",
                 "JumpIf",
                 "CompareVarValue",
@@ -3048,6 +3095,7 @@ B:
                 "MenuItemAdd",
                 "MenuItemAdd",
                 "MenuExec",
+                "CloseMessage",
                 "CompareVarValue",
                 "JumpIf",
                 "CompareVarValue",
