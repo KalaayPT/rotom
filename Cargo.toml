@@ -64,3 +64,8 @@ use_self = "allow"
 uninlined_format_args = "allow"
 option_if_let_else = "allow"
 missing_const_for_fn = "allow"
+
+# TEMPORARY: local uxie checkout while the fixes are unpublished.
+# Remove before release so the crates.io version is used again.
+[patch.crates-io]
+uxie = { path = "../uxie" }

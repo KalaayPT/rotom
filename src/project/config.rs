@@ -133,13 +133,17 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Macro include prepended to converted decomp scripts.
+///
+/// Delegates to Uxie, which also seeds this file into the shared symbol table
+/// and tracks it for constant-cache invalidation, so the mapping must not be
+/// duplicated here.
 pub fn global_include_path(
     family: GameFamily,
     project_type: ProjectTypeConfig,
 ) -> Option<&'static str> {
-    match (family, project_type) {
-        (GameFamily::Platinum, ProjectTypeConfig::Decomp) => Some("macros/scrcmd.inc"),
-        (GameFamily::HGSS, ProjectTypeConfig::Decomp) => Some("macros/script.inc"),
+    match project_type {
+        ProjectTypeConfig::Decomp => family.decomp_global_include(),
         _ => None,
     }
 }
