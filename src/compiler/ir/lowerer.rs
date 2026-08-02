@@ -38,6 +38,8 @@ const LIST_MENU_ENTRY_NO_ALT_TEXT: i32 = 0xff;
 pub struct Lowerer<'a> {
     label_counter: usize,
     output: Vec<IrOpcode>,
+    /// Anonymous movement blocks waiting to be emitted after explicit items.
+    inline_actions: Vec<IrAction>,
     global_symbols: &'a SymbolTable,
     active_aliases: HashMap<String, i32>,
     db: &'a DatabaseV2,
@@ -56,6 +58,7 @@ impl<'a> Lowerer<'a> {
         Self {
             label_counter: 0,
             output: Vec::new(),
+            inline_actions: Vec::new(),
             global_symbols: symbols,
             active_aliases: HashMap::new(),
             db,
@@ -76,6 +79,7 @@ impl<'a> Lowerer<'a> {
         Self {
             label_counter: 0,
             output: Vec::new(),
+            inline_actions: Vec::new(),
             global_symbols: symbols,
             active_aliases: HashMap::new(),
             db,
@@ -103,6 +107,7 @@ impl<'a> Lowerer<'a> {
         Self {
             label_counter: 0,
             output: Vec::new(),
+            inline_actions: Vec::new(),
             global_symbols: symbols,
             active_aliases: HashMap::new(),
             db: project.db(),
@@ -124,7 +129,9 @@ impl<'a> Lowerer<'a> {
         format!(".{}_gen_{}", prefix, self.label_counter)
     }
 
+    /// Lower a parsed file and append anonymous actions after all explicit items.
     pub fn lower_script_file(&mut self, scr_file: &ScriptFile) -> ParseResult<Vec<TopLevelItem>> {
+        self.inline_actions.clear();
         let mut items = Vec::new();
         for item in &scr_file.items {
             match &item.node {
@@ -148,6 +155,7 @@ impl<'a> Lowerer<'a> {
                 _ => {}
             }
         }
+        items.extend(self.inline_actions.drain(..).map(TopLevelItem::Action));
         Ok(items)
     }
 
@@ -700,6 +708,47 @@ impl<'a> Lowerer<'a> {
         macro_depth: usize,
         source_span: &std::ops::Range<usize>,
     ) -> ParseResult<()> {
+        let inline_args = if args
+            .iter()
+            .any(|arg| matches!(arg.node, ExpressionKind::InlineAction { .. }))
+        {
+            let mut rewritten = Vec::with_capacity(args.len());
+            for arg in args {
+                if let ExpressionKind::InlineAction { body } = &arg.node {
+                    let name = loop {
+                        self.label_counter += 1;
+                        let candidate = format!("__inline_action_gen_{}", self.label_counter);
+                        if self.global_symbols.resolve(&candidate).is_none()
+                            && self
+                                .inline_actions
+                                .iter()
+                                .all(|action| action.name != candidate)
+                        {
+                            break candidate;
+                        }
+                    };
+
+                    let parent_output = std::mem::take(&mut self.output);
+                    let instructions = self.lower_function(body);
+                    self.output = parent_output;
+                    self.inline_actions.push(IrAction {
+                        name: name.clone(),
+                        instructions: instructions?,
+                    });
+                    rewritten.push(Expression {
+                        node: ExpressionKind::Label(name),
+                        span: arg.span.clone(),
+                    });
+                } else {
+                    rewritten.push(arg.clone());
+                }
+            }
+            Some(rewritten)
+        } else {
+            None
+        };
+        let args = inline_args.as_deref().unwrap_or(args);
+
         if let Ok(cmd) = self.db.get_command(command) {
             if cmd.is_macro() {
                 return self.expand_macro(command, args, macro_depth, source_span);
@@ -1511,6 +1560,13 @@ impl<'a> Lowerer<'a> {
                     }
                     None => {}
                 }
+                if self
+                    .inline_actions
+                    .iter()
+                    .any(|action| action.name == *name)
+                {
+                    return Ok(Arg::Pointer(name.clone()));
+                }
 
                 if let Some(db) = self.constants
                     && let Some(val) = db.get(name)
@@ -1719,6 +1775,10 @@ impl<'a> Lowerer<'a> {
                     format!("Could not resolve '{}' as a constant expression", expr_text),
                 ))
             }
+            ExpressionKind::InlineAction { .. } => Err(lowering_error_at(
+                expr.span.clone(),
+                "Inline action was not extracted before argument resolution",
+            )),
             ExpressionKind::Error => Err(lowering_error_at(
                 expr.span.clone(),
                 "Invalid expression in argument resolution".to_string(),

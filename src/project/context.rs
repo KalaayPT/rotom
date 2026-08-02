@@ -824,7 +824,9 @@ mod tests {
             let emitted = project.resolve_global_script_id(script_id).unwrap();
             let reparsed = project
                 .resolve_global_script_ref(&emitted.module, &emitted.reference_label)
-                .unwrap_or_else(|error| panic!("{} did not round-trip: {error}", emitted.reference_label));
+                .unwrap_or_else(|error| {
+                    panic!("{} did not round-trip: {error}", emitted.reference_label)
+                });
             assert_eq!(reparsed.script_id, script_id);
         }
     }

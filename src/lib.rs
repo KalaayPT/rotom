@@ -1538,6 +1538,154 @@ alias 7 as SHARED
     }
 
     #[test]
+    fn inline_actions_compile_like_named_tail_actions() {
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+        let expected = compile(
+            "script Main #1:
+    ApplyMovement 0, Movement
+    WaitMovement
+    End
+
+action Movement:
+    WalkFastEast 2
+    EndMovement
+",
+            db,
+            &constants,
+            BinaryQuirk::default(),
+        )
+        .expect("named action should compile")
+        .bytes;
+
+        for source in [
+            "script Main #1:
+    ApplyMovement 0, action(WalkFastEast 2)
+    WaitMovement
+    End
+",
+            "script Main #1:
+    ApplyMovement(0, action(
+        WalkFastEast 2
+        EndMovement
+    ))
+    WaitMovement
+    End
+",
+        ] {
+            let compiled = compile(source, db, &constants, BinaryQuirk::default())
+                .expect("inline action should compile")
+                .bytes;
+            assert_eq!(compiled, expected);
+        }
+    }
+
+    #[test]
+    fn inline_actions_work_in_macro_arguments() {
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+        let compiled = compile(
+            "alias 0 as LOCALID_CAMERA
+
+script Main #1:
+    ApplyFreeCameraMovement action(
+        WalkFastEast 2
+    )
+    WaitMovement
+    End
+",
+            db,
+            &constants,
+            BinaryQuirk::default(),
+        )
+        .expect("inline action in a macro should compile")
+        .bytes;
+        let expected = compile(
+            "script Main #1:
+    ApplyMovement 0, Movement
+    WaitMovement
+    End
+
+action Movement:
+    WalkFastEast 2
+    EndMovement
+",
+            db,
+            &constants,
+            BinaryQuirk::default(),
+        )
+        .expect("expanded macro source should compile")
+        .bytes;
+
+        assert_eq!(compiled, expected);
+    }
+
+    #[test]
+    fn inline_actions_are_rejected_in_non_movement_command_parameters() {
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+
+        for source in [
+            "script Main #1:
+    Message action(WalkFastEast 2)
+    End
+",
+            "script Main #1:
+    CallIf 1, action(WalkFastEast 2)
+    End
+",
+        ] {
+            let Err(error) = compile(source, db, &constants, BinaryQuirk::default()) else {
+                panic!("inline action in a non-movement parameter should fail: {source}")
+            };
+            let crate::CompileError::Analysis { span, message } = error else {
+                panic!("expected an analysis error for {source}, got {error:?}")
+            };
+            assert_eq!(&source[span], "action(WalkFastEast 2)");
+            assert!(message.contains("does not accept an inline action"));
+        }
+    }
+
+    #[test]
+    fn inline_actions_reject_non_movement_statements_and_trailing_commands() {
+        let db = load_test_db();
+        let constants = ConstantDb::new();
+        let invalid_body = compile(
+            "script Main #1:
+    ApplyMovement 0, action(
+        if 1 == 1 then
+        endif
+    )
+    End
+",
+            db,
+            &constants,
+            BinaryQuirk::default(),
+        );
+        let Err(error) = invalid_body else {
+            panic!("control flow in an inline action should fail")
+        };
+        assert!(format!("{error}").contains("Actions can only contain Commands"));
+
+        let after_terminator = compile(
+            "script Main #1:
+    ApplyMovement 0, action(
+        EndMovement
+        WalkFastEast 2
+    )
+    End
+",
+            db,
+            &constants,
+            BinaryQuirk::default(),
+        );
+        assert!(
+            after_terminator.is_err(),
+            "commands after an explicit inline EndMovement should fail"
+        );
+    }
+
+    #[test]
     fn compile_reports_lowering_error_at_offending_source_expression() {
         let source = "script Main #1:\n    Message 1 == 2\n    End\n";
         let db = load_test_db();

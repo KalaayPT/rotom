@@ -118,6 +118,7 @@ fn walk_statement(
     }
 }
 
+/// Walk nested expressions and movement statements for parameter hints.
 #[allow(clippy::only_used_in_recursion)]
 fn walk_expression(
     expr: &rotom::compiler::ast::Expression,
@@ -137,6 +138,11 @@ fn walk_expression(
             walk_expression(function, db, map, hints);
             for arg in args {
                 walk_expression(arg, db, map, hints);
+            }
+        }
+        rotom::compiler::ast::ExpressionKind::InlineAction { body } => {
+            for stmt in body {
+                walk_statement(&stmt.node, db, map, hints);
             }
         }
         _ => {}

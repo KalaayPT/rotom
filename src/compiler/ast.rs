@@ -152,6 +152,10 @@ pub enum ExpressionKind {
         function: Box<Expression>,
         args: Vec<Expression>,
     },
+    /// An anonymous movement block used as a command argument.
+    InlineAction {
+        body: Vec<Statement>,
+    },
     String(Vec<(String, usize)>),
     /// A placeholder for an expression that could not be parsed.
     ///
@@ -258,6 +262,9 @@ impl Spanned<ExpressionKind> {
                 }
 
                 Ok(format!("{}({})", name, formatted_args.join(", ")))
+            }
+            ExpressionKind::InlineAction { .. } => {
+                Err(format!("Inline action cannot be used as a {err_domain}"))
             }
             ExpressionKind::Error => Err(format!("Invalid expression in {err_domain}")),
         }

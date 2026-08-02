@@ -660,6 +660,7 @@ impl<'a> Parser<'a> {
             span: start..end,
         })
     }
+    /// Parse a script or movement command in call-style or assembly-style syntax.
     pub fn parse_command(&mut self) -> ParseResult<Statement> {
         let start = self.current_token.span.start;
         let name_token = self.expect_advance(&TokenType::Identifier(String::new()))?;
@@ -683,7 +684,10 @@ impl<'a> Parser<'a> {
             self.expect_advance(&TokenType::RParen)?;
         } else if !self.current_token_is(&TokenType::Newline)
             && (!self.current_token_is_keyword()
-                || matches!(self.current_token.kind, TokenType::True | TokenType::False))
+                || matches!(
+                    self.current_token.kind,
+                    TokenType::Action | TokenType::True | TokenType::False
+                ))
         {
             // Space-separated: CommandName arg1, arg2
             loop {
@@ -920,6 +924,7 @@ impl<'a> Parser<'a> {
         }
         Ok(left)
     }
+    /// Parse one prefix expression, including anonymous `action(...)` blocks.
     fn parse_prefix(&mut self) -> ParseResult<Expression> {
         let start = self.current_token.span.start;
         let kind = match &self.current_token.kind {
@@ -978,6 +983,7 @@ impl<'a> Parser<'a> {
                     ExpressionKind::Identifier(name)
                 }
             }
+            TokenType::Action => return self.parse_inline_action(),
             TokenType::String(s) => {
                 let kind = ExpressionKind::String(s.clone());
                 self.advance();
@@ -1012,6 +1018,37 @@ impl<'a> Parser<'a> {
             span: start..end,
         })
     }
+    /// Parse an anonymous movement block and add its implicit terminator.
+    fn parse_inline_action(&mut self) -> ParseResult<Expression> {
+        let start = self.current_token.span.start;
+        self.expect_advance(&TokenType::Action)?;
+        self.expect_advance(&TokenType::LParen)?;
+        self.skip_newlines();
+
+        let mut body = self.parse_block(&[TokenType::EndMovement, TokenType::RParen])?;
+        if self.current_token_is(&TokenType::EndMovement) {
+            let span = self.current_token.span.clone();
+            self.advance();
+            body.push(Spanned {
+                node: StatementKind::EndMovement,
+                span,
+            });
+            self.skip_newlines();
+        } else {
+            body.push(Spanned {
+                node: StatementKind::EndMovement,
+                span: self.current_token.span.clone(),
+            });
+        }
+
+        self.expect_advance(&TokenType::RParen)?;
+        let end = self.current_token.span.start;
+        Ok(Spanned {
+            node: ExpressionKind::InlineAction { body },
+            span: start..end,
+        })
+    }
+
     fn parse_infix(&mut self, left: Expression) -> ParseResult<Expression> {
         let start = left.span.start;
         if self.current_token_is(&TokenType::LParen) {
@@ -1947,10 +1984,7 @@ script Test #1:
             ExpressionKind::ModuleRef { module, label }
                 if module == "CommonScripts" && label == "44"
         ));
-        assert_eq!(
-            args[0].to_macro_arg_source().unwrap(),
-            "CommonScripts::44"
-        );
+        assert_eq!(args[0].to_macro_arg_source().unwrap(), "CommonScripts::44");
     }
 
     #[test]

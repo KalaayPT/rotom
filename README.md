@@ -54,7 +54,7 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 - **Scripts** with explicit jump table slots, callable from events/levelscripts: `script Main #1:`, or `#[1-3, 5, 6]` for multiple slots at once
 - **Private labels** for internal code organization (these were called functions in DSPRE): `HelperCode:`
 - **Aliases** for constants: `alias 0x800C as VAR_RESULT`
-- **Actions** for movement data: `action WalkPattern: ... EndMovement`
+- **Actions** for named or inline movement data: `action WalkPattern: ... EndMovement` or `ApplyMovement LOCALID_PLAYER, action(WalkFastEast 2)`
 - **Rich control flow**: Nested `if/else/endif`, `while/endwhile`, `match/endmatch`, `break`
 - **Menu builders**: Easily define list menus with `Menu(...)` and `MenuGlobal(...)` builders
 - **Autovar**: Commands that return results can be used directly in conditions (e.g., `if CheckPlayerOnBike() then`), inspired by the feature of the same name from PoryScript
@@ -80,7 +80,6 @@ Rotom provides a complete compiler toolchain for the Gen 4 Pokémon scripting en
 ### Ideas from poryscript that havent made it to rotom yet (may or may not be implemented)
 - installing it as a submodule
 - jetbrains plugin
-- inline action definitions, e.g. `ApplyMovement LOCALID_PLAYER, action(WalkFastEast 2)` or similar
 
 ---
 

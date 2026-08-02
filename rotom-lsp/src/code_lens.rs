@@ -354,6 +354,7 @@ fn count_label_ref(
     }
 }
 
+/// Count alias references in an expression, including inline movement bodies.
 fn count_alias_refs_in_expr(
     expr: &rotom::compiler::ast::Expression,
     uri: &Url,
@@ -378,6 +379,15 @@ fn count_alias_refs_in_expr(
             count_alias_refs_in_expr(function, uri, map, refs, aliases);
             for arg in args {
                 count_alias_refs_in_expr(arg, uri, map, refs, aliases);
+            }
+        }
+        ExpressionKind::InlineAction { body } => {
+            for stmt in body {
+                if let StatementKind::ScriptCommand { args, .. } = &stmt.node {
+                    for arg in args {
+                        count_alias_refs_in_expr(arg, uri, map, refs, aliases);
+                    }
+                }
             }
         }
         ExpressionKind::Number(_)

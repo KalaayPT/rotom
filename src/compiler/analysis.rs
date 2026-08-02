@@ -204,11 +204,11 @@ impl<'a> Analyzer<'a> {
                 StatementKind::AliasStatement { .. } => {
                     self.register_alias(item)?;
                 }
-                StatementKind::Function { .. } => {
-                    self.validate_function_body(item)?;
+                StatementKind::Function { body, .. } => {
+                    self.validate_function_body(body)?;
                 }
-                StatementKind::Action { .. } => {
-                    self.validate_action_body(item)?;
+                StatementKind::Action { body, .. } => {
+                    self.validate_action_body(body)?;
                 }
                 _ => {}
             }
@@ -253,7 +253,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn register_alias(&mut self, stmt: &Statement) -> ParseResult<()> {
-        if let StatementKind::AliasStatement { name, value, .. } = &stmt.node {
+        if let StatementKind::AliasStatement { name, value } = &stmt.node {
             let id = self.resolve_expression_to_int(value)?;
             if let Some(previous) = self
                 .alias_definitions
@@ -384,6 +384,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    /// Record aliases referenced anywhere inside an expression.
     fn collect_alias_references_in_expression(&mut self, expr: &Expression) {
         match &expr.node {
             ExpressionKind::Identifier(name) | ExpressionKind::Label(name) => {
@@ -402,6 +403,11 @@ impl<'a> Analyzer<'a> {
                 self.collect_alias_references_in_expression(function);
                 for arg in args {
                     self.collect_alias_references_in_expression(arg);
+                }
+            }
+            ExpressionKind::InlineAction { body } => {
+                for stmt in body {
+                    self.collect_alias_references_in_statement(stmt);
                 }
             }
             ExpressionKind::Number(_)
@@ -454,32 +460,30 @@ impl<'a> Analyzer<'a> {
         }
         Ok(())
     }
-    fn validate_function_body(&mut self, func: &Statement) -> ParseResult<()> {
-        if let StatementKind::Function { body, .. } = &func.node {
-            self.symbols.enter_scope();
-            self.loop_depth = 0;
-            self.register_labels_in_block(body)?;
-            self.validate_block(body)?;
-            self.symbols.exit_scope();
-        }
+    fn validate_function_body(&mut self, func: &[Statement]) -> ParseResult<()> {
+        self.symbols.enter_scope();
+        self.loop_depth = 0;
+        self.register_labels_in_block(func)?;
+        self.validate_block(func)?;
+        self.symbols.exit_scope();
         Ok(())
     }
-    fn validate_action_body(&mut self, action: &Statement) -> ParseResult<()> {
-        if let StatementKind::Action { body, .. } = &action.node {
-            for stmt in body {
-                match &stmt.node {
-                    StatementKind::ScriptCommand { args, .. } => {
-                        for arg in args {
-                            self.validate_expression(arg)?;
-                        }
+
+    /// Enforce the statement restrictions shared by named and inline actions.
+    fn validate_action_body(&mut self, body: &[Statement]) -> ParseResult<()> {
+        for stmt in body {
+            match &stmt.node {
+                StatementKind::ScriptCommand { args, .. } => {
+                    for arg in args {
+                        self.validate_expression(arg)?;
                     }
-                    StatementKind::End | StatementKind::EndMovement => {}
-                    _ => {
-                        return Err(analysis_error(
-                            stmt.span.clone(),
-                            "Actions can only contain Commands and 'End'. Logic (If/Jump) and Aliases are not allowed.",
-                        ));
-                    }
+                }
+                StatementKind::End | StatementKind::EndMovement => {}
+                _ => {
+                    return Err(analysis_error(
+                        stmt.span.clone(),
+                        "Actions can only contain Commands and 'End'. Logic (If/Jump) and Aliases are not allowed.",
+                    ));
                 }
             }
         }
@@ -593,7 +597,11 @@ impl<'a> Analyzer<'a> {
                     {
                         continue;
                     }
-                    self.validate_expression(arg)?;
+                    if let ExpressionKind::InlineAction { body } = &arg.node {
+                        self.validate_action_body(body)?;
+                    } else {
+                        self.validate_expression(arg)?;
+                    }
                 }
             }
             StatementKind::AliasStatement { .. } => {
@@ -879,6 +887,7 @@ impl<'a> Analyzer<'a> {
         })
     }
 
+    /// Resolve an expression that must be a compile-time integer.
     fn resolve_expression_to_int(&self, expr: &Expression) -> ParseResult<i32> {
         match &expr.node {
             ExpressionKind::Number(n) => Ok(*n),
@@ -956,6 +965,7 @@ impl<'a> Analyzer<'a> {
                 ))
             }
             ExpressionKind::Label(_)
+            | ExpressionKind::InlineAction { .. }
             | ExpressionKind::ModuleRef { .. }
             | ExpressionKind::Error
             | ExpressionKind::String(_) => Err(analysis_error(
@@ -999,6 +1009,27 @@ impl<'a> Analyzer<'a> {
                         param_type
                     ),
                 ));
+            }
+            ExpressionKind::InlineAction { .. } => {
+                let accepts_inline_action = arg_index == 1
+                    && self.database.is_some_and(|db| {
+                        let Ok(command) = db.get_command(command) else {
+                            return false;
+                        };
+                        db.get_command("ApplyMovement")
+                            .is_ok_and(|apply_movement| std::ptr::eq(command, apply_movement))
+                    });
+                if !accepts_inline_action {
+                    return Err(analysis_error(
+                        arg.span.clone(),
+                        format!(
+                            "Argument {} ('{}') for '{}' does not accept an inline action",
+                            arg_index + 1,
+                            param_name,
+                            command
+                        ),
+                    ));
+                }
             }
             ExpressionKind::Identifier(name) => {
                 if let Some(SymbolType::Constant(value)) = self.resolve_symbol(name) {
@@ -1114,6 +1145,12 @@ impl<'a> Analyzer<'a> {
                 } else {
                     self.resolve_expression_to_int(expr).map(|_| ())?;
                 }
+            }
+            ExpressionKind::InlineAction { .. } => {
+                return Err(analysis_error(
+                    expr.span.clone(),
+                    "Inline actions are only valid as command arguments",
+                ));
             }
             ExpressionKind::String(segs) => {
                 for (i, (seg, seg_start)) in segs.iter().enumerate() {

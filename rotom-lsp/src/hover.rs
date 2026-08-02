@@ -195,6 +195,7 @@ pub fn compute_hover(
                 let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
                 format!("{}({})", format_expr(function), arg_strs.join(", "))
             }
+            ExpressionKind::InlineAction { .. } => "action(...)".to_string(),
             ExpressionKind::Error => "<error>".to_string(),
         };
         let value_int: i32 = value_str.parse().ok()?;
@@ -357,6 +358,7 @@ fn resolve_message_text(
     workspace.read_message(archive_id, msg_index as u16)
 }
 
+/// Format an expression for hover text.
 fn format_expr(expr: &rotom::compiler::ast::Expression) -> String {
     match &expr.node {
         ExpressionKind::Number(n) => n.to_string(),
@@ -380,6 +382,7 @@ fn format_expr(expr: &rotom::compiler::ast::Expression) -> String {
             let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
             format!("{}({})", format_expr(function), arg_strs.join(", "))
         }
+        ExpressionKind::InlineAction { .. } => "action(...)".to_string(),
         ExpressionKind::Error => "<error>".to_string(),
     }
 }

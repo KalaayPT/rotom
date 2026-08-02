@@ -27,6 +27,7 @@ const MENU_BUILDER_METHODS: [(&str, &str); 8] = [
 /// - When typing a non-label parameter: suggests constants.
 /// - When typing a label parameter (e.g. `Jump`, `Call`): suggests local
 ///   symbols (scripts, labels, actions) only.
+/// - When typing a movement pointer: also suggests an inline `action(...)`.
 pub fn compute_completions(
     source: &str,
     position: LspPosition,
@@ -93,9 +94,10 @@ pub fn compute_completions(
 
     // Detect if we're typing a command parameter and which one.
     // Returns:
-    // - Some((true, _))  = label-type param → show local symbols
-    // - Some((false, true)) = MsgId param → show format() + constants
-    // - Some((false, false)) = other param → show constants only
+    // - Some((true, _, _))  = label-type param → show local symbols
+    // - Some((false, true, _)) = MsgId param → show format() + constants
+    // - Some((false, false, false)) = other param → show constants only
+    // - The third tuple element marks a movement pointer that accepts action(...).
     // - None = not in param context → show commands + constants
     let param_context = db.and_then(|db| {
         let (command_name, param_index) = extract_command_context(source, byte_offset)?;
@@ -104,9 +106,14 @@ pub fn compute_completions(
             return None;
         }
         let param = cmd.params.get(param_index as usize)?;
-        let is_label = param.param_type == ParamType::Label || param.name == "relative_jump";
+        let is_action = param_index == 1
+            && db
+                .get_command("ApplyMovement")
+                .is_ok_and(|apply_movement| std::ptr::eq(cmd, apply_movement));
+        let is_label =
+            param.param_type == ParamType::Label || param.name == "relative_jump" || is_action;
         let is_msg = param.name == "text_slot";
-        Some((is_label, is_msg))
+        Some((is_label, is_msg, is_action))
     });
 
     // Check if we're typing the first word of a statement (start of line).
@@ -118,7 +125,7 @@ pub fn compute_completions(
 
     match param_context {
         // Label parameter context: only suggest local symbols (flattened from groups).
-        Some((true, _)) => {
+        Some((true, _, is_action)) => {
             if let Some(local_symbols) = local_symbols {
                 for group in local_symbols {
                     if let Some(children) = &group.children {
@@ -134,9 +141,17 @@ pub fn compute_completions(
                     }
                 }
             }
+            if is_action && matches_prefix("action", &prefix) {
+                items.push(CompletionItem {
+                    label: "action".to_string(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some("action(movement commands)".to_string()),
+                    ..Default::default()
+                });
+            }
         }
         // Non-label parameter: suggest constants, boolean literals, and format() for MsgId params.
-        Some((false, is_msg)) => {
+        Some((false, is_msg, _)) => {
             if is_msg && matches_prefix("format", &prefix) {
                 items.push(CompletionItem {
                     label: "format".to_string(),
@@ -691,5 +706,24 @@ action ActionTarget:
         );
 
         assert!(items.iter().any(|item| item.label == ".start"));
+    }
+
+    #[test]
+    fn compute_completions_suggests_inline_actions_for_movement_pointers() {
+        for source in [
+            "script Test #1:\n    ApplyMovement 0, act",
+            "script Test #1:\n    Movement(0, act",
+        ] {
+            let items =
+                compute_completions(source, pos_at(source, "act"), Some(test_db()), None, None);
+
+            assert!(items.iter().any(|item| {
+                item.label == "action" && item.kind == Some(CompletionItemKind::FUNCTION)
+            }));
+        }
+
+        let source = "script Test #1:\n    Jump act";
+        let items = compute_completions(source, pos_at(source, "act"), Some(test_db()), None, None);
+        assert!(items.iter().all(|item| item.label != "action"));
     }
 }

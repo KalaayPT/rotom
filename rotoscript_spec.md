@@ -486,6 +486,23 @@ action WalkPattern:
 EndMovement
 ```
 
+Actions may also be defined inline in a command argument. Inline actions use the same
+movement-only validation and command syntax as named actions:
+
+```rotom
+ApplyMovement LOCALID_PLAYER, action(WalkFastEast 2)
+
+ApplyMovement LOCALID_PLAYER, action(
+    WalkFastEast 2
+    FaceNorth
+)
+```
+
+The closing `)` acts as an implicit `EndMovement`; writing `EndMovement` before it is also valid.
+Movement commands remain newline-delimited, except that a one-command action may share the line
+with its parentheses. The compiler emits anonymous inline action data after all explicit
+top-level items.
+
 ## 6. String Literals
 
 String literals let you write message text directly as a command argument. The compiler looks up the string in the file's associated text archive, adding it if it does not exist, and substitutes the resulting message index at compile time.
@@ -593,7 +610,8 @@ The compiled script binary consists of:
     * Code emitted in source order (fall-through preserved)
 3. **Movement Data:** Separate section for action bytecode
     * Movement commands are 2-byte ID + 2-byte parameter
-    * Actions are interleaved with scripts in binary (preserving source order)
+    * Named actions are emitted in source order; anonymous inline actions follow all explicit top-level items
+    * Every action begins at a 4-byte-aligned offset
     * Default parameter for most movements is 1 (e.g., `WalkNorth` = `WalkNorth 1`)
     * Movements also accept explicit arguments even when DB says 0 params (e.g., `Delay8 4`)
 
