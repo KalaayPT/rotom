@@ -24,28 +24,26 @@ chrono = {version = "0.4.42", features = ["serde"]}
 clap = { version = "4.5.51", features = ["derive"] }
 codespan-reporting = "0.13.1"
 dashmap = "6.1.0"
-hex = "0.4"
 lsp-types = { version = "0.97", optional = true }
 linked_hash_set = "0.1.6"
 rayon = "1.11.0"
 regex = "1.12.2"
 serde = {version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
-sha2 = "0.10"
-minreq = { version = "2.14.1", features = ["https-rustls"] }
-snafu = "0.8"
-toml = "0.8.19"
+minreq = { version = "3.0.0", features = ["https-rustls"] }
+snafu = "0.9"
+toml = "1"
 uxie = "0.9.3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 indicatif = { version = "0.18.4", features = ["rayon"] }
 
 [build-dependencies]
-minreq = { version = "2.14.1", features = ["https-rustls"] }
-zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+minreq = { version = "3.0.0", features = ["https-rustls"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 tempfile = "3.23.0"
 
